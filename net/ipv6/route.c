@@ -6397,7 +6397,9 @@ static struct ctl_table ipv6_route_table_template[] = {
 		.data		=	&ip6_dst_ops_template.gc_thresh,
 		.maxlen		=	sizeof(int),
 		.mode		=	0644,
-		.proc_handler	=	proc_dointvec,
+		.proc_handler	=	proc_dointvec_minmax,
+		.extra1		=	SYSCTL_ZERO,
+		.extra2		=	SYSCTL_INT_MAX,
 	},
 	{
 		.procname	=	"flush",

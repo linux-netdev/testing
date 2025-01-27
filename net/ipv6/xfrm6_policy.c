@@ -189,7 +189,9 @@ static struct ctl_table xfrm6_policy_table[] = {
 		.data		= &init_net.xfrm.xfrm6_dst_ops.gc_thresh,
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
-		.proc_handler   = proc_dointvec,
+		.proc_handler   = proc_dointvec_minmax,
+		.extra1		= SYSCTL_ZERO,
+		.extra2		= SYSCTL_INT_MAX,
 	},
 };
 
