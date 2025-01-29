@@ -230,11 +230,9 @@ an all-zero-bits vlan and an empty encap attribute, like this::
     eth(...), eth_type(0x8100), vlan(0), encap()
 
 Unlike a TCP packet with source and destination ports 0, an
-all-zero-bits VLAN TCI is not that rare, so the CFI bit (aka
-VLAN_TAG_PRESENT inside the kernel) is ordinarily set in a vlan
-attribute expressly to allow this situation to be distinguished.
-Thus, the flow key in this second example unambiguously indicates a
-missing or malformed VLAN TCI.
+all-zero-bits VLAN TCI is not that rare and the flow key in
+this second example cannot indicate a missing or malformed
+VLAN TCI.
 
 Other rules
 -----------
