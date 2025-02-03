@@ -2481,7 +2481,6 @@ config TEST_IDA
 config TEST_MISC_MINOR
 	tristate "Basic misc minor Kunit test" if !KUNIT_ALL_TESTS
 	depends on KUNIT
-	default KUNIT_ALL_TESTS
 	help
 	  Kunit test for the misc minor.
 	  It tests misc minor functions for dynamic and misc dynamic minor.
