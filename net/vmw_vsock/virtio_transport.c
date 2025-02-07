@@ -717,8 +717,10 @@ static void virtio_vsock_vqs_del(struct virtio_vsock *vsock)
 	struct sk_buff *skb;
 
 	/* Reset all connected sockets when the VQs disappear */
-	vsock_for_each_connected_socket(&virtio_transport.transport,
-					virtio_vsock_reset_sock);
+	if (!vdev->priv) {
+		vsock_for_each_connected_socket(&virtio_transport.transport,
+						virtio_vsock_reset_sock);
+	}
 
 	/* Stop all work handlers to make sure no one is accessing the device,
 	 * so we can safely call virtio_reset_device().
