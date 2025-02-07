@@ -268,6 +268,11 @@ static inline const char *of_node_full_name(const struct device_node *np)
 #define for_each_of_allnodes(dn) for_each_of_allnodes_from(NULL, dn)
 extern struct device_node *of_find_node_by_name(struct device_node *from,
 	const char *name);
+static inline struct device_node *of_find_node_by_name_balanced(struct device_node *from,
+								const char *name)
+{
+	return of_find_node_by_name(of_node_get(from), name);
+}
 extern struct device_node *of_find_node_by_type(struct device_node *from,
 	const char *type);
 extern struct device_node *of_find_compatible_node(struct device_node *from,
