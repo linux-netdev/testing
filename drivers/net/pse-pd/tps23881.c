@@ -502,7 +502,7 @@ tps23881_get_of_channels(struct tps23881_priv *priv,
 	if (!priv->np)
 		return -EINVAL;
 
-	channels_node = of_find_node_by_name(priv->np, "channels");
+	channels_node = of_find_node_by_name_balanced(priv->np, "channels");
 	if (!channels_node)
 		return -EINVAL;
 
