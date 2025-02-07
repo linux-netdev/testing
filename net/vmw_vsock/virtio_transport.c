@@ -688,6 +688,8 @@ static void virtio_vsock_vqs_start(struct virtio_vsock *vsock)
 	mutex_unlock(&vsock->tx_lock);
 
 	mutex_lock(&vsock->rx_lock);
+	vsock->rx_buf_nr = 0;
+	vsock->rx_buf_max_nr = 0;
 	virtio_vsock_rx_fill(vsock);
 	vsock->rx_run = true;
 	mutex_unlock(&vsock->rx_lock);
@@ -779,8 +781,6 @@ static int virtio_vsock_probe(struct virtio_device *vdev)
 
 	vsock->vdev = vdev;
 
-	vsock->rx_buf_nr = 0;
-	vsock->rx_buf_max_nr = 0;
 	atomic_set(&vsock->queued_replies, 0);
 
 	mutex_init(&vsock->tx_lock);
