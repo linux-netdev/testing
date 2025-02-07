@@ -1399,9 +1399,7 @@ static int max9286_parse_dt(struct max9286_priv *priv)
 	u32 i2c_clk_freq = 105000;
 	unsigned int i;
 
-	/* Balance the of_node_put() performed by of_find_node_by_name(). */
-	of_node_get(dev->of_node);
-	i2c_mux = of_find_node_by_name(dev->of_node, "i2c-mux");
+	i2c_mux = of_find_node_by_name_balanced(dev->of_node, "i2c-mux");
 	if (!i2c_mux) {
 		dev_err(dev, "Failed to find i2c-mux node\n");
 		return -EINVAL;
