@@ -378,8 +378,7 @@ static int prestera_port_sfp_bind(struct prestera_port *port)
 	if (!sw->np)
 		return 0;
 
-	of_node_get(sw->np);
-	ports = of_find_node_by_name(sw->np, "ports");
+	ports = of_find_node_by_name_balanced(sw->np, "ports");
 
 	for_each_child_of_node(ports, node) {
 		int num;
