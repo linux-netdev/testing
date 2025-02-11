@@ -9162,7 +9162,9 @@ static int tg3_chip_reset(struct tg3 *tp)
 	if (!pci_device_is_present(tp->pdev))
 		return -ENODEV;
 
-	tg3_nvram_lock(tp);
+	err = tg3_nvram_lock(tp);
+	if (err)
+		return err;
 
 	tg3_ape_lock(tp, TG3_APE_LOCK_GRC);
 
