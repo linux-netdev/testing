@@ -8537,8 +8537,11 @@ static int rtl8152_runtime_resume(struct r8152 *tp)
 		clear_bit(SELECTIVE_SUSPEND, &tp->flags);
 		smp_mb__after_atomic();
 
-		if (!list_empty(&tp->rx_done))
+		if (!list_empty(&tp->rx_done)) {
+			local_bh_disable();
 			napi_schedule(&tp->napi);
+			local_bh_enable();
+		}
 
 		usb_submit_urb(tp->intr_urb, GFP_NOIO);
 	} else {
