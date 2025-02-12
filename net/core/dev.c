@@ -4704,6 +4704,7 @@ static inline void ____napi_schedule(struct softnet_data *sd,
 	struct task_struct *thread;
 
 	lockdep_assert_irqs_disabled();
+	lockdep_assert_in_interrupt();
 
 	if (test_bit(NAPI_STATE_THREADED, &napi->state)) {
 		/* Paired with smp_mb__before_atomic() in

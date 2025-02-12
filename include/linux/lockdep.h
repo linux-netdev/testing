@@ -619,6 +619,17 @@ do {									\
 		     (!in_softirq() || in_irq() || in_nmi()));		\
 } while (0)
 
+/*
+ * Assert to be either in hardirq or in serving softirq or with
+ * softirqs disabled. Verifies a safe context to queue a softirq
+ * with __raise_softirq_irqoff().
+ */
+#define lockdep_assert_in_interrupt()				\
+do {								\
+	WARN_ON_ONCE(__lockdep_enabled && !in_interrupt());	\
+} while (0)
+
+
 extern void lockdep_assert_in_softirq_func(void);
 
 #else
@@ -634,6 +645,7 @@ extern void lockdep_assert_in_softirq_func(void);
 # define lockdep_assert_preemption_enabled() do { } while (0)
 # define lockdep_assert_preemption_disabled() do { } while (0)
 # define lockdep_assert_in_softirq() do { } while (0)
+# define lockdep_assert_in_interrupt() do { } while (0)
 # define lockdep_assert_in_softirq_func() do { } while (0)
 #endif
 
