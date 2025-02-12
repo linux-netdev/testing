@@ -202,6 +202,8 @@ static int vcap_debugfs_show_rule_keyset(struct vcap_rule_internal *ri,
 
 	list_for_each_entry(ckf, &ri->data.keyfields, ctrl.list) {
 		keyfield = vcap_keyfields(vctrl, admin->vtype, ri->data.keyset);
+		if (!keyfield)
+			continue;
 		vcap_debugfs_show_rule_keyfield(vctrl, out, ckf->ctrl.key,
 						keyfield, &ckf->data);
 	}
