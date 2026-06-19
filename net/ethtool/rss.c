@@ -736,9 +736,9 @@ rss_check_rxfh_fields_sym(struct net_device *dev, struct genl_info *info,
 	for (i = 1; i < __ETHTOOL_A_FLOW_CNT; i++)
 		if (data->flow_hash[i] >= 0 &&
 		    !ethtool_rxfh_config_is_sym(data->flow_hash[i])) {
-			NL_SET_ERR_MSG_ATTR(info->extack,
-					    tb[ETHTOOL_A_RSS_INPUT_XFRM],
-					    "hash field config is not symmetric");
+			NL_SET_ERR_MSG_ATTR_FMT(info->extack,
+						tb[ETHTOOL_A_RSS_INPUT_XFRM],
+						"hash field config is not symmetric %d %d", i, data->flow_hash[i]);
 			return -EINVAL;
 		}
 
