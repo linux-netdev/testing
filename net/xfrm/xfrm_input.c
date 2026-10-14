@@ -496,7 +496,7 @@ int xfrm_input(struct sk_buff *skb, int nexthdr, __be32 spi, int encap_type)
 					       LINUX_MIB_XFRMINSTATEINVALID);
 
 			if (encap_type == -1)
-				dev_put(dev);
+				async = 1;
 			goto drop;
 		}
 
@@ -747,9 +747,10 @@ resume_decapped:
 			sp->olen = 0;
 		if (skb_valid_dst(skb))
 			skb_dst_drop(skb);
+		/* gro_cells_receive() reads skb->dev. */
+		gro_cells_receive(&gro_cells, skb);
 		if (async)
 			dev_put(dev);
-		gro_cells_receive(&gro_cells, skb);
 		rcu_read_unlock();
 		return 0;
 	} else {
@@ -779,9 +780,9 @@ resume_decapped:
 drop_unlock:
 	spin_unlock(&x->lock);
 drop:
+	xfrm_rcv_cb(skb, family, xfrm_proto, -1);
 	if (async)
 		dev_put(dev);
-	xfrm_rcv_cb(skb, family, xfrm_proto, -1);
 	kfree_skb(skb);
 	return 0;
 }
