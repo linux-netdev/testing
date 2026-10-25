@@ -192,7 +192,7 @@ static void mana_hwc_init_event_handler(void *ctx, struct gdma_queue *q_self,
 
 		switch (type) {
 		case HWC_DATA_CFG_HWC_TIMEOUT:
-			hwc->hwc_timeout = val;
+			WRITE_ONCE(hwc->hwc_timeout, val);
 			break;
 
 		case HWC_DATA_HW_LINK_CONNECT:
@@ -819,7 +819,12 @@ void mana_hwc_destroy_channel(struct gdma_context *gc)
 	 * non-zero, the HWC worked and we should tear down the HWC here.
 	 */
 	if (gc->max_num_cqs > 0) {
-		mana_smc_teardown_hwc(&gc->shm_channel, false);
+		if (READ_ONCE(hwc->hwc_dead))
+			dev_warn(hwc->dev,
+				 "HWC unavailable, skip SHM teardown handshake\n");
+		else
+			mana_smc_teardown_hwc(&gc->shm_channel, false);
+
 		gc->max_num_cqs = 0;
 	}
 
@@ -862,6 +867,7 @@ int mana_hwc_send_request(struct hw_channel_context *hwc, u32 req_len,
 	u32 dest_vrcq;
 	u32 dest_vrq;
 	u32 command;
+	u32 timeout = 0;
 	u16 msg_id;
 	int err;
 
@@ -897,6 +903,17 @@ int mana_hwc_send_request(struct hw_channel_context *hwc, u32 req_len,
 	dest_vrq = hwc->dest_vrq_id;
 	dest_vrcq = hwc->dest_vrcq_id;
 
+	/* If the HWC is unavailable (e.g. hwc_timeout was set to 0 or
+	 * hwc_dead set after device reset), do not post the WQE: the
+	 * hardware cannot respond, so fail fast instead of waiting out
+	 * the full timeout.
+	 */
+	timeout = READ_ONCE(hwc->hwc_timeout);
+	if (timeout == 0 || READ_ONCE(hwc->hwc_dead)) {
+		err = -ETIMEDOUT;
+		goto out;
+	}
+
 	err = mana_hwc_post_tx_wqe(txq, tx_wr, dest_vrq, dest_vrcq, false);
 	if (err) {
 		dev_err(hwc->dev, "HWC: Failed to post send WQE: %d\n", err);
@@ -904,14 +921,13 @@ int mana_hwc_send_request(struct hw_channel_context *hwc, u32 req_len,
 	}
 
 	if (!wait_for_completion_timeout(&ctx->comp_event,
-					 (msecs_to_jiffies(hwc->hwc_timeout)))) {
-		if (hwc->hwc_timeout != 0)
-			dev_err(hwc->dev, "Command 0x%x timed out: %u ms\n",
-				command, hwc->hwc_timeout);
+					 (msecs_to_jiffies(timeout)))) {
+		dev_err(hwc->dev, "Command 0x%x timed out: %u ms\n",
+			command, timeout);
 
 		/* Reduce further waiting if HWC no response */
-		if (hwc->hwc_timeout > 1)
-			hwc->hwc_timeout = 1;
+		if (READ_ONCE(hwc->hwc_timeout) > 1)
+			WRITE_ONCE(hwc->hwc_timeout, 1);
 
 		err = -ETIMEDOUT;
 		goto out;
