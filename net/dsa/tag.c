@@ -115,6 +115,12 @@ static int dsa_switch_rcv(struct sk_buff *skb, struct net_device *dev,
 		skb = nskb;
 	}
 
+	/* The conduit's RX queue index means nothing on the user port, which
+	 * has a single RX queue, and get_rps_cpu() skips RPS when the index
+	 * is out of range.
+	 */
+	skb_set_queue_mapping(skb, 0);
+
 	dev_sw_netstats_rx_add(skb->dev, skb->len + ETH_HLEN);
 
 	if (dsa_skb_defer_rx_timestamp(p, skb))
