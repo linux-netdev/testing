@@ -3753,15 +3753,18 @@ int mana_attach(struct net_device *ndev)
 static int mana_dealloc_queues(struct net_device *ndev)
 {
 	struct mana_port_context *apc = netdev_priv(ndev);
-	unsigned long timeout = jiffies + 120 * HZ;
 	struct gdma_dev *gd = apc->ac->gdma_dev;
+	struct hw_channel_context *hwc;
+	bool trigger_flr = false;
+	int flr_pending, i, err;
 	struct mana_txq *txq;
 	struct sk_buff *skb;
-	int i, err;
-	u32 tsleep;
+	u32 flr_txq_id = 0;
 
 	if (apc->port_is_up)
 		return -EINVAL;
+
+	hwc = gd->gdma_context->hwc.driver_data;
 
 	if (apc->rxqs)
 		mana_chn_setxdp(apc, NULL);
@@ -3774,42 +3777,92 @@ static int mana_dealloc_queues(struct net_device *ndev)
 	 * a txq because it may not timely see apc->port_is_up being cleared
 	 * to false, but it doesn't matter since mana_start_xmit() drops any
 	 * new packets due to apc->port_is_up being false.
-	 *
-	 * Drain all the in-flight TX packets.
-	 * A timeout of 120 seconds for all the queues is used.
-	 * This will break the while loop when h/w is not responding.
-	 * This value of 120 has been decided here considering max
-	 * number of queues.
+	 * Drain the in-flight TX completions for each queue. TX is already
+	 * stopped, so pending_sends can no longer grow. For each queue,
+	 * disable NAPI so it cannot run at the same time as this drain,
+	 * then process all completions still in the CQ. If some are still
+	 * missing after that, the hardware is not responding: reset device
+	 * and stop waiting on the now-unavailable HWC.
 	 */
 
 	if (apc->tx_qp) {
 		for (i = 0; i < apc->num_queues; i++) {
+			struct mana_cq *tx_cq;
+			struct napi_struct *napi;
+			int pending;
+
+			if (!apc->tx_qp[i])
+				continue;
+
+			tx_cq = &apc->tx_qp[i]->tx_cq;
 			txq = &apc->tx_qp[i]->txq;
-			tsleep = 1000;
-			while (atomic_read(&txq->pending_sends) > 0 &&
-			       time_before(jiffies, timeout)) {
-				usleep_range(tsleep, tsleep + 1000);
-				tsleep <<= 1;
+			napi = &tx_cq->napi;
+
+			if (txq->napi_initialized) {
+				/* Stop the NAPI poll so it cannot run
+				 * concurrently with the synchronous drain.
+				 */
+				napi_synchronize(napi);
+				napi_disable_locked(napi);
+				cancel_work_sync(&tx_cq->dim.work);
+
+				/* Reap all TX completions currently in the CQ.
+				 * A zero budget frees skbs via the non-NAPI
+				 * path, which is required outside softirq.
+				 */
+				tx_cq->budget = 0;
+				do {
+					tx_cq->work_done = 0;
+					mana_poll_tx_cq(tx_cq);
+				} while (tx_cq->work_done);
 			}
-			if (atomic_read(&txq->pending_sends)) {
-				err = mana_gd_dev_reset(gd->gdma_context);
-				if (err) {
-					netdev_err(ndev, "device reset failed %d with %d pkts pending in txq %u\n",
-						   err,
-					    atomic_read(&txq->pending_sends),
-					    txq->gdma_txq_id);
-				}
-				break;
+
+			pending = atomic_read(&txq->pending_sends);
+			if (!trigger_flr && pending > 0) {
+				trigger_flr = true;
+				flr_txq_id = txq->gdma_txq_id;
+				flr_pending = pending;
 			}
 		}
 
+		if (trigger_flr && !(hwc && hwc->hwc_dead)) {
+			/* Completions never arrived: the device is
+			 * unresponsive. Issue device reset and
+			 * mark the HWC dead so subsequent HWC commands
+			 * fail fast instead of each waiting the full
+			 * hwc_timeout.
+			 */
+			err = mana_gd_dev_reset(gd->gdma_context);
+			if (err)
+				netdev_err(ndev, "device reset failed %d with %d pkts pending in txq %u\n",
+					   err,
+					   flr_pending,
+					   flr_txq_id);
+			else if (hwc)
+				WRITE_ONCE(hwc->hwc_dead, true);
+		}
+
 		for (i = 0; i < apc->num_queues; i++) {
+			struct napi_struct *napi;
+			struct mana_cq *tx_cq;
+
+			if (!apc->tx_qp[i])
+				continue;
+
+			tx_cq = &apc->tx_qp[i]->tx_cq;
+			napi = &tx_cq->napi;
+
 			txq = &apc->tx_qp[i]->txq;
 			while ((skb = skb_dequeue(&txq->pending_skbs))) {
 				mana_unmap_skb(skb, apc);
 				dev_kfree_skb_any(skb);
 			}
 			atomic_set(&txq->pending_sends, 0);
+
+			if (txq->napi_initialized) {
+				netif_napi_del_locked(napi);
+				txq->napi_initialized = false;
+			}
 		}
 	}
 
@@ -3822,7 +3875,8 @@ static int mana_dealloc_queues(struct net_device *ndev)
 	if (err && mana_en_need_log(apc, err))
 		netdev_err(ndev, "Failed to disable vPort: %d\n", err);
 
-	mana_fence_rqs(apc);
+	if (!(hwc && hwc->hwc_dead))
+		mana_fence_rqs(apc);
 
 	/* Even in err case, still need to cleanup the vPort */
 	mana_destroy_rxqs(apc);
