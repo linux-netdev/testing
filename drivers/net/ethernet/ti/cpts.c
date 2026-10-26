@@ -747,7 +747,8 @@ struct cpts *cpts_create(struct device *dev, void __iomem *regs,
 			 struct device_node *node, u32 n_ext_ts)
 {
 	struct cpts *cpts;
-	int ret;
+	u32 high, low;
+	int ret, i;
 
 	cpts = devm_kzalloc(dev, sizeof(*cpts), GFP_KERNEL);
 	if (!cpts)
@@ -778,6 +779,17 @@ struct cpts *cpts_create(struct device *dev, void __iomem *regs,
 	ret = clk_prepare(cpts->refclk);
 	if (ret)
 		return ERR_PTR(ret);
+
+	/* After a kexec the CPTS may still be running from the previous
+	 * kernel, with its interrupt enabled and events in the FIFO. The misc
+	 * IRQ is requested before cpts_register() sets up the event pool, so
+	 * mask the interrupt and drop the stale events now.
+	 */
+	cpts_write32(cpts, 0, int_enable);
+	for (i = 0; i < CPTS_FIFO_DEPTH; i++) {
+		if (cpts_fifo_pop(cpts, &high, &low))
+			break;
+	}
 
 	cpts->cc.read = cpts_systim_read;
 	cpts->cc.mask = CLOCKSOURCE_MASK(32);
