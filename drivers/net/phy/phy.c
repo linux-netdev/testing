@@ -1508,6 +1508,15 @@ void phy_free_interrupt(struct phy_device *phydev)
 {
 	phy_disable_interrupts(phydev);
 	free_irq(phydev->irq, phydev);
+
+	/* Undo the disable_irq_nosync() of a postponed interrupt if the line
+	 * is still shared; otherwise the next irq_startup() resets the depth.
+	 */
+	if (phydev->irq_rerun) {
+		phydev->irq_rerun = 0;
+		if (irq_has_action(phydev->irq))
+			enable_irq(phydev->irq);
+	}
 }
 EXPORT_SYMBOL(phy_free_interrupt);
 
