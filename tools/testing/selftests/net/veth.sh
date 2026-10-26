@@ -9,12 +9,17 @@ readonly DST=1
 readonly DST_NAT=100
 readonly NS_SRC=$BASE$SRC
 readonly NS_DST=$BASE$DST
+# The receiver of the GRO checks, behind the destination
+readonly RCV=3
+readonly NS_RCV=$BASE$RCV
 # shellcheck disable=SC2155 # prefer RO variable over return value from cmd
 readonly YNL="$(dirname "$(readlink -f "$0")")/../../../net/ynl/pyynl/cli.py"
 
 # "baremetal" network used for raw UDP traffic
 readonly BM_NET_V4=192.168.1.
 readonly BM_NET_V6=2001:db8::
+# Network between the destination and the receiver
+readonly RCV_NET_V4=192.168.2.
 
 readonly CPUS=`nproc`
 ret=0
@@ -26,7 +31,7 @@ cleanup() {
 	[ -n "${jobs}" ] && kill -1 ${jobs} 2>/dev/null
 	rm -f $STATS
 
-	for ns in $NS_SRC $NS_DST; do
+	for ns in $NS_SRC $NS_DST $NS_RCV; do
 		ip netns del $ns 2>/dev/null
 	done
 }
@@ -48,6 +53,17 @@ create_ns() {
 		ip -n $BASE$ns addr add dev veth$ns $BM_NET_V4$ns/24
 		ip -n $BASE$ns addr add dev veth$ns $BM_NET_V6$ns/64 nodad
 	done
+
+	# Forwarded, the datagrams find no local socket, whatever tunnel the host has
+	ip netns add $NS_RCV
+	ip -n $NS_RCV link set dev lo up
+	ip link add name fwd$DST type veth peer name fwd$RCV
+	ip link set dev fwd$DST netns $NS_DST up
+	ip link set dev fwd$RCV netns $NS_RCV up
+	ip -n $NS_DST addr add dev fwd$DST $RCV_NET_V4$DST/24
+	ip -n $NS_RCV addr add dev fwd$RCV $RCV_NET_V4$RCV/24
+	ip netns exec $NS_DST sysctl -wq net.ipv4.ip_forward=1
+	ip -n $NS_RCV route add default via $RCV_NET_V4$DST
 }
 
 __chk_flag() {
@@ -134,15 +150,17 @@ chk_gro() {
 	local msg="$1"
 	local expected=$2
 
-	ip netns exec $BASE$SRC ping -qc 1 $BM_NET_V4$DST >/dev/null
+	# Taking veth$SRC down drops the route, so set it for every check
+	ip -n $NS_SRC route replace ${RCV_NET_V4}0/24 via $BM_NET_V4$DST
+	ip netns exec $BASE$SRC ping -qc 1 $RCV_NET_V4$RCV >/dev/null
 	NSTAT_HISTORY=$STATS ip netns exec $NS_DST nstat -n
 
 	printf "%-60s" "$msg"
-	ip netns exec $BASE$DST ./udpgso_bench_rx -C 1000 -R 10 &
+	ip netns exec $NS_RCV ./udpgso_bench_rx -C 1000 -R 10 &
 	local spid=$!
 	sleep 0.1
 
-	ip netns exec $NS_SRC ./udpgso_bench_tx -4 -s 13000 -S 1300 -M 1 -D $BM_NET_V4$DST
+	ip netns exec $NS_SRC ./udpgso_bench_tx -4 -s 13000 -S 1300 -M 1 -D $RCV_NET_V4$RCV
 	local retc=$?
 	wait $spid
 	local rets=$?
