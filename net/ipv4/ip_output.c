@@ -1105,6 +1105,11 @@ alloc_new_skb:
 			fraglen = datalen + fragheaderlen;
 			pagedlen = 0;
 
+			if (unlikely(transhdrlen + fraggap > datalen)) {
+				err = -EINVAL;
+				goto error;
+			}
+
 			alloc_extra = hh_len + 15;
 			alloc_extra += exthdrlen;
 
