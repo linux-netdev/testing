@@ -371,6 +371,17 @@ static void sfp_fixup_long_startup(struct sfp *sfp)
 	sfp->module_t_start_up = T_START_UP_BAD_GPON;
 }
 
+/*
+ * Some modules need a long time before they are ready, but keep
+ * TX_FAULT asserted. As TX_FAULT is ignored for those modules,
+ * module_t_start_up is not evaluated by the state machine, so use
+ * module_t_wait instead.
+ */
+static void sfp_fixup_long_wait(struct sfp *sfp)
+{
+	sfp->module_t_wait = T_START_UP_BAD_GPON;
+}
+
 static void sfp_fixup_ignore_los(struct sfp *sfp)
 {
 	/* This forces LOS to zero, so we ignore transitions */
@@ -470,6 +481,13 @@ static void sfp_fixup_potron(struct sfp *sfp)
 
 	sfp_fixup_long_startup(sfp);
 	sfp_fixup_ignore_hw(sfp, SFP_F_TX_FAULT | SFP_F_LOS);
+}
+
+static void sfp_fixup_zyxel(struct sfp *sfp)
+{
+	/* The LOS and TX_FAULT signals are not usable on this module. */
+	sfp_fixup_ignore_tx_fault_and_los(sfp);
+	sfp_fixup_long_wait(sfp);
 }
 
 static void sfp_fixup_rollball_cc(struct sfp *sfp)
@@ -654,6 +672,10 @@ static const struct sfp_quirk sfp_quirks[] = {
 	SFP_QUIRK_F("XikeStor", "SKT-2.5G-100M", sfp_fixup_xikestor_2_5g),
 
 	SFP_QUIRK_S("ZOERAX", "SFP-2.5G-T", sfp_quirk_oem_2_5g),
+
+	/* The module advertises autonegotiation it does not support. */
+	SFP_QUIRK("ZYXEL", "PMG3000-D20B", sfp_quirk_disable_autoneg,
+		  sfp_fixup_zyxel),
 };
 
 static size_t sfp_strlen(const char *str, size_t maxlen)
