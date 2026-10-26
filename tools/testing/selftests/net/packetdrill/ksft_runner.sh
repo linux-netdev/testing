@@ -52,6 +52,34 @@ if [[ -n "${KSFT_MACHINE_SLOW}" ]]; then
 	failfunc=ktap_test_xfail
 fi
 
+pagesize=$(grep -E '^--define=REQUIRES_PAGESIZE=' $script | cut -d '=' -f 3 | tr -d '"')
+if [[ -n "$pagesize" && "$(getconf PAGESIZE)" != "$pagesize" ]]; then
+	ktap_skip_all "requires ${pagesize}B PAGE_SIZE"
+	exit "$KSFT_SKIP"
+fi
+
+if grep -q -E '^--define=REQUIRES_MEMCG=' $script; then
+	cgroot=$(mount -t cgroup2 | head -1 | awk '{print $3}')
+	memcg_was_enabled=0
+	if [[ -n "$cgroot" ]] &&
+	   grep -qw memory "${cgroot}/cgroup.subtree_control" 2>/dev/null; then
+		memcg_was_enabled=1
+	fi
+	if [[ -z "$cgroot" ]] ||
+	   ! echo +memory > "${cgroot}/cgroup.subtree_control" 2>/dev/null; then
+		ktap_skip_all "requires cgroup2 memory controller"
+		exit "$KSFT_SKIP"
+	fi
+	cleanup_memcg() {
+		rmdir "${cgroot}"/pkt_* 2>/dev/null || true
+		if [[ "$memcg_was_enabled" -eq 0 ]]; then
+			echo -memory > "${cgroot}/cgroup.subtree_control" \
+				2>/dev/null || true
+		fi
+	}
+	trap cleanup_memcg EXIT
+fi
+
 ip_versions=$(grep -E '^--ip_version=' $script | cut -d '=' -f 2)
 if [[ -z $ip_versions ]]; then
 	ip_versions="ipv4 ipv6 ipv4-mapped-ipv6"
