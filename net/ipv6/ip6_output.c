@@ -1500,7 +1500,7 @@ static int __ip6_append_data(struct sock *sk,
 		     rt->rt6i_nfheader_len;
 
 	if (mtu <= fragheaderlen ||
-	    ((mtu - fragheaderlen) & ~7) + fragheaderlen <= sizeof(struct frag_hdr))
+	    mtu - fragheaderlen <= sizeof(struct frag_hdr))
 		goto emsgsize;
 
 	maxfraglen = ((mtu - fragheaderlen) & ~7) + fragheaderlen -
