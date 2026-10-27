@@ -684,6 +684,8 @@ static const struct ethtool_ops au1000_ethtool_ops = {
 	.set_link_ksettings = phy_ethtool_set_link_ksettings,
 };
 
+static void au1000_multicast_list(struct net_device *dev);
+
 /*
  * Initialize the interface.
  *
@@ -742,6 +744,9 @@ static int au1000_init(struct net_device *dev)
 	wmb(); /* drain writebuffer */
 
 	spin_unlock_irqrestore(&aup->lock, flags);
+	netif_addr_lock_bh(dev);
+	au1000_multicast_list(dev);
+	netif_addr_unlock_bh(dev);
 	return 0;
 }
 
@@ -1038,8 +1043,10 @@ static void au1000_multicast_list(struct net_device *dev)
 {
 	struct au1000_private *aup = netdev_priv(dev);
 	u32 reg;
+	unsigned long flags;
 
 	netif_dbg(aup, drv, dev, "%s: flags=%x\n", __func__, dev->flags);
+	spin_lock_irqsave(&aup->lock, flags);
 	reg = readl(&aup->mac->control);
 	if (dev->flags & IFF_PROMISC) {			/* Set promiscuous. */
 		reg |= MAC_PROMISCUOUS;
@@ -1062,6 +1069,7 @@ static void au1000_multicast_list(struct net_device *dev)
 		reg |= MAC_HASH_MODE;
 	}
 	writel(reg, &aup->mac->control);
+	spin_unlock_irqrestore(&aup->lock, flags);
 }
 
 static const struct net_device_ops au1000_netdev_ops = {
