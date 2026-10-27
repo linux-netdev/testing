@@ -1553,6 +1553,12 @@ static inline unsigned int tcp_packets_in_flight(const struct tcp_sock *tp)
 
 #define TCP_INFINITE_SSTHRESH	0x7fffffff
 
+/* Default and maximum snd_cwnd_clamp, in packets.
+ * Far above any usable BDP, but low enough that congestion control
+ * arithmetic such as 100 * cwnd in CUBIC cannot overflow a u32.
+ */
+#define TCP_MAX_SND_CWND	(1U << 24)
+
 static inline u32 tcp_snd_cwnd(const struct tcp_sock *tp)
 {
 	return tp->snd_cwnd;
