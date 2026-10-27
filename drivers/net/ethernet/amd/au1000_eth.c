@@ -458,7 +458,8 @@ au1000_adjust_link(struct net_device *dev)
 		/* link state changed */
 
 		if (!phydev->link) {
-			/* link went down */
+			/* Stop the MAC before the PHY can remove its clocks. */
+			au1000_hard_stop(dev);
 			aup->old_speed = 0;
 			aup->old_duplex = -1;
 		}
@@ -727,7 +728,7 @@ static int au1000_init(struct net_device *dev)
 
 	wmb(); /* drain writebuffer */
 
-	control = MAC_RX_ENABLE | MAC_TX_ENABLE;
+	control = 0;
 #ifndef CONFIG_CPU_LITTLE_ENDIAN
 	control |= MAC_BIG_ENDIAN;
 #endif
@@ -739,6 +740,10 @@ static int au1000_init(struct net_device *dev)
 	} else { /* PHY-less op, assume full-duplex */
 		control |= MAC_FULL_DUPLEX;
 	}
+
+	/* The PHY may still be restoring its MII clocks after resume. */
+	if (!dev->phydev || dev->phydev->link)
+		control |= MAC_RX_ENABLE | MAC_TX_ENABLE;
 
 	writel(control, &aup->mac->control);
 	writel(0x8100, &aup->mac->vlan1_tag); /* activate vlan support */
@@ -928,15 +933,17 @@ static int au1000_open(struct net_device *dev)
 		return retval;
 	}
 
+	if (dev->phydev)
+		phy_start(dev->phydev);
+
 	retval = au1000_init(dev);
 	if (retval) {
 		netdev_err(dev, "error in au1000_init\n");
+		if (dev->phydev)
+			phy_stop(dev->phydev);
 		free_irq(dev->irq, dev);
 		return retval;
 	}
-
-	if (dev->phydev)
-		phy_start(dev->phydev);
 
 	netif_start_queue(dev);
 
