@@ -421,8 +421,8 @@ static void ufshcd_add_cmd_upiu_trace(struct ufs_hba *hba,
 	else
 		header = &lrb->ucd_rsp_ptr->header;
 
-	trace_ufshcd_upiu(hba, str_t, header, &rq->sc.cdb,
-			  UFS_TSF_CDB);
+	trace_call__ufshcd_upiu(hba, str_t, header, &rq->sc.cdb,
+			       UFS_TSF_CDB);
 }
 
 static void ufshcd_add_query_upiu_trace(struct ufs_hba *hba,
@@ -432,8 +432,8 @@ static void ufshcd_add_query_upiu_trace(struct ufs_hba *hba,
 	if (!trace_ufshcd_upiu_enabled())
 		return;
 
-	trace_ufshcd_upiu(hba, str_t, &rq_rsp->header,
-			  &rq_rsp->qr, UFS_TSF_OSF);
+	trace_call__ufshcd_upiu(hba, str_t, &rq_rsp->header,
+			       &rq_rsp->qr, UFS_TSF_OSF);
 }
 
 static void ufshcd_add_tm_upiu_trace(struct ufs_hba *hba, unsigned int tag,
@@ -445,15 +445,15 @@ static void ufshcd_add_tm_upiu_trace(struct ufs_hba *hba, unsigned int tag,
 		return;
 
 	if (str_t == UFS_TM_SEND)
-		trace_ufshcd_upiu(hba, str_t,
-				  &descp->upiu_req.req_header,
-				  &descp->upiu_req.input_param1,
-				  UFS_TSF_TM_INPUT);
+		trace_call__ufshcd_upiu(hba, str_t,
+					&descp->upiu_req.req_header,
+					&descp->upiu_req.input_param1,
+					UFS_TSF_TM_INPUT);
 	else
-		trace_ufshcd_upiu(hba, str_t,
-				  &descp->upiu_rsp.rsp_header,
-				  &descp->upiu_rsp.output_param1,
-				  UFS_TSF_TM_OUTPUT);
+		trace_call__ufshcd_upiu(hba, str_t,
+					&descp->upiu_rsp.rsp_header,
+					&descp->upiu_rsp.output_param1,
+					UFS_TSF_TM_OUTPUT);
 }
 
 static void ufshcd_add_uic_command_trace(struct ufs_hba *hba,
@@ -477,7 +477,7 @@ static void ufshcd_add_uic_command_trace(struct ufs_hba *hba,
 		arg3 = ufshcd_readl(hba, REG_UIC_COMMAND_ARG_3);
 	}
 
-	trace_ufshcd_uic_command(hba, str_t, cmd, arg1, arg2, arg3);
+	trace_call__ufshcd_uic_command(hba, str_t, cmd, arg1, arg2, arg3);
 }
 
 static void ufshcd_add_command_trace(struct ufs_hba *hba, struct scsi_cmnd *cmd,
@@ -526,8 +526,9 @@ static void ufshcd_add_command_trace(struct ufs_hba *hba, struct scsi_cmnd *cmd,
 	} else {
 		doorbell = ufshcd_readl(hba, REG_UTP_TRANSFER_REQ_DOOR_BELL);
 	}
-	trace_ufshcd_command(cmd->device, hba, str_t, tag, doorbell, hwq_id,
-			     transfer_len, intr, lba, opcode, group_id);
+	trace_call__ufshcd_command(cmd->device, hba, str_t, tag, doorbell,
+				   hwq_id, transfer_len, intr, lba, opcode,
+				   group_id);
 }
 
 static void ufshcd_print_clk_freqs(struct ufs_hba *hba)
