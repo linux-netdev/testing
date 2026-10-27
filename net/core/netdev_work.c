@@ -117,6 +117,10 @@ __netdev_work_core_cancel(struct net_device *dev, unsigned long mask)
 static void netdev_work_run(struct net_device *dev, unsigned long events,
 			    unsigned long core)
 {
+	/* Not gated on presence: the caller used to wait only for the lock */
+	if (core & NETDEV_WORK_SYNC_UPPERS)
+		netif_sync_upper_disables(dev);
+
 	if (!netif_device_present(dev))
 		return;
 
