@@ -1195,13 +1195,15 @@ int tls_set_device_offload(struct sock *sk)
 		goto release_lock;
 
 	tls_device_attach(ctx, sk, netdev);
-	up_read(&device_offload_lock);
 
 	/* following this assignment tls_is_skb_tx_device_offloaded
 	 * will return true and the context might be accessed
-	 * by the netdev's xmit function.
+	 * by the netdev's xmit function. Publish it and tx_conf under
+	 * device_offload_lock so tls_device_down() sees both or neither.
 	 */
 	smp_store_release(&sk->sk_validate_xmit_skb, tls_validate_xmit_skb);
+	ctx->tx_conf = TLS_HW;
+	up_read(&device_offload_lock);
 	dev_put(netdev);
 
 	return 0;
@@ -1282,6 +1284,11 @@ int tls_set_device_offload_rx(struct sock *sk, struct tls_context *ctx)
 		goto free_sw_resources;
 
 	tls_device_attach(ctx, sk, netdev);
+	/* do_tls_setsockopt_conf() stores rx_conf too, but only after
+	 * device_offload_lock is dropped. Set it here so tls_device_down()
+	 * sees TLS_HW and releases the driver RX context.
+	 */
+	ctx->rx_conf = TLS_HW;
 	up_read(&device_offload_lock);
 
 	dev_put(netdev);
@@ -1350,10 +1357,17 @@ static int tls_device_down(struct net_device *netdev)
 	spin_unlock_irqrestore(&tls_device_lock, flags);
 
 	list_for_each_entry_safe(ctx, tmp, &list, list)	{
+		bool tx_hw = ctx->tx_conf == TLS_HW;
+
 		/* Stop offloaded TX and switch to the fallback.
 		 * tls_is_skb_tx_device_offloaded will return false.
+		 * Only HW TX sockets have the context the fallback needs.
+		 * The single read above keeps the fallback and tls_dev_del()
+		 * below in agreement.
 		 */
-		WRITE_ONCE(ctx->sk->sk_validate_xmit_skb, tls_validate_xmit_skb_sw);
+		if (tx_hw)
+			WRITE_ONCE(ctx->sk->sk_validate_xmit_skb,
+				   tls_validate_xmit_skb_sw);
 
 		/* Stop the RX and TX resync.
 		 * tls_dev_resync must not be called after tls_dev_del.
@@ -1370,7 +1384,7 @@ static int tls_device_down(struct net_device *netdev)
 		synchronize_net();
 
 		/* Release the offload context on the driver side. */
-		if (ctx->tx_conf == TLS_HW)
+		if (tx_hw)
 			netdev->tlsdev_ops->tls_dev_del(netdev, ctx,
 							TLS_OFFLOAD_CTX_DIR_TX);
 		if (ctx->rx_conf == TLS_HW &&
