@@ -13,6 +13,7 @@
 #include <linux/ioam6.h>
 #include <linux/ioam6_iptunnel.h>
 #include <net/dst.h>
+#include <net/ip6_route.h>
 #include <net/sock.h>
 #include <net/lwtunnel.h>
 #include <net/ioam6.h>
@@ -412,7 +413,8 @@ do_encap:
 		fl6.saddr = hdr->saddr;
 		fl6.flowlabel = ip6_flowinfo(hdr);
 		fl6.flowi6_mark = skb->mark;
-		fl6.flowi6_proto = hdr->nexthdr;
+		fl6.flowi6_proto = ilwt->tuninfo.eh.nexthdr;
+		fl6.mp_hash = rt6_multipath_hash(net, &fl6, skb, NULL);
 
 		dst = ip6_route_output(net, NULL, &fl6);
 		if (dst->error) {
