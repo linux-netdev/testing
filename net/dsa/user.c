@@ -3435,6 +3435,10 @@ static void dsa_conduit_lag_leave(struct net_device *conduit,
 		 * physical CPU port
 		 */
 		lag_dev->dsa_ptr = new_cpu_dp;
+		/* Ensure the new dp->cpu_dp values are visible to concurrent
+		 * RX path readers of lag_dev->dsa_ptr before the pointer
+		 * itself becomes visible
+		 */
 		wmb();
 	} else {
 		/* If the LAG DSA conduit has no ports left, migrate back all
