@@ -402,6 +402,7 @@ static void tipc_node_write_unlock(struct tipc_node *n)
 	struct list_head *publ_list;
 	struct tipc_uaddr ua;
 	u32 bearer_id, node;
+	int rc = 0;
 
 	if (likely(!flags)) {
 		write_unlock_bh(&n->lock);
@@ -425,7 +426,7 @@ static void tipc_node_write_unlock(struct tipc_node *n)
 		tipc_publ_notify(net, publ_list, node, n->capabilities);
 
 	if (flags & TIPC_NOTIFY_NODE_UP)
-		tipc_named_node_up(net, node, n->capabilities);
+		rc = tipc_named_node_up(net, node, n->capabilities);
 
 	if (flags & TIPC_NOTIFY_LINK_UP) {
 		tipc_mon_peer_up(net, node, bearer_id);
@@ -435,6 +436,9 @@ static void tipc_node_write_unlock(struct tipc_node *n)
 		tipc_mon_peer_down(net, node, bearer_id);
 		tipc_nametbl_withdraw(net, &ua, &sk, sk.ref);
 	}
+
+	if (rc == -ENOBUFS)
+		tipc_node_link_down(n, bearer_id, false);
 }
 
 static void tipc_node_assign_peer_net(struct tipc_node *n, u32 hash_mixes)
@@ -1682,6 +1686,51 @@ static void tipc_lxc_xmit(struct net *peer_net, struct sk_buff_head *list)
 	}
 }
 
+static int tipc_node_build_list(struct tipc_node *n, struct sk_buff_head *list,
+				struct sk_buff_head *xmitq, int selector,
+				struct tipc_media_addr *maddr,
+				int *bearer_id, bool *lxc)
+{
+	struct tipc_link_entry *le = NULL;
+	bool node_up = false;
+	struct net *peer_net;
+	int rc = 0;
+
+	rcu_read_lock();
+	tipc_node_read_lock(n);
+	node_up = node_is_up(n);
+	peer_net = n->peer_net;
+	tipc_node_read_unlock(n);
+
+	if (node_up && peer_net && check_net(peer_net)) {
+		/* xmit inner linux container */
+		tipc_lxc_xmit(peer_net, list);
+		if (likely(skb_queue_empty(list))) {
+			rcu_read_unlock();
+			*lxc = true;
+			return 0;
+		}
+	}
+	rcu_read_unlock();
+
+	tipc_node_read_lock(n);
+	*bearer_id = n->active_links[selector & 1];
+	if (unlikely(*bearer_id == INVALID_BEARER_ID)) {
+		tipc_node_read_unlock(n);
+		__skb_queue_purge(list);
+		return -EHOSTUNREACH;
+	}
+
+	le = &n->links[*bearer_id];
+	*maddr = le->maddr;
+	spin_lock_bh(&le->lock);
+	rc = tipc_link_xmit(le->link, list, xmitq);
+	spin_unlock_bh(&le->lock);
+	tipc_node_read_unlock(n);
+
+	return rc;
+}
+
 /**
  * tipc_node_xmit() - general link level function for message sending
  * @net: the applicable net namespace
@@ -1694,12 +1743,11 @@ static void tipc_lxc_xmit(struct net *peer_net, struct sk_buff_head *list)
 int tipc_node_xmit(struct net *net, struct sk_buff_head *list,
 		   u32 dnode, int selector)
 {
-	struct tipc_link_entry *le = NULL;
-	struct tipc_node *n;
+	struct tipc_media_addr maddr;
 	struct sk_buff_head xmitq;
-	bool node_up = false;
-	struct net *peer_net;
-	int bearer_id;
+	struct tipc_node *n;
+	int bearer_id = 0;
+	bool lxc = false;
 	int rc;
 
 	if (in_own_node(net, dnode)) {
@@ -1715,42 +1763,66 @@ int tipc_node_xmit(struct net *net, struct sk_buff_head *list,
 		return -EHOSTUNREACH;
 	}
 
-	rcu_read_lock();
-	tipc_node_read_lock(n);
-	node_up = node_is_up(n);
-	peer_net = n->peer_net;
-	tipc_node_read_unlock(n);
-	if (node_up && peer_net && check_net(peer_net)) {
-		/* xmit inner linux container */
-		tipc_lxc_xmit(peer_net, list);
-		if (likely(skb_queue_empty(list))) {
-			rcu_read_unlock();
-			tipc_node_put(n);
-			return 0;
-		}
-	}
-	rcu_read_unlock();
+	__skb_queue_head_init(&xmitq);
+	rc = tipc_node_build_list(n, list, &xmitq, selector, &maddr,
+				  &bearer_id, &lxc);
 
-	tipc_node_read_lock(n);
-	bearer_id = n->active_links[selector & 1];
-	if (unlikely(bearer_id == INVALID_BEARER_ID)) {
-		tipc_node_read_unlock(n);
+	if (lxc) {
 		tipc_node_put(n);
+		return 0;
+	}
+
+	if (unlikely(rc == -ENOBUFS))
+		tipc_node_link_down(n, bearer_id, false);
+	else
+		tipc_bearer_xmit(net, bearer_id, &xmitq, &maddr, n);
+
+	tipc_node_put(n);
+
+	return rc;
+}
+
+/**
+ * tipc_node_distribute() - distribute list of messages to specific destination
+ * @net: the applicable net namespace
+ * @list: chain of buffers containing message
+ * @dnode: address of destination node
+ * @bearer_id: id of the bearer
+ * @selector: a number used for deterministic link selection
+ *
+ * Return:
+ * * 0              - Success
+ * * -ELINKCONG     - Link is congested
+ * * -EHOSTUNREACH  - Host is not reachable
+ * * -EMSGSIZE      - Message's size is too big
+ * * -ENOBUF        - No buffer space is available
+ *
+ */
+int tipc_node_distribute(struct net *net, struct sk_buff_head *list,
+			 u32 dnode, int *bearer_id, int selector)
+{
+	struct tipc_media_addr maddr;
+	struct sk_buff_head xmitq;
+	struct tipc_node *n;
+	bool lxc = false;
+	int rc;
+
+	n = tipc_node_find(net, dnode);
+	if (unlikely(!n)) {
 		__skb_queue_purge(list);
 		return -EHOSTUNREACH;
 	}
 
 	__skb_queue_head_init(&xmitq);
-	le = &n->links[bearer_id];
-	spin_lock_bh(&le->lock);
-	rc = tipc_link_xmit(le->link, list, &xmitq);
-	spin_unlock_bh(&le->lock);
-	tipc_node_read_unlock(n);
+	rc = tipc_node_build_list(n, list, &xmitq, selector, &maddr,
+				  bearer_id, &lxc);
+	if (lxc) {
+		tipc_node_put(n);
+		return 0;
+	}
 
-	if (unlikely(rc == -ENOBUFS))
-		tipc_node_link_down(n, bearer_id, false);
-	else
-		tipc_bearer_xmit(net, bearer_id, &xmitq, &le->maddr, n);
+	if (likely(rc != -ENOBUFS))
+		tipc_bearer_xmit(net, *bearer_id, &xmitq, &maddr, n);
 
 	tipc_node_put(n);
 
