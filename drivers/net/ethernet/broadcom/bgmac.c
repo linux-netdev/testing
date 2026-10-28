@@ -455,7 +455,7 @@ static int bgmac_dma_rx_read(struct bgmac *bgmac, struct bgmac_dma_ring *ring,
 				break;
 			}
 
-			if (len > BGMAC_RX_ALLOC_SIZE) {
+			if (len > BGMAC_RX_MAX_FRAME_SIZE) {
 				if (net_ratelimit())
 					netdev_err(bgmac->net_dev, "Found oversized packet at slot %d, DMA issue!\n",
 						   ring->start);
