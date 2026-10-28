@@ -52,6 +52,7 @@ TEST_PROGS := \
 	icmp_redirect.sh \
 	io_uring_zerocopy_tx.sh \
 	ioam6.sh \
+	ioam6_ecmp.sh \
 	ip6_gre_headroom.sh \
 	ip6_tunnel.sh \
 	ip_defrag.sh \
