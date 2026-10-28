@@ -867,7 +867,7 @@ int ip6_datagram_send_ctl(struct net *net, struct sock *sk,
 				int strict = __ipv6_addr_src_scope(addr_type) <= IPV6_ADDR_SCOPE_LINKLOCAL;
 				if (!ipv6_can_nonlocal_bind(net, inet_sk(sk)) &&
 				    !ipv6_chk_addr_and_flags(net, &src_info->ipi6_addr,
-							     dev, !strict, 0,
+							     dev, !strict, false, 0,
 							     IFA_F_TENTATIVE) &&
 				    !ipv6_chk_acast_addr_src(net, dev,
 							     &src_info->ipi6_addr))

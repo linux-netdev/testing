@@ -794,10 +794,10 @@ int ip6_tnl_rcv_ctl(struct ip6_tnl *t,
 			ldev = dev_get_by_index_rcu(net, p->link);
 
 		if ((ipv6_addr_is_multicast(laddr) ||
-		     likely(ipv6_chk_addr_and_flags(net, laddr, ldev, false,
+		     likely(ipv6_chk_addr_and_flags(net, laddr, ldev, false, false,
 						    0, IFA_F_TENTATIVE))) &&
 		    ((p->flags & IP6_TNL_F_ALLOW_LOCAL_REMOTE) ||
-		     likely(!ipv6_chk_addr_and_flags(net, raddr, ldev, true,
+		     likely(!ipv6_chk_addr_and_flags(net, raddr, ldev, true, false,
 						     0, IFA_F_TENTATIVE))))
 			ret = 1;
 	}
@@ -1059,14 +1059,14 @@ int ip6_tnl_xmit_ctl(struct ip6_tnl *t,
 		if (p->link)
 			ldev = dev_get_by_index_rcu(net, p->link);
 
-		if (unlikely(!ipv6_chk_addr_and_flags(net, laddr, ldev, false,
+		if (unlikely(!ipv6_chk_addr_and_flags(net, laddr, ldev, false, false,
 						      0, IFA_F_TENTATIVE)))
 			pr_warn_ratelimited("%s xmit: Local address not yet configured!\n",
 					    p->name);
 		else if (!(p->flags & IP6_TNL_F_ALLOW_LOCAL_REMOTE) &&
 			 !ipv6_addr_is_multicast(raddr) &&
-			 unlikely(ipv6_chk_addr_and_flags(net, raddr, ldev,
-							  true, 0, IFA_F_TENTATIVE)))
+			 unlikely(ipv6_chk_addr_and_flags(net, raddr, ldev, true,
+							  false, 0, IFA_F_TENTATIVE)))
 			pr_warn_ratelimited("%s xmit: Routing loop! Remote address found on this node!\n",
 					    p->name);
 		else

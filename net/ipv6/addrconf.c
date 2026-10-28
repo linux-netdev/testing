@@ -2004,43 +2004,30 @@ static int ipv6_count_addresses(const struct inet6_dev *idev)
 	return cnt;
 }
 
-int ipv6_chk_addr(struct net *net, const struct in6_addr *addr,
-		  const struct net_device *dev, int strict)
-{
-	return ipv6_chk_addr_and_flags(net, addr, dev, !dev,
-				       strict, IFA_F_TENTATIVE);
-}
-EXPORT_SYMBOL(ipv6_chk_addr);
-
-/* device argument is used to find the L3 domain of interest. If
- * skip_dev_check is set, then the ifp device is not checked against
- * the passed in dev argument. So the 2 cases for addresses checks are:
- *   1. does the address exist in the L3 domain that dev is part of
- *      (skip_dev_check = true), or
- *
- *   2. does the address exist on the specific device
- *      (skip_dev_check = false)
- */
+/* See ipv6_chk_addr_and_flags */
 static struct net_device *
 __ipv6_chk_addr_and_flags(struct net *net, const struct in6_addr *addr,
 			  const struct net_device *dev, bool skip_dev_check,
-			  int strict, u32 banned_flags)
+			  bool skip_l3mdev_check, int strict, u32 banned_flags)
 {
 	unsigned int hash = inet6_addr_hash(net, addr);
-	struct net_device *l3mdev, *ndev;
+	struct net_device *l3mdev = NULL, *ndev;
 	struct inet6_ifaddr *ifp;
 	u32 ifp_flags;
 
-	rcu_read_lock();
+	if (!dev)
+		skip_dev_check = true;
+	if (!skip_dev_check)
+		skip_l3mdev_check = false;
 
-	l3mdev = l3mdev_master_dev_rcu(dev);
-	if (skip_dev_check)
-		dev = NULL;
+	rcu_read_lock();
+	if (dev && !skip_l3mdev_check)
+		l3mdev = l3mdev_master_dev_rcu(dev);
 
 	hlist_for_each_entry_rcu(ifp, &net->ipv6.inet6_addr_lst[hash], addr_lst) {
 		ndev = ifp->idev->dev;
 
-		if (l3mdev_master_dev_rcu(ndev) != l3mdev)
+		if (!skip_l3mdev_check && l3mdev_master_dev_rcu(ndev) != l3mdev)
 			continue;
 
 		/* Decouple optimistic from tentative for evaluation here.
@@ -2051,7 +2038,7 @@ __ipv6_chk_addr_and_flags(struct net *net, const struct in6_addr *addr,
 			    : ifp->flags;
 		if (ipv6_addr_equal(&ifp->addr, addr) &&
 		    !(ifp_flags&banned_flags) &&
-		    (!dev || ndev == dev ||
+		    (skip_dev_check || ndev == dev ||
 		     !(ifp->scope&(IFA_LINK|IFA_HOST) || strict))) {
 			rcu_read_unlock();
 			return ndev;
@@ -2062,15 +2049,46 @@ __ipv6_chk_addr_and_flags(struct net *net, const struct in6_addr *addr,
 	return NULL;
 }
 
+/* The 'dev' argument is used to match the exact device or find the L3 domain of
+ * interest.
+ * The 3 cases for addresses checks are:
+ *   1. With 'skip_dev_check == false': check if 'addr' exists on 'dev'.
+ *   2. With 'skip_dev_check == true && skip_l3mdev_check == false': check if
+ *      'addr' exists on the same L3 domain as 'dev'.
+ *   3. With 'skip_dev_check == true && skip_l3mdev_check == true': check if
+ *      'addr' exists in the entire namespace.
+ * For the purpose of searching in a specific L3 domain, 'dev == NULL' means
+ * "search in the main L3 domain".
+ */
 int ipv6_chk_addr_and_flags(struct net *net, const struct in6_addr *addr,
 			    const struct net_device *dev, bool skip_dev_check,
-			    int strict, u32 banned_flags)
+			    bool skip_l3mdev_check, int strict,
+			    u32 banned_flags)
 {
 	return __ipv6_chk_addr_and_flags(net, addr, dev, skip_dev_check,
-					 strict, banned_flags) ? 1 : 0;
+					 skip_l3mdev_check, strict,
+					 banned_flags) ? 1 : 0;
 }
 EXPORT_SYMBOL(ipv6_chk_addr_and_flags);
 
+/* Check if 'addr' is configured on 'dev'. If 'dev' is NULL, check the entire
+ * main L3 domain
+ */
+int ipv6_chk_addr(struct net *net, const struct in6_addr *addr,
+		  const struct net_device *dev, int strict)
+{
+	return ipv6_chk_addr_and_flags(net, addr, dev, !dev, false,
+				       strict, IFA_F_TENTATIVE);
+}
+EXPORT_SYMBOL(ipv6_chk_addr);
+
+/* Check if 'addr' exists in the entire namespace, in any L3 domain */
+int ipv6_chk_addr_namespace(struct net *net, const struct in6_addr *addr)
+{
+	return ipv6_chk_addr_and_flags(net, addr, NULL, true, true, 0,
+				       IFA_F_TENTATIVE);
+}
+EXPORT_SYMBOL(ipv6_chk_addr_namespace);
 
 /* Compares an address/prefix_len with addresses on device @dev.
  * If one is found it returns true.
@@ -2123,14 +2141,14 @@ EXPORT_SYMBOL(ipv6_chk_prefix);
  * ipv6_dev_find - find the first device with a given source address.
  * @net: the net namespace
  * @addr: the source address
- * @dev: used to find the L3 domain of interest
+ * @dev: used to find the L3 domain of interest (NULL = main L3 domain)
  *
  * The caller should be protected by RCU, or RTNL.
  */
 struct net_device *ipv6_dev_find(struct net *net, const struct in6_addr *addr,
 				 struct net_device *dev)
 {
-	return __ipv6_chk_addr_and_flags(net, addr, dev, !dev, 1,
+	return __ipv6_chk_addr_and_flags(net, addr, dev, !dev, false, 1,
 					 IFA_F_TENTATIVE);
 }
 EXPORT_SYMBOL(ipv6_dev_find);

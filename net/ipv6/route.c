@@ -3492,7 +3492,7 @@ static int ip6_validate_gw(struct net *net, struct fib6_config *cfg,
 	 * prefix route was assigned to, which might be non-loopback.
 	 */
 	if (dev &&
-	    ipv6_chk_addr_and_flags(net, gw_addr, dev, skip_dev, 0, 0)) {
+	    ipv6_chk_addr_and_flags(net, gw_addr, dev, skip_dev, false, 0, 0)) {
 		NL_SET_ERR_MSG(extack, "Gateway can not be a local address");
 		goto out;
 	}
@@ -3543,7 +3543,7 @@ static int ip6_validate_gw(struct net *net, struct fib6_config *cfg,
 	 * egress device has been resolved.
 	 */
 	if (need_addr_check &&
-	    ipv6_chk_addr_and_flags(net, gw_addr, dev, skip_dev, 0, 0)) {
+	    ipv6_chk_addr_and_flags(net, gw_addr, dev, skip_dev, false, 0, 0)) {
 		NL_SET_ERR_MSG(extack, "Gateway can not be a local address");
 		goto out;
 	}

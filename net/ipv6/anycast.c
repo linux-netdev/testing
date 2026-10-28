@@ -82,7 +82,7 @@ int ipv6_sock_ac_join(struct sock *sk, int ifindex, const struct in6_addr *addr)
 	if (ifindex)
 		dev = netdev_get_by_index(net, ifindex, &dev_tracker, GFP_KERNEL);
 
-	if (ipv6_chk_addr_and_flags(net, addr, dev, true, 0, IFA_F_TENTATIVE)) {
+	if (ipv6_chk_addr_and_flags(net, addr, dev, true, false, 0, IFA_F_TENTATIVE)) {
 		err = -EINVAL;
 		goto error;
 	}
