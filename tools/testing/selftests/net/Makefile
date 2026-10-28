@@ -56,6 +56,8 @@ TEST_PROGS := \
 	ip6_tunnel.sh \
 	ip_defrag.sh \
 	ip_local_port_range.sh \
+	ip_saddr.sh \
+	ipv6_anycast.sh \
 	ipv6_flowlabel.sh \
 	ipv6_force_forwarding.sh \
 	ipv6_route_update_soft_lockup.sh \
@@ -63,6 +65,7 @@ TEST_PROGS := \
 	l2_tos_ttl_inherit.sh \
 	l2tp.sh \
 	link_netns.py \
+	loopback_subnet.sh \
 	lwt_dst_cache_ref_loop.sh \
 	macvlan_mcast_shared_mac.sh \
 	msg_zerocopy.sh \
@@ -153,6 +156,7 @@ TEST_GEN_FILES := \
 	ioam6_parser \
 	ip_defrag \
 	ip_local_port_range \
+	ip_saddr \
 	ipsec \
 	ipv6_flowlabel \
 	msg_zerocopy \
