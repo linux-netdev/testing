@@ -1134,6 +1134,33 @@ out:
 	return dst;
 }
 
+/* Check if the address belongs to the host */
+static bool ip6_is_local_saddr(struct net *net, struct in6_addr *saddr)
+{
+	struct fib6_result fib_result;
+	struct flowi6 fl6;
+	bool result;
+
+	if (ipv6_chk_addr_namespace(net, saddr) ||
+	    ipv6_chk_acast_addr_src(net, NULL, saddr))
+		return true;
+
+	/* Fallback to FIB local routes so that loopback subnets work. */
+	memset(&fl6, 0, sizeof(fl6));
+	fl6.daddr = *saddr;
+	result = false;
+
+	rcu_read_lock();
+	if (fib6_lookup(net, 0, &fl6, &fib_result, 0) == 0 &&
+	    fib_result.fib6_type == RTN_LOCAL &&
+	    fib_result.nh->nh_common.nhc_dev) {
+		result = true;
+	}
+	rcu_read_unlock();
+
+	return result;
+}
+
 static int ip6_dst_lookup_tail(struct net *net, const struct sock *sk,
 			       struct dst_entry **dst, struct flowi6 *fl6)
 {
@@ -1190,6 +1217,17 @@ static int ip6_dst_lookup_tail(struct net *net, const struct sock *sk,
 	err = (*dst)->error;
 	if (err)
 		goto out_err_release;
+
+	/* From RFC 4862, "an invalid address MUST NOT be used as the source
+	 * address of outbound packets". Exceptions to this must set the ANYSRC
+	 * flag (i.e. transparent sockets).
+	 */
+	if (!ipv6_addr_any(&fl6->saddr) &&
+	    !(fl6->flowi6_flags & FLOWI_FLAG_ANYSRC) &&
+	    !ip6_is_local_saddr(net, &fl6->saddr)) {
+		err = -ENETUNREACH;
+		goto out_err_release;
+	}
 
 #ifdef CONFIG_IPV6_OPTIMISTIC_DAD
 	/*

@@ -393,6 +393,11 @@ static struct dst_entry *icmpv6_route_lookup(struct net *net,
 	if (err)
 		goto relookup_failed;
 
+	/* New src is the original dst. It may not be a local address, like with
+	 * encapsulated traffic.
+	 */
+	fl2.flowi6_flags |= FLOWI_FLAG_ANYSRC;
+
 	err = ip6_dst_lookup(net, sk, &dst2, &fl2);
 	if (err)
 		goto relookup_failed;
