@@ -66,6 +66,7 @@ static struct sk_buff *esp6_gro_receive(struct list_head *head,
 
 	if (!pskb_pull(skb, offset))
 		return NULL;
+	skb_gro_frag0_invalidate(skb);
 
 	if (xfrm_parse_spi(skb, IPPROTO_ESP, &spi, &seq) != 0)
 		goto out;
