@@ -185,6 +185,10 @@ void phy_link_topo_del_phy(struct net_device *dev,
 	if (!topo)
 		return;
 
+	pdn = xa_load(&topo->phys, phy->phyindex);
+	if (!pdn || pdn->phy != phy)
+		return;
+
 	list_for_each_entry(port, &phy->ports, head)
 		phy_link_topo_del_port(dev, port);
 
