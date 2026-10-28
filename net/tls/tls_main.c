@@ -1067,6 +1067,12 @@ static int tls_init(struct sock *sk)
 	if (sk->sk_state != TCP_ESTABLISHED)
 		return -ENOTCONN;
 
+	/* TLS and KCM are mutually exclusive. kcm_attach() rejects sockets
+	 * with a ULP; both run under the socket lock, so this cannot race.
+	 */
+	if (sock_flag(sk, SOCK_KCM))
+		return -EINVAL;
+
 	/* allocate tls context */
 	write_lock_bh(&sk->sk_callback_lock);
 	ctx = tls_ctx_create(sk);
