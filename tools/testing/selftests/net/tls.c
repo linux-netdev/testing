@@ -7,19 +7,24 @@
 #include <error.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 
+#include <linux/bpf.h>
+#include <linux/kcm.h>
 #include <linux/tls.h>
 #include <linux/tcp.h>
 #include <linux/socket.h>
 
 #include <sys/epoll.h>
+#include <sys/ioctl.h>
 #include <sys/types.h>
 #include <sys/sendfile.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 
 #include "kselftest_harness.h"
 
@@ -3521,6 +3526,145 @@ TEST(data_steal) {
 
 	close(fd);
 	close(cfd);
+}
+
+#ifndef AF_KCM
+#define AF_KCM 41
+#endif
+
+/* KCM and TLS are mutually exclusive, in either order. */
+FIXTURE(kcm)
+{
+	int fd, cfd, kcm, bpf;
+};
+
+FIXTURE_SETUP(kcm)
+{
+	/* KCM parser: each message is everything queued (skb->len) */
+	struct bpf_insn insns[] = {
+		{ .code = BPF_LDX | BPF_MEM | BPF_W, .dst_reg = BPF_REG_0,
+		  .src_reg = BPF_REG_1,
+		  .off = offsetof(struct __sk_buff, len) },
+		{ .code = BPF_JMP | BPF_EXIT },
+	};
+	union bpf_attr attr = {};
+	struct sockaddr_in addr;
+	socklen_t len;
+	int sfd, ret;
+
+	self->fd = -1;
+	self->cfd = -1;
+	self->bpf = -1;
+
+	self->kcm = socket(AF_KCM, SOCK_DGRAM, KCMPROTO_CONNECTED);
+	if (self->kcm < 0)
+		SKIP(return, "no KCM support");
+
+	attr.prog_type = BPF_PROG_TYPE_SOCKET_FILTER;
+	attr.insns = (unsigned long)insns;
+	attr.insn_cnt = ARRAY_SIZE(insns);
+	attr.license = (unsigned long)"GPL";
+	self->bpf = syscall(__NR_bpf, BPF_PROG_LOAD, &attr, sizeof(attr));
+	if (self->bpf < 0)
+		SKIP(return, "can't load KCM parser BPF program");
+
+	len = sizeof(addr);
+	addr.sin_family = AF_INET;
+	addr.sin_addr.s_addr = htonl(INADDR_ANY);
+	addr.sin_port = 0;
+
+	self->fd = socket(AF_INET, SOCK_STREAM, 0);
+	sfd = socket(AF_INET, SOCK_STREAM, 0);
+
+	ret = bind(sfd, &addr, sizeof(addr));
+	ASSERT_EQ(ret, 0);
+	ret = listen(sfd, 10);
+	ASSERT_EQ(ret, 0);
+	ret = getsockname(sfd, &addr, &len);
+	ASSERT_EQ(ret, 0);
+	ret = connect(self->fd, &addr, sizeof(addr));
+	ASSERT_EQ(ret, 0);
+	self->cfd = accept(sfd, &addr, &len);
+	ASSERT_GE(self->cfd, 0);
+
+	close(sfd);
+}
+
+FIXTURE_TEARDOWN(kcm)
+{
+	close(self->kcm);
+	close(self->bpf);
+	close(self->fd);
+	close(self->cfd);
+}
+
+static int kcm_attach(struct _test_data_kcm *self)
+{
+	struct kcm_attach attach = { .fd = self->cfd, .bpf_fd = self->bpf };
+
+	return ioctl(self->kcm, SIOCKCMATTACH, &attach);
+}
+
+static int kcm_unattach(struct _test_data_kcm *self)
+{
+	struct kcm_unattach unattach = { .fd = self->cfd };
+
+	return ioctl(self->kcm, SIOCKCMUNATTACH, &unattach);
+}
+
+static void kcm_tls_then_attach(struct __test_metadata *_metadata,
+				struct _test_data_kcm *self, int optname)
+{
+	struct tls_crypto_info_keys tls;
+	int ret;
+
+	ret = setsockopt(self->cfd, IPPROTO_TCP, TCP_ULP, "tls", sizeof("tls"));
+	if (ret && errno == ENOENT)
+		SKIP(return, "no TLS support");
+	ASSERT_EQ(ret, 0);
+
+	tls_crypto_info_init(TLS_1_2_VERSION, TLS_CIPHER_AES_GCM_128, &tls, 0);
+	ret = setsockopt(self->cfd, SOL_TLS, optname, &tls, tls.len);
+	ASSERT_EQ(ret, 0);
+
+	EXPECT_EQ(kcm_attach(self), -1);
+	EXPECT_EQ(errno, EOPNOTSUPP);
+}
+
+TEST_F(kcm, tls_rx_then_attach)
+{
+	kcm_tls_then_attach(_metadata, self, TLS_RX);
+}
+
+TEST_F(kcm, tls_tx_then_attach)
+{
+	kcm_tls_then_attach(_metadata, self, TLS_TX);
+}
+
+TEST_F(kcm, attach_then_tls)
+{
+	int ret;
+
+	ASSERT_EQ(kcm_attach(self), 0);
+
+	ret = setsockopt(self->cfd, IPPROTO_TCP, TCP_ULP, "tls", sizeof("tls"));
+	if (ret && errno == ENOENT)
+		SKIP(return, "no TLS support");
+	EXPECT_EQ(ret, -1);
+	EXPECT_EQ(errno, EINVAL);
+}
+
+TEST_F(kcm, tls_after_unattach)
+{
+	int ret;
+
+	ASSERT_EQ(kcm_attach(self), 0);
+	ASSERT_EQ(kcm_unattach(self), 0);
+
+	ret = setsockopt(self->cfd, IPPROTO_TCP, TCP_ULP, "tls", sizeof("tls"));
+	if (ret && errno == ENOENT)
+		SKIP(return, "no TLS support");
+	EXPECT_EQ(ret, 0);
 }
 
 static void __attribute__((constructor)) fips_check(void) {
