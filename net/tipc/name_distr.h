@@ -75,5 +75,6 @@ void tipc_named_rcv(struct net *net, struct sk_buff_head *namedq,
 void tipc_named_reinit(struct net *net);
 void tipc_publ_notify(struct net *net, struct list_head *nsub_list,
 		      u32 addr, u16 capabilities);
+int tipc_named_distribute(struct net *net, u32 dnode);
 
 #endif
