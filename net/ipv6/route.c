@@ -2342,6 +2342,60 @@ struct dst_entry *ip6_route_input_lookup(struct net *net,
 }
 EXPORT_SYMBOL_GPL(ip6_route_input_lookup);
 
+/* RFC 9486 (C2) requires that the ECMP hash of a packet carrying IOAM
+ * options is the same as the hash of the identical packet without them.
+ * Recover the nexthdr if its Hop-by-Hop header carried only IOAM options
+ * and padding, every other packet is hashed exactly as before.
+ */
+static u8 ip6_nexthdr_without_ioam(const struct sk_buff *skb,
+				   const struct ipv6hdr *iph)
+{
+	const struct ipv6_opt_hdr *hhdr;
+	struct ipv6_opt_hdr hbuf;
+	bool has_ioam = false;
+	u8 obuf[2], *opt;
+	int off, len, i;
+
+	if (iph->nexthdr != NEXTHDR_HOP)
+		return iph->nexthdr;
+
+	/* The Hop-by-Hop header was already pulled and validated by
+	 * ipv6_parse_hopopts() before routing, so this walk is safe.
+	 */
+	off = sizeof(*iph);
+	hhdr = skb_header_pointer(skb, off, sizeof(hbuf), &hbuf);
+	if (!hhdr)
+		return iph->nexthdr;
+
+	len = (hhdr->hdrlen + 1) << 3;
+
+	for (i = 2; i < len; ) {
+		opt = skb_header_pointer(skb, off + i, sizeof(obuf), obuf);
+		if (!opt)
+			return iph->nexthdr;
+		if (opt[0] == IPV6_TLV_PAD1) {
+			i++;
+			continue;
+		}
+		if (opt[0] == IPV6_TLV_PADN) {
+			i += opt[1] + 2;
+			continue;
+		}
+		if (opt[0] != IPV6_TLV_IOAM && opt[0] != IPV6_TLV_IOAM_DEX)
+			return iph->nexthdr;
+
+		has_ioam = true;
+
+		/* Keep searching for the next TLV. As long as non-IOAM
+		 * options (Router Alert, Jumbo, etc.) exist in the HBH
+		 * header, we should preserve the original NEXTHDR_HOP.
+		 */
+		i += opt[1] + 2;
+	}
+
+	return has_ioam ? hhdr->nexthdr : iph->nexthdr;
+}
+
 static void ip6_multipath_l3_keys(const struct sk_buff *skb,
 				  struct flow_keys *keys,
 				  struct flow_keys *flkeys)
@@ -2353,8 +2407,10 @@ static void ip6_multipath_l3_keys(const struct sk_buff *skb,
 	const struct icmp6hdr *icmph;
 	struct ipv6hdr _inner_iph;
 	struct icmp6hdr _icmph;
+	u8 nexthdr;
 
-	if (likely(outer_iph->nexthdr != IPPROTO_ICMPV6))
+	nexthdr = ip6_nexthdr_without_ioam(skb, outer_iph);
+	if (likely(nexthdr != IPPROTO_ICMPV6))
 		goto out;
 
 	icmph = skb_header_pointer(skb, skb_transport_offset(skb),
@@ -2383,7 +2439,14 @@ out:
 		keys->addrs.v6addrs.src = key_iph->saddr;
 		keys->addrs.v6addrs.dst = key_iph->daddr;
 		keys->tags.flow_label = ip6_flowlabel(key_iph);
-		keys->basic.ip_proto = key_iph->nexthdr;
+		/* Only for the outer header: an ICMPv6-quoted inner header
+		 * is payload, and its (possibly truncated) extension
+		 * headers must not be walked here.
+		 */
+		if (key_iph == outer_iph)
+			keys->basic.ip_proto = nexthdr;
+		else
+			keys->basic.ip_proto = key_iph->nexthdr;
 	}
 }
 
