@@ -747,6 +747,7 @@ static struct sk_buff *udp_gro_receive_segment(struct list_head *head,
 					NAPI_GRO_CB(skb)->flush = 1;
 					return NULL;
 				}
+				skb_gro_frag0_invalidate(skb);
 				if ((skb->ip_summed != p->ip_summed) ||
 				    (skb->csum_level != p->csum_level)) {
 					NAPI_GRO_CB(skb)->flush = 1;
