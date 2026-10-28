@@ -752,7 +752,7 @@ static struct nft_trans *nft_trans_rule_add(struct nft_ctx *ctx, int msg_type,
 
 static int nft_delrule(struct nft_ctx *ctx, struct nft_rule *rule)
 {
-	struct nft_flow_rule *flow;
+	struct nft_flow_rule *flow = NULL;
 	struct nft_trans *trans;
 	int err;
 
@@ -773,6 +773,8 @@ static int nft_delrule(struct nft_ctx *ctx, struct nft_rule *rule)
 	err = nf_tables_delrule_deactivate(ctx, rule);
 	if (err < 0) {
 		nft_trans_destroy(trans);
+		if (flow)
+			nft_flow_rule_destroy(flow);
 		return err;
 	}
 	nft_rule_expr_deactivate(ctx, rule, NFT_TRANS_PREPARE);
