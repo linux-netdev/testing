@@ -1023,7 +1023,7 @@ static int dsa_user_set_eeprom(struct net_device *dev,
 }
 
 static void dsa_user_get_strings(struct net_device *dev,
-				 uint32_t stringset, uint8_t *data)
+				 u32 stringset, u8 *data)
 {
 	struct dsa_port *dp = dsa_user_to_port(dev);
 	struct dsa_switch *ds = dp->ds;
@@ -1043,7 +1043,7 @@ static void dsa_user_get_strings(struct net_device *dev,
 
 static void dsa_user_get_ethtool_stats(struct net_device *dev,
 				       struct ethtool_stats *stats,
-				       uint64_t *data)
+				       u64 *data)
 {
 	struct dsa_port *dp = dsa_user_to_port(dev);
 	struct dsa_switch *ds = dp->ds;
