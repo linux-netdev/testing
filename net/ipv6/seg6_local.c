@@ -310,6 +310,10 @@ static struct ipv6_sr_hdr *advance_nextseg(struct sk_buff *skb,
 	/* skb_ensure_writable() may change skb pointers; evaluate srh again */
 	srh = (struct ipv6_sr_hdr *)(skb->data + srhoff);
 
+	if (srh->segments_left == 0) {
+		*reason = SKB_DROP_REASON_NOT_SPECIFIED;
+		return NULL;
+	}
 	srh->segments_left--;
 	addr = srh->segments + srh->segments_left;
 	ipv6_hdr(skb)->daddr = *addr;
