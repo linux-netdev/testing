@@ -242,6 +242,7 @@ int skb_gro_receive_list(struct sk_buff *p, struct sk_buff *skb)
 		NAPI_GRO_CB(skb)->flush = 1;
 		return -ENOMEM;
 	}
+	skb_gro_frag0_invalidate(skb);
 
 	if (NAPI_GRO_CB(p)->last == p)
 		skb_shinfo(p)->frag_list = skb;
