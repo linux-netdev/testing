@@ -26,6 +26,7 @@ TEST_PROGS := \
 	cmsg_so_priority.sh \
 	cmsg_time.sh \
 	cork_fragsize.py \
+	devinet_conf.sh \
 	double_udp_encap.sh \
 	drop_monitor_tests.sh \
 	ecmp_rehash.sh \
