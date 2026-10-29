@@ -1235,8 +1235,13 @@ int rvu_mbox_handler_cgx_set_link_mode(struct rvu *rvu,
 	else
 		linkmodes = &rvu->fwdata->cgx_fw_data[cgx_idx][lmac];
 
+	rvu_nix_tl1_xoff_wait_for_link_credits(rvu, req->hdr.pcifunc);
+
 	rsp->status = cgx_set_link_mode(cgxd, req->args, linkmodes,
 					cgx_idx, lmac);
+
+	rvu_nix_tl1_xoff_clear(rvu, req->hdr.pcifunc);
+
 	return 0;
 }
 
