@@ -2555,14 +2555,37 @@ static int devinet_conf_ifindex(struct net *net, struct ipv4_devconf *cnf)
 	}
 }
 
+static int devinet_conf_int_conv(bool *negp, unsigned long *u_ptr, int *k_ptr,
+				 int dir, const struct ctl_table *ctl)
+{
+	int ret;
+
+	if (dir)
+		ret = proc_int_u2k_conv_uop(u_ptr, k_ptr, negp, NULL);
+	else
+		ret = proc_int_k2u_conv_kop(u_ptr, k_ptr, negp, NULL);
+
+	if (!ret && dir)
+		*(bool *)ctl->extra1 = true;
+
+	return ret;
+}
+
 static int devinet_conf_proc(const struct ctl_table *ctl, int write,
 			     void *buffer, size_t *lenp, loff_t *ppos)
 {
 	int old_value = *(int *)ctl->data;
-	int ret = proc_dointvec(ctl, write, buffer, lenp, ppos);
-	int new_value = *(int *)ctl->data;
+	struct ctl_table tmp = *ctl;
+	bool parsed = false;
+	int ret, new_value;
 
-	if (write) {
+	/* An ignored write returns success without calling the converter. */
+	tmp.extra1 = &parsed;
+	ret = proc_dointvec_conv(&tmp, write, buffer, lenp, ppos,
+				 devinet_conf_int_conv);
+	new_value = *(int *)ctl->data;
+
+	if (write && !ret && parsed) {
 		struct ipv4_devconf *cnf = ctl->extra1;
 		int i = (int *)ctl->data - cnf->data;
 		struct net *net = ctl->extra2;
