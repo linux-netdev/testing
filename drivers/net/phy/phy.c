@@ -1421,12 +1421,16 @@ static irqreturn_t phy_interrupt(int irq, void *phy_dat)
 
 		if (netdev) {
 			struct device *parent = netdev->dev.parent;
+			/* Without WoL, a MAC that manages PHY PM takes the
+			 * link down itself: that interrupt is not a wakeup.
+			 */
+			bool may_wake = !phydev->mac_managed_pm;
 
 			if (netdev->ethtool->wol_enabled)
 				pm_system_wakeup();
-			else if (device_may_wakeup(&netdev->dev))
+			else if (may_wake && device_may_wakeup(&netdev->dev))
 				pm_wakeup_dev_event(&netdev->dev, 0, true);
-			else if (parent && device_may_wakeup(parent))
+			else if (may_wake && parent && device_may_wakeup(parent))
 				pm_wakeup_dev_event(parent, 0, true);
 		}
 
@@ -1507,6 +1511,17 @@ EXPORT_SYMBOL(phy_request_interrupt);
 void phy_free_interrupt(struct phy_device *phydev)
 {
 	phy_disable_interrupts(phydev);
+
+	/* The PHY is reachable: stop postponing, and while our handler is still
+	 * registered re-enable a line that a postponed interrupt left disabled.
+	 */
+	phydev->irq_suspended = false;
+	synchronize_irq(phydev->irq);
+	if (phydev->irq_rerun) {
+		phydev->irq_rerun = false;
+		enable_irq(phydev->irq);
+	}
+
 	free_irq(phydev->irq, phydev);
 }
 EXPORT_SYMBOL(phy_free_interrupt);
