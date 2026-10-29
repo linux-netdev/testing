@@ -1347,7 +1347,7 @@ static inline struct ipv6_rt_hdr *ip6_rthdr_dup(struct ipv6_rt_hdr *src,
 	return src ? kmemdup(src, (src->hdrlen + 1) * 8, gfp) : NULL;
 }
 
-static void ip6_append_data_mtu(unsigned int *mtu,
+static bool ip6_append_data_mtu(unsigned int *mtu,
 				int *maxfraglen,
 				unsigned int fragheaderlen,
 				struct sk_buff *skb,
@@ -1357,8 +1357,20 @@ static void ip6_append_data_mtu(unsigned int *mtu,
 	if (!(rt->dst.flags & DST_XFRM_TUNNEL)) {
 		if (!skb) {
 			/* first fragment, reserve header_len */
-			*mtu = orig_mtu - rt->dst.header_len;
+			int new_mtu = (int)orig_mtu - (int)rt->dst.header_len;
 
+			/*
+			 * With a transport-mode xfrm the ESP/AH header is
+			 * counted in dst.header_len but not in
+			 * fragheaderlen, so this recompute can push
+			 * maxfraglen below fragheaderlen (or wrap it),
+			 * defeating the datalen clamp and leading to
+			 * skb_over_panic() from skb_put().
+			 */
+			if (new_mtu < (int)(fragheaderlen +
+					    sizeof(struct frag_hdr) + 8))
+				return false;
+			*mtu = new_mtu;
 		} else {
 			/*
 			 * this fragment is not first, the headers
@@ -1369,6 +1381,8 @@ static void ip6_append_data_mtu(unsigned int *mtu,
 		*maxfraglen = ((*mtu - fragheaderlen) & ~7)
 			      + fragheaderlen - sizeof(struct frag_hdr);
 	}
+
+	return true;
 }
 
 static int ip6_setup_cork(struct sock *sk, struct inet_cork_full *cork,
@@ -1499,12 +1513,22 @@ static int __ip6_append_data(struct sock *sk,
 		     (opt ? opt->opt_flen + opt->opt_nflen : 0) +
 		     rt->rt6i_nfheader_len;
 
-	if (mtu <= fragheaderlen ||
-	    ((mtu - fragheaderlen) & ~7) + fragheaderlen <= sizeof(struct frag_hdr))
+	if (mtu <= fragheaderlen)
 		goto emsgsize;
 
 	maxfraglen = ((mtu - fragheaderlen) & ~7) + fragheaderlen -
 		     sizeof(struct frag_hdr);
+
+	/*
+	 * Each non-final fragment must leave room for at least 8 bytes of
+	 * payload after the fragment header, matching ip6_fragment()'s
+	 * mtu < hlen + sizeof(struct frag_hdr) + 8 check.  This rejects
+	 * MTUs that make maxfraglen underflow below fragheaderlen and
+	 * defeat the datalen clamp, which leads to skb_over_panic() from
+	 * skb_put().
+	 */
+	if (maxfraglen < fragheaderlen + sizeof(struct frag_hdr) + 8)
+		goto emsgsize;
 
 	/* as per RFC 7112 section 5, the entire IPv6 Header Chain must fit
 	 * the first fragment
@@ -1635,10 +1659,11 @@ alloc_new_skb:
 			else
 				fraggap = 0;
 			/* update mtu and maxfraglen if necessary */
-			if (!skb || !skb_prev)
-				ip6_append_data_mtu(&mtu, &maxfraglen,
-						    fragheaderlen, skb, rt,
-						    orig_mtu);
+			if ((!skb || !skb_prev) &&
+			    !ip6_append_data_mtu(&mtu, &maxfraglen,
+						 fragheaderlen, skb, rt,
+						 orig_mtu))
+				goto emsgsize;
 
 			skb_prev = skb;
 
