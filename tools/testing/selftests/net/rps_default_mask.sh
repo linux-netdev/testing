@@ -45,7 +45,30 @@ chk_rps() {
 	fi
 }
 
+chk_rps_default_mask() {
+	local rps_mask expected_rps_mask=$2
+	local msg=$1
+
+	rps_mask=$(cat /proc/sys/net/core/rps_default_mask)
+	printf "%-60s" "$msg"
+
+	rps_mask=${rps_mask//,}
+	if [ "$rps_mask" -eq "$expected_rps_mask" ]; then
+		echo "[ ok ]"
+	else
+		echo "[fail] expected $expected_rps_mask found $rps_mask"
+		ret=1
+	fi
+}
+
 trap cleanup EXIT
+
+echo 1 > /proc/sys/net/core/rps_default_mask
+if echo "zz,00000003" > /proc/sys/net/core/rps_default_mask 2>/dev/null; then
+	echo "invalid rps_default_mask write unexpectedly succeeded"
+	ret=1
+fi
+chk_rps_default_mask "failed write doesn't change rps_default_mask" 1
 
 echo 0 > /proc/sys/net/core/rps_default_mask
 setup
