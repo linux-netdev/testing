@@ -925,6 +925,24 @@ err_del_group_srcs:
 	return err;
 }
 
+static bool br_mdb_src_addr_is_same(const struct br_ip *a,
+				    const struct br_ip *b)
+{
+	if (a->proto != b->proto)
+		return false;
+
+	switch (a->proto) {
+	case htons(ETH_P_IP):
+		return a->src.ip4 == b->src.ip4;
+#if IS_ENABLED(CONFIG_IPV6)
+	case htons(ETH_P_IPV6):
+		return ipv6_addr_equal(&a->src.ip6, &b->src.ip6);
+#endif
+	}
+
+	return false;
+}
+
 static int br_mdb_replace_group_srcs(const struct br_mdb_config *cfg,
 				     struct net_bridge_port_group *pg,
 				     struct net_bridge_mcast *brmctx,
@@ -932,7 +950,38 @@ static int br_mdb_replace_group_srcs(const struct br_mdb_config *cfg,
 {
 	struct net_bridge_group_src *ent;
 	struct hlist_node *tmp;
-	int err;
+	unsigned int num_new = 0;
+	int i, j, err;
+
+	/* Sources that already exist in the port group are refreshed, not
+	 * added, so only the request sources that are not in the group yet
+	 * consume a new entry.  All request sources are added before the
+	 * sources that are not part of the request are pruned, so the
+	 * transient source count can exceed PG_SRC_ENT_LIMIT even when the
+	 * resulting source list fits in it.  br_mdb_add_group_srcs() would
+	 * then fail with -ENOSPC and its unwind would delete every source it
+	 * processed, including the pre-existing ones it just refreshed,
+	 * which the error path below cannot restore.  Detect this case
+	 * upfront so that a rejected NLM_F_REPLACE changes no state.
+	 */
+	for (i = 0; i < cfg->num_src_entries; i++) {
+		struct br_ip *addr = &cfg->src_entries[i].addr;
+
+		if (br_multicast_find_group_src(pg, addr))
+			continue;
+
+		for (j = 0; j < i; j++)
+			if (br_mdb_src_addr_is_same(addr,
+						    &cfg->src_entries[j].addr))
+				break;
+		if (j == i)
+			num_new++;
+	}
+
+	if (pg->src_ents + num_new > PG_SRC_ENT_LIMIT) {
+		NL_SET_ERR_MSG_MOD(extack, "Failed to add new source entry");
+		return -ENOSPC;
+	}
 
 	hlist_for_each_entry(ent, &pg->src_list, node)
 		ent->flags |= BR_SGRP_F_DELETE;
