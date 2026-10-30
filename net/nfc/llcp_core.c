@@ -1638,6 +1638,8 @@ void nfc_llcp_recv(void *data, struct sk_buff *skb, int err)
 
 	if (err < 0) {
 		pr_err("LLCP PDU receive err %d\n", err);
+		/* skb may carry the response even when the exchange failed */
+		kfree_skb(skb);
 		return;
 	}
 
