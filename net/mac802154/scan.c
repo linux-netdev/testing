@@ -353,7 +353,6 @@ int mac802154_process_beacon(struct ieee802154_local *local,
 static int mac802154_transmit_beacon(struct ieee802154_local *local,
 				     struct wpan_dev *wpan_dev)
 {
-	struct cfg802154_beacon_request *beacon_req;
 	struct ieee802154_sub_if_data *sdata;
 	struct sk_buff *skb;
 	int ret;
@@ -365,18 +364,8 @@ static int mac802154_transmit_beacon(struct ieee802154_local *local,
 	if (!skb)
 		return -ENOBUFS;
 
-	rcu_read_lock();
-	beacon_req = rcu_dereference(local->beacon_req);
-	if (unlikely(!beacon_req)) {
-		rcu_read_unlock();
-		kfree_skb(skb);
-		return -EINVAL;
-	}
-
-	sdata = IEEE802154_WPAN_DEV_TO_SUB_IF(beacon_req->wpan_dev);
+	sdata = IEEE802154_WPAN_DEV_TO_SUB_IF(wpan_dev);
 	skb->dev = sdata->dev;
-
-	rcu_read_unlock();
 
 	ret = ieee802154_beacon_push(skb, &local->beacon);
 	if (ret) {
