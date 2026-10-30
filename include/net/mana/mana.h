@@ -343,6 +343,8 @@ struct mana_cq {
 	/* Cumulative TX completions fed to DIM. Updated and read only in
 	 * NAPI context (mana_poll_tx_cq() / mana_update_tx_dim()), so they
 	 * measure the hardware completion rate and need no u64_stats_sync.
+	 * The TX drain in mana_dealloc_queues() also updates them, but only
+	 * after NAPI is disabled and the DIM work is cancelled.
 	 */
 	u64 tx_dim_pkts;
 	u64 tx_dim_bytes;

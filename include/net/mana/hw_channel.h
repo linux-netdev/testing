@@ -179,6 +179,7 @@ struct hw_channel_context {
 	struct gdma_dev *gdma_dev;
 	struct device *dev;
 
+	bool hwc_dead;
 	u16 num_inflight_msg;
 	u32 max_req_msg_size;
 
