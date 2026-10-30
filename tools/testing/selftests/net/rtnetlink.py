@@ -266,7 +266,7 @@ def ipv6_route_del_reason_expired() -> None:
             ksft_eq(attrs.get('del-reason'), 'expired')
 
 
-def _send_ra(sock, ifindex, lifetime, rio=None, pio=None):
+def _send_ra(sock, ifindex, lifetime, rio=None, pio=None, slaac_pios=()):
     """The kernel fills in the ICMPv6 checksum on raw ICMPv6 sockets."""
 
     # type, code, cksum, hop limit, flags, router lifetime,
@@ -281,6 +281,11 @@ def _send_ra(sock, ifindex, lifetime, rio=None, pio=None):
         prefix, plen, valid_lft = pio
         # RFC 4861 prefix information option, on-link only (L set, A clear)
         ra += struct.pack('!BBBBIII', 3, 4, plen, 0x80, valid_lft, 0, 0)
+        ra += socket.inet_pton(socket.AF_INET6, prefix)
+    for prefix, plen, valid_lft in slaac_pios:
+        # RFC 4861 prefix information option, on-link and autonomous
+        ra += struct.pack('!BBBBIII', 3, 4, plen, 0xc0, valid_lft,
+                          valid_lft, 0)
         ra += socket.inet_pton(socket.AF_INET6, prefix)
     sock.sendto(ra, ('ff02::1', 0, 0, ifindex))
 
@@ -380,6 +385,77 @@ def ipv6_route_del_reason_absent() -> None:
         if attrs is not None:
             ksft_not_in('del-reason', attrs,
                         "user deletion must not carry del-reason")
+
+
+def _ipv6_addr_lifetimes(ns, ifname):
+    """Map each global IPv6 address on ifname to (valid, preferred)."""
+
+    addrs = ip(f"-6 addr show dev {ifname} scope global", json=True, ns=ns)
+    return {a['local']: (a['valid_life_time'], a['preferred_life_time'])
+            for a in addrs[0]['addr_info'] if 'local' in a}
+
+
+def ipv6_ra_pio_manual_addr_lifetime() -> None:
+    """
+    A PIO must refresh the lifetimes of SLAAC addresses only (RFC 4862
+    Section 5.5.3 e). A manually added address that matches the address
+    SLAAC would form keeps its lifetimes, unless it was added with
+    mngtmpaddr.
+    """
+
+    forever = 0xffffffff
+    lft = 600
+    # EUI-64 interface identifier of 02:00:00:00:00:01
+    iid = '::ff:fe00:1'
+    manual = '2001:db8:7' + iid
+    mngtmp = '2001:db8:8' + iid
+    slaac = '2001:db8:9' + iid
+
+    with NetNS() as ns_h, NetNS() as ns_r:
+        ip(f"link add veth0 netns {ns_h} type veth peer name veth1 netns {ns_r}")
+        with NetNSEnter(str(ns_h)):
+            _write_ipv6_sysctl("conf/veth0/accept_ra", 2)
+            _write_ipv6_sysctl("conf/veth0/accept_dad", 0)
+            _write_ipv6_sysctl("conf/veth0/addr_gen_mode", 0)
+        with NetNSEnter(str(ns_r)):
+            _write_ipv6_sysctl("conf/veth1/accept_dad", 0)
+        ip("link set dev veth0 address 02:00:00:00:00:01", ns=str(ns_h))
+        ip(f"-6 addr add {manual}/64 dev veth0 nodad", ns=str(ns_h))
+        ip(f"-6 addr add {mngtmp}/64 dev veth0 nodad mngtmpaddr",
+           ns=str(ns_h))
+        ip("link set dev veth0 up", ns=str(ns_h))
+        ip("link set dev veth1 up", ns=str(ns_r))
+
+        sock, ifindex = _ra_router_sock(ns_r, "veth1")
+        # The PIOs are processed in order, so once the SLAAC address
+        # shows up the other two prefixes have been handled as well.
+        pios = [('2001:db8:7::', 64, lft), ('2001:db8:8::', 64, lft),
+                ('2001:db8:9::', 64, lft)]
+
+        lfts = {}
+        for _ in range(20):
+            try:
+                _send_ra(sock, ifindex, 0, slaac_pios=pios)
+            except OSError:
+                # router link-local address still tentative
+                pass
+            time.sleep(0.2)
+            lfts = _ipv6_addr_lifetimes(str(ns_h), "veth0")
+            if slaac in lfts:
+                break
+
+        ksft_in(slaac, lfts, "RA did not create the SLAAC address")
+        if slaac not in lfts:
+            return
+
+        ksft_eq(lfts[manual], (forever, forever),
+                "RA changed the lifetimes of a manually added address")
+        # valid_lft is not lowered below two hours (RFC 4862 5.5.3 e),
+        # so only the preferred lifetime follows the PIO
+        ksft_true(0 < lfts[mngtmp][1] <= lft,
+                  f"RA did not refresh mngtmpaddr lifetimes: {lfts[mngtmp]}")
+        ksft_true(0 < lfts[slaac][0] <= lft and 0 < lfts[slaac][1] <= lft,
+                  f"unexpected SLAAC address lifetimes: {lfts[slaac]}")
 
 
 def _insert_and_get_addrs_ipv4(test_addrs: list[str], scopes: list[str]) -> list[str]:
@@ -497,6 +573,7 @@ def main() -> None:
               ipv6_route_del_reason_expired,
               ipv6_route_del_reason_ra_withdrawn,
               ipv6_route_del_reason_absent,
+              ipv6_ra_pio_manual_addr_lifetime,
               ipv4_verify_same_scope_addr_order, ipv4_verify_inter_scope_addr_order,
               ipv6_verify_same_scope_addr_order, ipv6_verify_inter_scope_addr_order])
     ksft_exit()
