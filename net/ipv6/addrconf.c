@@ -2782,6 +2782,15 @@ int addrconf_prefix_rcv_add_addr(struct net *net, struct net_device *dev,
 		unsigned long now;
 		u32 stored_lft;
 
+		/* RFC 4862 Section 5.5.3e only applies to addresses
+		 * configured by stateless autoconfiguration. Leave the
+		 * lifetimes of manually configured addresses alone.
+		 */
+		if (!(ifp->flags & IFA_F_MANAGETEMPADDR)) {
+			in6_ifa_put(ifp);
+			return 0;
+		}
+
 		/* update lifetime (RFC2462 5.5.3 e) */
 		spin_lock_bh(&ifp->lock);
 		now = jiffies;
