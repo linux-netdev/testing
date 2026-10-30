@@ -156,8 +156,9 @@ static void rawsock_data_exchange_complete(void *context, struct sk_buff *skb,
 
 	pr_debug("sk=%p err=%d\n", sk, err);
 
+	/* skb may carry the response even when the exchange failed */
 	if (err)
-		goto error;
+		goto error_skb;
 
 	err = rawsock_add_header(skb);
 	if (err)
@@ -180,7 +181,6 @@ static void rawsock_data_exchange_complete(void *context, struct sk_buff *skb,
 error_skb:
 	kfree_skb(skb);
 
-error:
 	rawsock_report_error(sk, err);
 	sock_put(sk);
 }
