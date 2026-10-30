@@ -264,6 +264,12 @@ static void st21nfca_se_wt_work(struct work_struct *work)
 						struct st21nfca_hci_info,
 						se_info.timeout_work);
 
+	/* The timer can also be armed by EVT_WTX_REQUEST while no
+	 * st21nfca_hci_se_io() is pending.
+	 */
+	if (!info->se_info.bwi_active)
+		return;
+
 	info->se_info.bwi_active = false;
 
 	if (!info->se_info.xch_error) {
@@ -383,11 +389,20 @@ int st21nfca_apdu_reader_event_received(struct nfc_hci_dev *hdev,
 	case ST21NFCA_EVT_TRANSMIT_DATA:
 		timer_delete_sync(&info->se_info.bwi_timer);
 		cancel_work_sync(&info->se_info.timeout_work);
+		/* Only complete a pending st21nfca_hci_se_io(), and only once:
+		 * the timeout work may already have completed it, and the
+		 * callback frees its context.
+		 */
+		if (!info->se_info.bwi_active)
+			break;
+
 		info->se_info.bwi_active = false;
 		r = nfc_hci_send_event(hdev, ST21NFCA_DEVICE_MGNT_GATE,
 				ST21NFCA_EVT_SE_END_OF_APDU_TRANSFER, NULL, 0);
-		if (r < 0)
+		if (r < 0) {
+			info->se_info.cb(info->se_info.cb_context, NULL, 0, r);
 			goto exit;
+		}
 
 		info->se_info.cb(info->se_info.cb_context,
 			skb->data, skb->len, 0);
