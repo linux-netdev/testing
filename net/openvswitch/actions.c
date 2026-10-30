@@ -319,6 +319,35 @@ static int pop_nsh(struct sk_buff *skb, struct sw_flow_key *key)
 	return 0;
 }
 
+static int ensure_l4_checksum_writable(struct sk_buff *skb, u8 l4_proto)
+{
+	unsigned int offset, len;
+
+	switch (l4_proto) {
+	case IPPROTO_TCP:
+		len = sizeof(struct tcphdr);
+		break;
+	case IPPROTO_UDP:
+		len = sizeof(struct udphdr);
+		break;
+	case IPPROTO_ICMPV6:
+		len = sizeof(struct icmp6hdr);
+		break;
+	default:
+		return 0;
+	}
+
+	offset = skb_transport_offset(skb);
+	if (unlikely(offset > skb->len))
+		return -EINVAL;
+
+	/* Truncated transport headers have no checksum to update. */
+	if (unlikely(skb->len - offset < len))
+		return 0;
+
+	return skb_ensure_writable(skb, offset + len);
+}
+
 static void update_ip_l4_checksum(struct sk_buff *skb, struct iphdr *nh,
 				  __be32 addr, __be32 new_addr)
 {
@@ -462,6 +491,7 @@ static int set_ipv4(struct sk_buff *skb, struct sw_flow_key *flow_key,
 {
 	struct iphdr *nh;
 	__be32 new_addr;
+	u8 l4_proto;
 	int err;
 
 	err = skb_ensure_writable(skb, skb_network_offset(skb) +
@@ -470,6 +500,10 @@ static int set_ipv4(struct sk_buff *skb, struct sw_flow_key *flow_key,
 		return err;
 
 	nh = ip_hdr(skb);
+	l4_proto = nh->protocol;
+	if (nh->frag_off & htons(IP_OFFSET) ||
+	    (l4_proto != IPPROTO_TCP && l4_proto != IPPROTO_UDP))
+		l4_proto = 0;
 
 	/* Setting an IP addresses is typically only a side effect of
 	 * matching on them in the current userspace implementation, so it
@@ -479,6 +513,11 @@ static int set_ipv4(struct sk_buff *skb, struct sw_flow_key *flow_key,
 		new_addr = OVS_MASKED(nh->saddr, key->ipv4_src, mask->ipv4_src);
 
 		if (unlikely(new_addr != nh->saddr)) {
+			err = ensure_l4_checksum_writable(skb, l4_proto);
+			if (unlikely(err))
+				return err;
+
+			nh = ip_hdr(skb);
 			set_ip_addr(skb, nh, &nh->saddr, new_addr);
 			flow_key->ipv4.addr.src = new_addr;
 		}
@@ -487,6 +526,11 @@ static int set_ipv4(struct sk_buff *skb, struct sw_flow_key *flow_key,
 		new_addr = OVS_MASKED(nh->daddr, key->ipv4_dst, mask->ipv4_dst);
 
 		if (unlikely(new_addr != nh->daddr)) {
+			err = ensure_l4_checksum_writable(skb, l4_proto);
+			if (unlikely(err))
+				return err;
+
+			nh = ip_hdr(skb);
 			set_ip_addr(skb, nh, &nh->daddr, new_addr);
 			flow_key->ipv4.addr.dst = new_addr;
 		}
@@ -533,6 +577,13 @@ static int set_ipv6(struct sk_buff *skb, struct sw_flow_key *flow_key,
 		mask_ipv6_addr(saddr, key->ipv6_src, mask->ipv6_src, masked);
 
 		if (unlikely(memcmp(saddr, masked, sizeof(masked)))) {
+			err = ensure_l4_checksum_writable(skb,
+							  flow_key->ip.proto);
+			if (unlikely(err))
+				return err;
+
+			nh = ipv6_hdr(skb);
+			saddr = (__be32 *)&nh->saddr;
 			set_ipv6_addr(skb, flow_key->ip.proto, saddr, masked,
 				      true);
 			memcpy(&flow_key->ipv6.addr.src, masked,
@@ -555,6 +606,15 @@ static int set_ipv6(struct sk_buff *skb, struct sw_flow_key *flow_key,
 							     NULL, &flags)
 					       != NEXTHDR_ROUTING);
 
+			if (recalc_csum) {
+				err = ensure_l4_checksum_writable(skb,
+								  flow_key->ip.proto);
+				if (unlikely(err))
+					return err;
+
+				nh = ipv6_hdr(skb);
+				daddr = (__be32 *)&nh->daddr;
+			}
 			set_ipv6_addr(skb, flow_key->ip.proto, daddr, masked,
 				      recalc_csum);
 			memcpy(&flow_key->ipv6.addr.dst, masked,
