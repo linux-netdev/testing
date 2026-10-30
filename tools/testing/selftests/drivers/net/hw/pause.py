@@ -466,6 +466,7 @@ def pause_test_support(cfg, pauseparams):
     supported fields.
     """
 
+    require_link_autoneg(cfg)
     pause_setup(cfg)
 
     forced = forced_link_settings(cfg)
