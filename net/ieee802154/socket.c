@@ -53,7 +53,8 @@ ieee802154_get_dev(struct net *net, const struct ieee802154_addr *addr)
 		rtnl_lock();
 
 		for_each_netdev(net, tmp) {
-			if (tmp->type != ARPHRD_IEEE802154)
+			if (tmp->type != ARPHRD_IEEE802154 ||
+			    !tmp->ieee802154_ptr)
 				continue;
 
 			pan_id = tmp->ieee802154_ptr->pan_id;
@@ -72,6 +73,14 @@ ieee802154_get_dev(struct net *net, const struct ieee802154_addr *addr)
 		pr_warn("Unsupported ieee802154 address type: %d\n",
 			addr->mode);
 		break;
+	}
+
+	/* A TUN device can have its type set to ARPHRD_IEEE802154 without
+	 * being a WPAN device.
+	 */
+	if (dev && !dev->ieee802154_ptr) {
+		dev_put(dev);
+		dev = NULL;
 	}
 
 	return dev;
@@ -641,6 +650,11 @@ static int dgram_sendmsg(struct sock *sk, struct msghdr *msg, size_t size)
 	else
 		dev = ieee802154_get_dev(sock_net(sk), &ro->src_addr);
 
+	if (dev && !dev->ieee802154_ptr) {
+		dev_put(dev);
+		dev = NULL;
+	}
+
 	if (!dev) {
 		pr_debug("no dev\n");
 		err = -ENXIO;
@@ -1097,7 +1111,7 @@ static int ieee802154_rcv(struct sk_buff *skb, struct net_device *dev,
 
 	ieee802154_raw_deliver(dev, skb);
 
-	if (dev->type != ARPHRD_IEEE802154)
+	if (dev->type != ARPHRD_IEEE802154 || !dev->ieee802154_ptr)
 		goto drop;
 
 	if (skb->pkt_type != PACKET_OTHERHOST)

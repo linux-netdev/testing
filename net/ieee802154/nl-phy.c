@@ -284,7 +284,7 @@ int ieee802154_del_iface(struct sk_buff *skb, struct genl_info *info)
 	dev = dev_get_by_name(genl_info_net(info), name);
 	if (!dev)
 		return rc;
-	if (dev->type != ARPHRD_IEEE802154)
+	if (dev->type != ARPHRD_IEEE802154 || !dev->ieee802154_ptr)
 		goto out;
 
 	phy = dev->ieee802154_ptr->wpan_phy;
