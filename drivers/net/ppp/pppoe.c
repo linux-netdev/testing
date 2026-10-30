@@ -340,35 +340,7 @@ static struct notifier_block pppoe_notifier = {
 
 /************************************************************************
  *
- * Do the real work of receiving a PPPoE Session frame.
- *
- ***********************************************************************/
-static int pppoe_rcv_core(struct sock *sk, struct sk_buff *skb)
-{
-	struct pppox_sock *po = pppox_sk(sk);
-
-	/* Backlog receive. Semantics of backlog rcv preclude any code from
-	 * executing in lock_sock()/release_sock() bounds; meaning sk->sk_state
-	 * can't change.
-	 */
-
-	if (sk->sk_state & PPPOX_BOUND) {
-		ppp_input(&po->chan, skb);
-	} else {
-		if (sock_queue_rcv_skb(sk, skb))
-			goto abort_kfree;
-	}
-
-	return NET_RX_SUCCESS;
-
-abort_kfree:
-	kfree_skb(skb);
-	return NET_RX_DROP;
-}
-
-/************************************************************************
- *
- * Receive wrapper called in BH context.
+ * Receive a PPPoE Session frame.
  *
  ***********************************************************************/
 static int pppoe_rcv(struct sk_buff *skb, struct net_device *dev,
@@ -415,11 +387,12 @@ static int pppoe_rcv(struct sk_buff *skb, struct net_device *dev,
 	if (!po)
 		goto drop;
 
-	if (likely(po->sk.sk_state & PPPOX_BOUND)) {
+	if (likely(po->sk.sk_state & PPPOX_BOUND))
 		ppp_input(&po->chan, skb);
-		return NET_RX_SUCCESS;
-	}
-	return __sk_receive_skb(&po->sk, skb, 0, 1, false);
+	else if (sock_queue_rcv_skb(&po->sk, skb))
+		goto drop;
+
+	return NET_RX_SUCCESS;
 
 drop:
 	kfree_skb(skb);
@@ -526,7 +499,6 @@ static int pppoe_create(struct net *net, struct socket *sock, int kern)
 	sock->state	= SS_UNCONNECTED;
 	sock->ops	= &pppoe_ops;
 
-	sk->sk_backlog_rcv	= pppoe_rcv_core;
 	sk->sk_destruct		= pppoe_destruct;
 	sk->sk_state		= PPPOX_NONE;
 	sk->sk_type		= SOCK_STREAM;
