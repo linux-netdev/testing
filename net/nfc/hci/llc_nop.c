@@ -67,8 +67,17 @@ static void llc_nop_rcv_from_drv(struct nfc_llc *llc, struct sk_buff *skb)
 static int llc_nop_xmit_from_hci(struct nfc_llc *llc, struct sk_buff *skb)
 {
 	struct llc_nop *llc_nop = nfc_llc_get_data(llc);
+	int r;
 
-	return llc_nop->xmit_to_drv(llc_nop->hdev, skb);
+	/* The driver does not take ownership of the frame (the phy write
+	 * operations copy it out), and nfc_hci_msg_tx_work() only frees it
+	 * on error, so it is ours to free once it has been sent.
+	 */
+	r = llc_nop->xmit_to_drv(llc_nop->hdev, skb);
+	if (r == 0)
+		consume_skb(skb);
+
+	return r;
 }
 
 static const struct nfc_llc_ops llc_nop_ops = {
