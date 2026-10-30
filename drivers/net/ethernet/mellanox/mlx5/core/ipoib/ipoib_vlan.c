@@ -126,13 +126,17 @@ int mlx5i_pkey_del_qpn(struct net_device *netdev, u32 qpn)
 struct net_device *mlx5i_pkey_get_netdev(struct net_device *netdev, u32 qpn)
 {
 	struct mlx5i_priv *ipriv = netdev_priv(netdev);
+	struct mlx5i_pkey_qpn_ht *ht = ipriv->qpn_htbl;
+	struct net_device *result = NULL;
 	struct qpn_to_netdev *node;
 
-	node = mlx5i_find_qpn_to_netdev_node(ipriv->qpn_htbl->buckets, qpn);
-	if (!node)
-		return NULL;
+	spin_lock_bh(&ht->ht_lock);
+	node = mlx5i_find_qpn_to_netdev_node(ht->buckets, qpn);
+	if (node)
+		result = node->netdev;
+	spin_unlock_bh(&ht->ht_lock);
 
-	return node->netdev;
+	return result;
 }
 
 static int mlx5i_pkey_open(struct net_device *netdev);
