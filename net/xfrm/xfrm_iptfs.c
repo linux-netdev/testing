@@ -708,6 +708,15 @@ static void __iptfs_reassem_done(struct xfrm_iptfs_data *xtfs, bool free)
 
 	/* We don't care if it works locking takes care of things */
 	hrtimer_try_to_cancel(&xtfs->drop_timer);
+	/* The timer also ages out the reorder window, if it has any entries. */
+	if (xtfs->w_savedlen) {
+		time64_t now = ktime_get_raw_fast_ns();
+
+		hrtimer_start(&xtfs->drop_timer,
+			      xtfs->w_saved[0].drop_time - now,
+			      IPTFS_HRTIMER_MODE);
+	}
+
 	if (free)
 		kfree_skb(xtfs->ra_newskb);
 	xtfs->ra_newskb = NULL;
