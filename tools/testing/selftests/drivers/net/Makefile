@@ -23,6 +23,7 @@ TEST_PROGS := \
 	ping.py \
 	pppoe_gro.py \
 	psp.py \
+	ptp.py \
 	queues.py \
 	ring_reconfig.py \
 	rss_key.py \
