@@ -215,17 +215,25 @@ nft_rbtree_gc_elem(const struct nft_set *__set, struct nft_rbtree *priv,
 	struct nft_set *set = (struct nft_set *)__set;
 	struct rb_node *prev = rb_prev(&rbe->node);
 	struct net *net = read_pnet(&set->net);
+	u8 cur_genmask = nft_genmask_cur(net);
 	struct nft_rbtree_elem *rbe_prev;
 
 	/* search for end interval coming before this element.
 	 * end intervals don't carry a timeout extension, they
 	 * are coupled with the interval start element.
+	 *
+	 * Skip elements added in this transaction. The first element
+	 * that is active in the current generation is either the end
+	 * element of this interval or the start element of another
+	 * interval, in which case this interval has no end element.
 	 */
 	while (prev) {
 		rbe_prev = rb_entry(prev, struct nft_rbtree_elem, node);
-		if (nft_rbtree_interval_end(rbe_prev) &&
-		    nft_set_elem_active(&rbe_prev->ext, NFT_GENMASK_ANY))
+		if (nft_set_elem_active(&rbe_prev->ext, cur_genmask)) {
+			if (!nft_rbtree_interval_end(rbe_prev))
+				prev = NULL;
 			break;
+		}
 
 		prev = rb_prev(prev);
 	}
@@ -233,7 +241,11 @@ nft_rbtree_gc_elem(const struct nft_set *__set, struct nft_rbtree *priv,
 	rbe_prev = NULL;
 	if (prev) {
 		rbe_prev = rb_entry(prev, struct nft_rbtree_elem, node);
-		nft_rbtree_gc_elem_move(net, set, priv, rbe_prev);
+		/* end element is being removed by this transaction */
+		if (nft_set_elem_active(&rbe_prev->ext, NFT_GENMASK_ANY))
+			nft_rbtree_gc_elem_move(net, set, priv, rbe_prev);
+		else
+			rbe_prev = NULL;
 	}
 
 	nft_rbtree_gc_elem_move(net, set, priv, rbe);
@@ -911,8 +923,11 @@ static void nft_rbtree_gc_scan(struct nft_set *set)
 			rbe_end = rbe;
 			continue;
 		}
-		if (!__nft_set_elem_expired(&rbe->ext, tstamp))
+		if (!__nft_set_elem_expired(&rbe->ext, tstamp)) {
+			/* rbe_end belongs to this live interval */
+			rbe_end = NULL;
 			continue;
+		}
 
 		/* end element needs to be removed first, it has
 		 * no timeout extension.
