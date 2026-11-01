@@ -6086,7 +6086,9 @@ static void rtl_set_irq_mask(struct rtl8169_private *tp)
 		tp->irq_mask = RxOK | RxErr | TxOK | TxErr | LinkChg;
 
 		if (tp->mac_version <= RTL_GIGA_MAC_VER_06)
-			tp->irq_mask |= SYSErr | RxFIFOOver;
+			tp->irq_mask |= SYSErr | RxOverflow | RxFIFOOver;
+		else
+			tp->irq_mask |= RxOverflow;
 	}
 }
 
