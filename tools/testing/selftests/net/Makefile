@@ -107,6 +107,7 @@ TEST_PROGS := \
 	srv6_iptunnel_cache.sh \
 	stress_reuseport_listen.sh \
 	tcp_ecmp_failover.sh \
+	tcp_fixedid.sh \
 	tcp_fastopen_backup_key.sh \
 	test_bridge_backup_port.sh \
 	test_bridge_neigh_suppress.sh \
@@ -170,6 +171,7 @@ TEST_GEN_FILES := \
 	socket \
 	stress_reuseport_listen \
 	tcp_fastopen_backup_key \
+	tcp_fixedid \
 	tcp_inq \
 	tcp_mmap \
 	tfo \
