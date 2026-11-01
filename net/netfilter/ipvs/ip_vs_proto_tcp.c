@@ -326,7 +326,7 @@ static const int tcp_state_off[IP_VS_DIR_LAST] = {
 /*
  *	Timeout table[state]
  */
-static const int tcp_timeouts[IP_VS_TCP_S_LAST+1] = {
+static const unsigned long tcp_timeouts[IP_VS_TCP_S_LAST + 1] = {
 	[IP_VS_TCP_S_NONE]		=	2*HZ,
 	[IP_VS_TCP_S_ESTABLISHED]	=	15*60*HZ,
 	[IP_VS_TCP_S_SYN_SENT]		=	2*60*HZ,
@@ -665,8 +665,8 @@ void ip_vs_tcp_conn_listen(struct ip_vs_conn *cp)
 static int __ip_vs_tcp_init(struct netns_ipvs *ipvs, struct ip_vs_proto_data *pd)
 {
 	ip_vs_init_hash_table(ipvs->tcp_apps, TCP_APP_TAB_SIZE);
-	pd->timeout_table = ip_vs_create_timeout_table((int *)tcp_timeouts,
-							sizeof(tcp_timeouts));
+	pd->timeout_table =
+		ip_vs_create_timeout_table(tcp_timeouts, sizeof(tcp_timeouts));
 	if (!pd->timeout_table)
 		return -ENOMEM;
 	pd->tcp_state_table = tcp_states;
