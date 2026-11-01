@@ -93,8 +93,7 @@ ip_vs_app_inc_new(struct netns_ipvs *ipvs, struct ip_vs_app *app, __u16 proto,
 
 	if (app->timeouts) {
 		inc->timeout_table =
-			ip_vs_create_timeout_table(app->timeouts,
-						   app->timeouts_size);
+			kmemdup(app->timeouts, app->timeouts_size, GFP_KERNEL);
 		if (!inc->timeout_table) {
 			ret = -ENOMEM;
 			goto out;
