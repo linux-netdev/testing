@@ -18,6 +18,7 @@
 #include <linux/workqueue.h>
 
 #include <linux/compiler.h>
+#include <linux/jiffies.h>
 #include <linux/timer.h>
 #include <linux/bug.h>
 
@@ -54,6 +55,18 @@
 #else
 #define IP_VS_CONN_MAX	(1 << 24)
 #endif
+
+/* All timeouts up to 31 days */
+#define IP_VS_TIMEOUT_MAX_SECS	(86400U * 31)
+
+static inline unsigned long ip_vs_timeout_ticks(unsigned int secs)
+{
+	secs = min_t(unsigned int, secs, IP_VS_TIMEOUT_MAX_SECS);
+#if BITS_PER_LONG <= 32
+	secs = min_t(unsigned int, secs, MAX_JIFFY_OFFSET / HZ);
+#endif
+	return (unsigned long)secs * HZ;
+}
 
 /* svc_table limits */
 #define IP_VS_SVC_TAB_MIN_BITS	4
@@ -776,7 +789,7 @@ struct ip_vs_protocol {
 struct ip_vs_proto_data {
 	struct ip_vs_proto_data	*next;
 	struct ip_vs_protocol	*pp;
-	int			*timeout_table;	/* protocol timeout table */
+	unsigned long		*timeout_table;	/* protocol timeout table */
 	atomic_t		appcnt;		/* counter of proto app incs. */
 	struct tcp_states_t	*tcp_state_table;
 };
@@ -938,7 +951,7 @@ struct ip_vs_service {
 	atomic_t		refcnt;   /* reference counter */
 	__be16			port;	  /* port number for the service */
 	unsigned int		flags;	  /* service status flags */
-	unsigned int		timeout;  /* persistent timeout in ticks */
+	unsigned long		timeout;  /* persistent timeout in ticks */
 	__be32			netmask;  /* grouping granularity, mask/plen */
 	struct netns_ipvs	*ipvs;
 
@@ -1844,7 +1857,8 @@ struct ip_vs_pe *__ip_vs_pe_getbyname(const char *pe_name);
 int ip_vs_protocol_init(void);
 void ip_vs_protocol_cleanup(void);
 void ip_vs_protocol_timeout_change(struct netns_ipvs *ipvs, int flags);
-int *ip_vs_create_timeout_table(int *table, int size);
+unsigned long *ip_vs_create_timeout_table(const unsigned long *table,
+					  size_t size);
 void ip_vs_tcpudp_debug_packet(int af, struct ip_vs_protocol *pp,
 			       const struct sk_buff *skb, int offset,
 			       const char *msg);
