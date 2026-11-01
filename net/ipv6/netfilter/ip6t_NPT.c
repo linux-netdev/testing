@@ -12,6 +12,10 @@
 #include <linux/netfilter_ipv6/ip6t_NPT.h>
 #include <linux/netfilter/x_tables.h>
 
+#if IS_ENABLED(CONFIG_NF_CONNTRACK)
+#include <net/netfilter/nf_conntrack.h>
+#endif
+
 static int ip6t_npt_checkentry(const struct xt_tgchk_param *par)
 {
 	struct ip6t_npt_tginfo *npt = par->targinfo;
@@ -121,6 +125,30 @@ static struct ipv6hdr *icmpv6_bounced_ipv6hdr(struct sk_buff *skb,
 				  _bounced_hdr);
 }
 
+static void ip6t_npt_ct(struct sk_buff *skb, const struct xt_action_param *par)
+{
+#if IS_ENABLED(CONFIG_NF_CONNTRACK)
+	struct nf_conn *ct;
+	enum ip_conntrack_info ctinfo;
+	struct nf_conntrack_tuple new_tuple;
+
+	ct = nf_ct_get(skb, &ctinfo);
+
+	if (!ct || nf_ct_is_confirmed(ct) || nf_ct_is_dying(ct))
+		return;
+
+	new_tuple = ct->tuplehash[IP_CT_DIR_REPLY].tuple;
+
+	if (xt_hooknum(par) == NF_INET_PRE_ROUTING ||
+	    xt_hooknum(par) == NF_INET_LOCAL_OUT)
+		new_tuple.src.u3 = (union nf_inet_addr)ipv6_hdr(skb)->daddr;
+	else
+		new_tuple.dst.u3 = (union nf_inet_addr)ipv6_hdr(skb)->saddr;
+
+	nf_conntrack_alter_reply(ct, &new_tuple);
+#endif
+}
+
 static unsigned int
 ip6t_snpt_tg(struct sk_buff *skb, const struct xt_action_param *par)
 {
@@ -151,6 +179,7 @@ ip6t_snpt_tg(struct sk_buff *skb, const struct xt_action_param *par)
 			ip6t_npt_map_pfx(npt, &bounced_hdr->daddr);
 	}
 
+	ip6t_npt_ct(skb, par);
 	return XT_CONTINUE;
 }
 
@@ -184,6 +213,7 @@ ip6t_dnpt_tg(struct sk_buff *skb, const struct xt_action_param *par)
 			ip6t_npt_map_pfx(npt, &bounced_hdr->saddr);
 	}
 
+	ip6t_npt_ct(skb, par);
 	return XT_CONTINUE;
 }
 

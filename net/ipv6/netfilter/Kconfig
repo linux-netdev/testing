@@ -290,6 +290,7 @@ config IP6_NF_TARGET_MASQUERADE
 config IP6_NF_TARGET_NPT
 	tristate "NPT (Network Prefix translation) target support"
 	depends on IP6_NF_NAT || NFT_COMPAT
+	depends on NF_CONNTRACK || !NF_CONNTRACK
 	help
 	  This option adds the `SNPT' and `DNPT' target, which perform
 	  stateless IPv6-to-IPv6 Network Prefix Translation per RFC 6296.
