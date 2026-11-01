@@ -2825,7 +2825,10 @@ static int mtk_rx_alloc(struct mtk_eth *eth, int ring_no, int rx_flag)
 	if (!ring->data)
 		return -ENOMEM;
 
-	if (mtk_page_pool_enabled(eth)) {
+	/* page_pool uses order-0 pages; rings that need larger buffers
+	 * (jumbo or HW-LRO) use the mtk_max_buf_alloc() path instead.
+	 */
+	if (mtk_page_pool_enabled(eth) && ring->frag_size <= PAGE_SIZE) {
 		struct page_pool *pp;
 
 		pp = mtk_create_page_pool(eth, &ring->xdp_q, ring_no,
