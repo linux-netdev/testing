@@ -847,7 +847,7 @@ static void ip_vs_proc_conn(struct netns_ipvs *ipvs, struct ip_vs_conn_param *pa
 			    unsigned int flags, unsigned int state,
 			    unsigned int protocol, unsigned int type,
 			    const union nf_inet_addr *daddr, __be16 dport,
-			    unsigned long timeout, __u32 fwmark,
+			    unsigned int timeout, __u32 fwmark,
 			    struct ip_vs_sync_conn_options *opt)
 {
 	struct ip_vs_dest *dest;
@@ -939,9 +939,7 @@ static void ip_vs_proc_conn(struct netns_ipvs *ipvs, struct ip_vs_conn_param *pa
 	 *  - No problem.
 	 */
 	if (timeout) {
-		if (timeout > MAX_SCHEDULE_TIMEOUT / HZ)
-			timeout = MAX_SCHEDULE_TIMEOUT / HZ;
-		cp->timeout = timeout*HZ;
+		cp->timeout = ip_vs_timeout_ticks(timeout);
 	} else {
 		struct ip_vs_proto_data *pd;
 
