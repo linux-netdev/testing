@@ -52,13 +52,18 @@ static bool ip6t_npt_map_pfx(const struct ip6t_npt_tginfo *npt,
 			mask = htonl((1 << (i - pfx_len + 32)) - 1);
 
 		idx = i / 32;
+		if ((addr->s6_addr32[idx] & ~mask) != npt->src_pfx.in6.s6_addr32[idx])
+			return false;
+
 		addr->s6_addr32[idx] &= mask;
 		addr->s6_addr32[idx] |= ~mask & npt->dst_pfx.in6.s6_addr32[idx];
 	}
 
-	if (pfx_len <= 48)
+	if (pfx_len <= 48) {
 		idx = 3;
-	else {
+		if ((__force __sum16)addr->s6_addr16[idx] == CSUM_MANGLED_0)
+			return false;
+	} else {
 		for (idx = 4; idx < ARRAY_SIZE(addr->s6_addr16); idx++) {
 			if ((__force __sum16)addr->s6_addr16[idx] !=
 			    CSUM_MANGLED_0)
