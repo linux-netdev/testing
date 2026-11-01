@@ -1766,6 +1766,9 @@ ip_vs_add_service(struct netns_ipvs *ipvs, struct ip_vs_service_user_kern *u,
 	int ret = 0;
 	bool grow;
 
+	if (u->timeout > IP_VS_TIMEOUT_MAX_SECS)
+		return -EINVAL;
+
 	/* increase the module use count */
 	if (!ip_vs_use_count_inc())
 		return -ENOPROTOOPT;
@@ -1864,7 +1867,7 @@ ip_vs_add_service(struct netns_ipvs *ipvs, struct ip_vs_service_user_kern *u,
 	svc->port = u->port;
 	svc->fwmark = u->fwmark;
 	svc->flags = u->flags & ~IP_VS_SVC_F_HASHED;
-	svc->timeout = u->timeout * HZ;
+	svc->timeout = ip_vs_timeout_ticks(u->timeout);
 	svc->netmask = u->netmask;
 	svc->ipvs = ipvs;
 
@@ -1971,6 +1974,9 @@ ip_vs_edit_service(struct ip_vs_service *svc, struct ip_vs_service_user_kern *u)
 	struct netns_ipvs *ipvs = svc->ipvs;
 	int af_id = ip_vs_af_index(svc->af);
 
+	if (u->timeout > IP_VS_TIMEOUT_MAX_SECS)
+		return -EINVAL;
+
 	/*
 	 * Lookup the scheduler, by 'u->sched_name'
 	 */
@@ -2031,7 +2037,7 @@ ip_vs_edit_service(struct ip_vs_service *svc, struct ip_vs_service_user_kern *u)
 	 * Set the flags and timeout value
 	 */
 	svc->flags = u->flags | IP_VS_SVC_F_HASHED;
-	svc->timeout = u->timeout * HZ;
+	svc->timeout = ip_vs_timeout_ticks(u->timeout);
 	svc->netmask = u->netmask;
 
 	old_pe = rcu_dereference_protected(svc->pe, 1);
@@ -3064,9 +3070,8 @@ static int ip_vs_info_seq_show(struct seq_file *seq, void *v)
 		}
 
 		if (svc->flags & IP_VS_SVC_F_PERSISTENT)
-			seq_printf(seq, "persistent %d %08X\n",
-				svc->timeout,
-				ntohl(svc->netmask));
+			seq_printf(seq, "persistent %lu %08X\n",
+				   svc->timeout, ntohl(svc->netmask));
 		else
 			seq_putc(seq, '\n');
 
@@ -3365,36 +3370,38 @@ static int ip_vs_set_timeout(struct netns_ipvs *ipvs, struct ip_vs_timeout_user 
 		  u->udp_timeout);
 
 #ifdef CONFIG_IP_VS_PROTO_TCP
-	if (u->tcp_timeout < 0 || u->tcp_timeout > (INT_MAX / HZ) ||
-	    u->tcp_fin_timeout < 0 || u->tcp_fin_timeout > (INT_MAX / HZ)) {
+	if (u->tcp_timeout < 0 ||
+	    u->tcp_timeout > IP_VS_TIMEOUT_MAX_SECS ||
+	    u->tcp_fin_timeout < 0 ||
+	    u->tcp_fin_timeout > IP_VS_TIMEOUT_MAX_SECS) {
 		return -EINVAL;
 	}
 #endif
 
 #ifdef CONFIG_IP_VS_PROTO_UDP
-	if (u->udp_timeout < 0 || u->udp_timeout > (INT_MAX / HZ))
+	if (u->udp_timeout < 0 || u->udp_timeout > IP_VS_TIMEOUT_MAX_SECS)
 		return -EINVAL;
 #endif
 
 #ifdef CONFIG_IP_VS_PROTO_TCP
 	if (u->tcp_timeout) {
 		pd = ip_vs_proto_data_get(ipvs, IPPROTO_TCP);
-		pd->timeout_table[IP_VS_TCP_S_ESTABLISHED]
-			= u->tcp_timeout * HZ;
+		pd->timeout_table[IP_VS_TCP_S_ESTABLISHED] =
+			ip_vs_timeout_ticks(u->tcp_timeout);
 	}
 
 	if (u->tcp_fin_timeout) {
 		pd = ip_vs_proto_data_get(ipvs, IPPROTO_TCP);
-		pd->timeout_table[IP_VS_TCP_S_FIN_WAIT]
-			= u->tcp_fin_timeout * HZ;
+		pd->timeout_table[IP_VS_TCP_S_FIN_WAIT] =
+			ip_vs_timeout_ticks(u->tcp_fin_timeout);
 	}
 #endif
 
 #ifdef CONFIG_IP_VS_PROTO_UDP
 	if (u->udp_timeout) {
 		pd = ip_vs_proto_data_get(ipvs, IPPROTO_UDP);
-		pd->timeout_table[IP_VS_UDP_S_NORMAL]
-			= u->udp_timeout * HZ;
+		pd->timeout_table[IP_VS_UDP_S_NORMAL] =
+			ip_vs_timeout_ticks(u->udp_timeout);
 	}
 #endif
 	return 0;
