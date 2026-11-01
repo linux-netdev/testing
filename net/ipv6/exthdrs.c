@@ -53,6 +53,7 @@
 #include <linux/ioam6_genl.h>
 #include <net/ioam6.h>
 #include <net/dst_metadata.h>
+#include <net/ip_tunnels.h>
 
 #include <linux/uaccess.h>
 
@@ -406,7 +407,10 @@ looped_back:
 
 			skb_reset_network_header(skb);
 			skb_reset_transport_header(skb);
-			skb->encapsulation = 0;
+			if (iptunnel_pull_offloads(skb)) {
+				kfree_skb(skb);
+				return -1;
+			}
 			if (hdr->nexthdr == NEXTHDR_IPV4)
 				skb->protocol = htons(ETH_P_IP);
 			__skb_tunnel_rx(skb, skb->dev, net);
@@ -521,7 +525,10 @@ looped_back:
 
 			skb_reset_network_header(skb);
 			skb_reset_transport_header(skb);
-			skb->encapsulation = 0;
+			if (iptunnel_pull_offloads(skb)) {
+				kfree_skb(skb);
+				return -1;
+			}
 
 			__skb_tunnel_rx(skb, skb->dev, net);
 

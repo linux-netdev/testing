@@ -539,6 +539,7 @@ static int handle_gso_type(struct sk_buff *skb, unsigned int gso_type,
 {
 	struct skb_shared_info *shinfo = skb_shinfo(skb);
 
+	skb_gso_fixedid_encap(shinfo);
 	gso_type |= SKB_GSO_DODGY;
 	shinfo->gso_type |= gso_type;
 	skb_decrease_gso_size(shinfo, encap_len);

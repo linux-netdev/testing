@@ -182,9 +182,10 @@ EXPORT_SYMBOL_GPL(iptunnel_metadata_reply);
 int iptunnel_handle_offloads(struct sk_buff *skb,
 			     int gso_type_mask)
 {
+	bool encap = !skb->encapsulation;
 	int err;
 
-	if (likely(!skb->encapsulation)) {
+	if (likely(encap)) {
 		skb_reset_inner_headers(skb);
 		skb->encapsulation = 1;
 	}
@@ -193,6 +194,8 @@ int iptunnel_handle_offloads(struct sk_buff *skb,
 		err = skb_header_unclone(skb, GFP_ATOMIC);
 		if (unlikely(err))
 			return err;
+		if (encap)
+			skb_gso_fixedid_encap(skb_shinfo(skb));
 		skb_shinfo(skb)->gso_type |= gso_type_mask;
 		return 0;
 	}

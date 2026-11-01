@@ -5337,6 +5337,36 @@ static inline void skb_decrease_gso_size(struct skb_shared_info *shinfo,
 	shinfo->gso_size -= decrement;
 }
 
+/**
+ * skb_gso_fixedid_encap - move the TCP fixed-ID flag to the inner header
+ * @shinfo: shared info of a GSO packet that becomes encapsulated
+ *
+ * The IPv4 header that SKB_GSO_TCP_FIXEDID describes becomes the inner one,
+ * and the new outer header gets an incrementing ID.
+ */
+static inline void skb_gso_fixedid_encap(struct skb_shared_info *shinfo)
+{
+	unsigned int fixedid = shinfo->gso_type & SKB_GSO_TCP_FIXEDID;
+
+	shinfo->gso_type &= ~(SKB_GSO_TCP_FIXEDID | SKB_GSO_TCP_FIXEDID_INNER);
+	shinfo->gso_type |= fixedid << 1;
+}
+
+/**
+ * skb_gso_fixedid_decap - move the TCP fixed-ID flag to the new outer header
+ * @shinfo: shared info of an encapsulated GSO packet losing its outer header
+ *
+ * The inner IPv4 header, which SKB_GSO_TCP_FIXEDID_INNER describes, becomes
+ * the outer one, and the state of the removed outer header is dropped.
+ */
+static inline void skb_gso_fixedid_decap(struct skb_shared_info *shinfo)
+{
+	unsigned int fixedid = shinfo->gso_type & SKB_GSO_TCP_FIXEDID_INNER;
+
+	shinfo->gso_type &= ~(SKB_GSO_TCP_FIXEDID | SKB_GSO_TCP_FIXEDID_INNER);
+	shinfo->gso_type |= fixedid >> 1;
+}
+
 void __skb_warn_lro_forwarding(const struct sk_buff *skb);
 
 static __always_inline bool skb_warn_if_lro(const struct sk_buff *skb)

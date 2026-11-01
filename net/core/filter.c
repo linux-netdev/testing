@@ -3785,6 +3785,9 @@ static int bpf_skb_net_grow(struct sk_buff *skb, u32 off, u32 len_diff,
 	if (skb_is_gso(skb)) {
 		struct skb_shared_info *shinfo = skb_shinfo(skb);
 
+		if (encap)
+			skb_gso_fixedid_encap(shinfo);
+
 		/* Header must be checked, and gso_segs recomputed. */
 		shinfo->gso_type |= gso_type;
 		shinfo->gso_segs = 0;
@@ -3876,9 +3879,11 @@ static int bpf_skb_net_shrink(struct sk_buff *skb, u32 off, u32 len_diff,
 						  SKB_GSO_GRE_CSUM |
 						  SKB_GSO_IPXIP4 |
 						  SKB_GSO_IPXIP6 |
-						  SKB_GSO_ESP)))
-				if (skb->encapsulation)
-					skb->encapsulation = 0;
+						  SKB_GSO_ESP)) &&
+			    skb->encapsulation) {
+				skb_gso_fixedid_decap(shinfo);
+				skb->encapsulation = 0;
+			}
 		}
 
 		/* Header must be checked, and gso_segs recomputed. */
