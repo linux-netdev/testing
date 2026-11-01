@@ -327,7 +327,7 @@ static const __u8 sctp_states
 #define IP_VS_SCTP_MAX_RTO	((60 + 1) * HZ)
 
 /* Timeout table[state] */
-static const int sctp_timeouts[IP_VS_SCTP_S_LAST + 1] = {
+static const unsigned long sctp_timeouts[IP_VS_SCTP_S_LAST + 1] = {
 	[IP_VS_SCTP_S_NONE]			= 2 * HZ,
 	[IP_VS_SCTP_S_INIT1]			= (0 + 3 + 1) * HZ,
 	[IP_VS_SCTP_S_INIT]			= IP_VS_SCTP_MAX_RTO,
@@ -552,8 +552,8 @@ static int sctp_app_conn_bind(struct ip_vs_conn *cp)
 static int __ip_vs_sctp_init(struct netns_ipvs *ipvs, struct ip_vs_proto_data *pd)
 {
 	ip_vs_init_hash_table(ipvs->sctp_apps, SCTP_APP_TAB_SIZE);
-	pd->timeout_table = ip_vs_create_timeout_table((int *)sctp_timeouts,
-							sizeof(sctp_timeouts));
+	pd->timeout_table =
+		ip_vs_create_timeout_table(sctp_timeouts, sizeof(sctp_timeouts));
 	if (!pd->timeout_table)
 		return -ENOMEM;
 	return 0;
