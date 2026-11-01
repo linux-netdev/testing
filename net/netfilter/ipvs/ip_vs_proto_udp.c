@@ -396,7 +396,7 @@ static int udp_app_conn_bind(struct ip_vs_conn *cp)
 }
 
 
-static const int udp_timeouts[IP_VS_UDP_S_LAST+1] = {
+static const unsigned long udp_timeouts[IP_VS_UDP_S_LAST + 1] = {
 	[IP_VS_UDP_S_NORMAL]		=	5*60*HZ,
 	[IP_VS_UDP_S_LAST]		=	2*HZ,
 };
@@ -432,8 +432,8 @@ udp_state_transition(struct ip_vs_conn *cp, int direction,
 static int __udp_init(struct netns_ipvs *ipvs, struct ip_vs_proto_data *pd)
 {
 	ip_vs_init_hash_table(ipvs->udp_apps, UDP_APP_TAB_SIZE);
-	pd->timeout_table = ip_vs_create_timeout_table((int *)udp_timeouts,
-							sizeof(udp_timeouts));
+	pd->timeout_table =
+		ip_vs_create_timeout_table(udp_timeouts, sizeof(udp_timeouts));
 	if (!pd->timeout_table)
 		return -ENOMEM;
 	return 0;
