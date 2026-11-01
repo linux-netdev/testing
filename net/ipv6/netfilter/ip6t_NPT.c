@@ -36,13 +36,14 @@ static int ip6t_npt_checkentry(const struct xt_tgchk_param *par)
 	return 0;
 }
 
-static bool ip6t_npt_map_pfx(const struct ip6t_npt_tginfo *npt,
-			     struct in6_addr *addr)
+static u8 ip6t_npt_map_pfx(const struct ip6t_npt_tginfo *npt,
+			   struct in6_addr *addr)
 {
 	unsigned int pfx_len;
-	unsigned int i, idx;
+	unsigned int i, j, idx;
 	__be32 mask;
 	__sum16 sum;
+	u8 ret = 0;
 
 	pfx_len = max(npt->src_pfx_len, npt->dst_pfx_len);
 	for (i = 0; i < pfx_len; i += 32) {
@@ -52,8 +53,11 @@ static bool ip6t_npt_map_pfx(const struct ip6t_npt_tginfo *npt,
 			mask = htonl((1 << (i - pfx_len + 32)) - 1);
 
 		idx = i / 32;
-		if ((addr->s6_addr32[idx] & ~mask) != npt->src_pfx.in6.s6_addr32[idx])
-			return false;
+
+		if ((addr->s6_addr32[idx] & ~mask) != npt->src_pfx.in6.s6_addr32[idx]) {
+			ret = ICMPV6_DEST_UNREACH;
+			goto err;
+		}
 
 		addr->s6_addr32[idx] &= mask;
 		addr->s6_addr32[idx] |= ~mask & npt->dst_pfx.in6.s6_addr32[idx];
@@ -61,16 +65,21 @@ static bool ip6t_npt_map_pfx(const struct ip6t_npt_tginfo *npt,
 
 	if (pfx_len <= 48) {
 		idx = 3;
-		if ((__force __sum16)addr->s6_addr16[idx] == CSUM_MANGLED_0)
-			return false;
+		if ((__force __sum16)addr->s6_addr16[idx] == CSUM_MANGLED_0) {
+			ret = ICMPV6_DEST_UNREACH;
+			goto err;
+		}
+
 	} else {
 		for (idx = 4; idx < ARRAY_SIZE(addr->s6_addr16); idx++) {
 			if ((__force __sum16)addr->s6_addr16[idx] !=
 			    CSUM_MANGLED_0)
 				break;
 		}
-		if (idx == ARRAY_SIZE(addr->s6_addr16))
-			return false;
+		if (idx == ARRAY_SIZE(addr->s6_addr16)) {
+			ret = ICMPV6_PARAMPROB;
+			goto err;
+		}
 	}
 
 	sum = ~csum_fold(csum_add(csum_unfold((__force __sum16)addr->s6_addr16[idx]),
@@ -79,7 +88,22 @@ static bool ip6t_npt_map_pfx(const struct ip6t_npt_tginfo *npt,
 		sum = 0;
 	*(__force __sum16 *)&addr->s6_addr16[idx] = sum;
 
-	return true;
+	return 0;
+
+err:
+	/* Restore address value before sending ICMP error */
+	for (j = 0; j < i; j += 32) {
+		if (pfx_len - j >= 32)
+			mask = 0;
+		else
+			mask = htonl((1 << (j - pfx_len + 32)) - 1);
+
+		idx = j / 32;
+
+		addr->s6_addr32[idx] &= mask;
+		addr->s6_addr32[idx] |= ~mask & npt->src_pfx.in6.s6_addr32[idx];
+	}
+	return ret;
 }
 
 static struct ipv6hdr *icmpv6_bounced_ipv6hdr(struct sk_buff *skb,
@@ -105,10 +129,18 @@ ip6t_snpt_tg(struct sk_buff *skb, const struct xt_action_param *par)
 	struct ipv6hdr *bounced_hdr;
 	struct in6_addr bounced_pfx;
 
-	if (!ip6t_npt_map_pfx(npt, &ipv6_hdr(skb)->saddr)) {
-		icmpv6_send(skb, ICMPV6_PARAMPROB, ICMPV6_HDR_FIELD,
-			    offsetof(struct ipv6hdr, saddr));
-		return NF_DROP;
+	switch (ip6t_npt_map_pfx(npt, &ipv6_hdr(skb)->saddr)) {
+	case ICMPV6_DEST_UNREACH:
+			icmpv6_send(skb, ICMPV6_DEST_UNREACH, ICMPV6_ADDR_UNREACH, 0);
+			return NF_DROP;
+		break;
+	case ICMPV6_PARAMPROB:
+			icmpv6_send(skb, ICMPV6_PARAMPROB, ICMPV6_HDR_FIELD,
+				    offsetof(struct ipv6hdr, saddr));
+			return NF_DROP;
+		break;
+	default:
+		break;
 	}
 
 	/* rewrite dst addr of bounced packet which was sent to dst range */
@@ -130,10 +162,18 @@ ip6t_dnpt_tg(struct sk_buff *skb, const struct xt_action_param *par)
 	struct ipv6hdr *bounced_hdr;
 	struct in6_addr bounced_pfx;
 
-	if (!ip6t_npt_map_pfx(npt, &ipv6_hdr(skb)->daddr)) {
-		icmpv6_send(skb, ICMPV6_PARAMPROB, ICMPV6_HDR_FIELD,
-			    offsetof(struct ipv6hdr, daddr));
-		return NF_DROP;
+	switch (ip6t_npt_map_pfx(npt, &ipv6_hdr(skb)->daddr)) {
+	case ICMPV6_DEST_UNREACH:
+			icmpv6_send(skb, ICMPV6_DEST_UNREACH, ICMPV6_ADDR_UNREACH, 0);
+			return NF_DROP;
+		break;
+	case ICMPV6_PARAMPROB:
+			icmpv6_send(skb, ICMPV6_PARAMPROB, ICMPV6_HDR_FIELD,
+				    offsetof(struct ipv6hdr, daddr));
+			return NF_DROP;
+		break;
+	default:
+		break;
 	}
 
 	/* rewrite src addr of bounced packet which was sent from dst range */
