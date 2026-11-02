@@ -2458,6 +2458,16 @@ static int yt921x_dsa_setup(struct dsa_switch *ds)
 		return -ENODEV;
 	}
 
+	for (int port = 0; port < YT921X_PORT_NUM; port++) {
+		struct yt921x_port *pp = &priv->ports[port];
+		struct yt921x_mib *pm = pp->mib;
+
+		if (!pm)
+			continue;
+
+		memset(&pm->data, 0, sizeof(pm->data));
+	}
+
 	mask = priv->info->serdes_mask;
 	for_each_set_bit(port, &mask, YT921X_PORT_NUM) {
 		struct yt921x_port *pp = &priv->ports[port];
