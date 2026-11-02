@@ -18,7 +18,7 @@ struct ionic_lif;
 #define PCI_DEVICE_ID_PENSANDO_IONIC_ETH_PF	0x1002
 #define PCI_DEVICE_ID_PENSANDO_IONIC_ETH_VF	0x1003
 
-#define DEVCMD_TIMEOUT			5
+#define IONIC_CMD_TIMEOUT_DEF		5
 #define IONIC_ADMINQ_TIME_SLICE		msecs_to_jiffies(100)
 
 #define IONIC_PHC_UPDATE_NS	10000000000	    /* 10s in nanoseconds */
@@ -63,6 +63,7 @@ struct ionic {
 	int num_vfs;
 	struct timer_list watchdog_timer;
 	int watchdog_period;
+	u8 cmd_timeout;
 };
 
 int ionic_adminq_post(struct ionic_lif *lif, struct ionic_admin_ctx *ctx);
