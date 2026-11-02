@@ -41,6 +41,7 @@
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
+#include <net/page_pool/helpers.h>
 
 #include <asm/processor.h>
 #include <asm/io.h>
@@ -1020,10 +1021,30 @@ static int emac_set_mac_address(struct net_device *ndev, void *sa)
 	return 0;
 }
 
+static void *emac_alloc_rx_buf(struct emac_instance *dev, unsigned int size,
+			       gfp_t gfp)
+{
+	return page_pool_alloc_va(dev->rx_pool, &size, gfp);
+}
+
+static void emac_prepare_rx_buf(struct emac_instance *dev, int slot, void *va)
+{
+	struct page *page = virt_to_page(va);
+
+	dev->rx_buf[slot] = va;
+	dev->rx_dma[slot] = page_pool_get_dma_addr(page) + offset_in_page(va) +
+			    NET_SKB_PAD;
+	dev->rx_desc[slot].data_len = 0;
+	dev->rx_desc[slot].data_ptr = dev->rx_dma[slot] + NET_IP_ALIGN;
+	/* Descriptor fields must be visible before MAL sees it as empty */
+	wmb();
+	dev->rx_desc[slot].ctrl = MAL_RX_CTRL_EMPTY |
+	    (slot == (NUM_RX_BUFF - 1) ? MAL_RX_CTRL_WRAP : 0);
+}
+
 static int emac_resize_rx_ring(struct emac_instance *dev, int new_mtu)
 {
-	int rx_sync_size = emac_rx_sync_size(new_mtu);
-	int rx_skb_size = emac_rx_skb_size(new_mtu);
+	int rx_buf_size = emac_rx_buf_size(new_mtu);
 	int i, ret = 0;
 	int mr1_jumbo_bit_change = 0;
 
@@ -1051,28 +1072,23 @@ static int emac_resize_rx_ring(struct emac_instance *dev, int new_mtu)
 		    (i == (NUM_RX_BUFF - 1) ? MAL_RX_CTRL_WRAP : 0);
 	}
 
-	/* Reallocate RX ring only if bigger skb buffers are required */
-	if (rx_skb_size <= dev->rx_skb_size)
+	/* Reallocate RX ring only if bigger buffers are required */
+	if (rx_buf_size <= dev->rx_buf_size)
 		goto skip;
 
-	/* Second pass, allocate new skbs */
+	/* Second pass, allocate new buffers */
 	for (i = 0; i < NUM_RX_BUFF; ++i) {
-		struct sk_buff *skb;
+		void *va;
 
-		skb = netdev_alloc_skb_ip_align(dev->ndev, rx_skb_size);
-		if (!skb) {
+		BUG_ON(!dev->rx_buf[i]);
+		va = emac_alloc_rx_buf(dev, rx_buf_size, GFP_KERNEL);
+		if (!va) {
 			ret = -ENOMEM;
 			goto oom;
 		}
 
-		BUG_ON(!dev->rx_skb[i]);
-		dev_kfree_skb(dev->rx_skb[i]);
-
-		dev->rx_desc[i].data_ptr =
-		    dma_map_single(&dev->ofdev->dev, skb->data - NET_IP_ALIGN,
-				   rx_sync_size, DMA_FROM_DEVICE)
-				   + NET_IP_ALIGN;
-		dev->rx_skb[i] = skb;
+		page_pool_free_va(dev->rx_pool, dev->rx_buf[i], false);
+		emac_prepare_rx_buf(dev, i, va);
 	}
  skip:
 	/* Check if we need to change "Jumbo" bit in MR1 */
@@ -1092,6 +1108,8 @@ static int emac_resize_rx_ring(struct emac_instance *dev, int new_mtu)
 		emac_full_tx_reset(dev);
 	}
 
+	/* Must be updated before RX restarts, NAPI refills with this size */
+	dev->rx_buf_size = rx_buf_size;
 	mal_set_rcbs(dev->mal, dev->mal_rx_chan, emac_rx_size(new_mtu));
  oom:
 	/* Restart RX */
@@ -1117,15 +1135,14 @@ static int emac_change_mtu(struct net_device *ndev, int new_mtu)
 		/* Check if we really need to reinitialize RX ring. The
 		 * jumbo frame settings are only updated by a resize.
 		 */
-		if (emac_rx_skb_size(ndev->mtu) != emac_rx_skb_size(new_mtu) ||
+		if (emac_rx_buf_size(ndev->mtu) != emac_rx_buf_size(new_mtu) ||
 		    ndev->mtu > ETH_DATA_LEN || new_mtu > ETH_DATA_LEN)
 			ret = emac_resize_rx_ring(dev, new_mtu);
 	}
 
 	if (!ret) {
 		WRITE_ONCE(ndev->mtu, new_mtu);
-		dev->rx_skb_size = emac_rx_skb_size(new_mtu);
-		dev->rx_sync_size = emac_rx_sync_size(new_mtu);
+		dev->rx_buf_size = emac_rx_buf_size(new_mtu);
 	}
 
 	return ret;
@@ -1152,10 +1169,10 @@ static void emac_clean_rx_ring(struct emac_instance *dev)
 	int i;
 
 	for (i = 0; i < NUM_RX_BUFF; ++i)
-		if (dev->rx_skb[i]) {
+		if (dev->rx_buf[i]) {
 			dev->rx_desc[i].ctrl = 0;
-			dev_kfree_skb(dev->rx_skb[i]);
-			dev->rx_skb[i] = NULL;
+			page_pool_free_va(dev->rx_pool, dev->rx_buf[i], false);
+			dev->rx_buf[i] = NULL;
 			dev->rx_desc[i].data_ptr = 0;
 		}
 
@@ -1163,6 +1180,9 @@ static void emac_clean_rx_ring(struct emac_instance *dev)
 		dev_kfree_skb(dev->rx_sg_skb);
 		dev->rx_sg_skb = NULL;
 	}
+
+	mal_destroy_page_pool(dev->mal, dev->rx_pool);
+	dev->rx_pool = NULL;
 }
 
 static void emac_clear_mal_desc(struct mal_descriptor *desc, int count)
@@ -1176,44 +1196,20 @@ static void emac_clear_mal_desc(struct mal_descriptor *desc, int count)
 	}
 }
 
-static int
-__emac_prepare_rx_skb(struct sk_buff *skb, struct emac_instance *dev, int slot)
+static struct page_pool *emac_create_rx_pool(struct emac_instance *dev)
 {
-	if (unlikely(!skb))
-		return -ENOMEM;
+	struct page_pool_params pp = {
+		.flags		= PP_FLAG_DMA_MAP | PP_FLAG_DMA_SYNC_DEV,
+		.pool_size	= NUM_RX_BUFF,
+		.nid		= NUMA_NO_NODE,
+		.dev		= &dev->ofdev->dev,
+		.napi		= &dev->mal->napi,
+		.netdev		= dev->ndev,
+		.dma_dir	= DMA_FROM_DEVICE,
+		.max_len	= PAGE_SIZE,
+	};
 
-	dev->rx_skb[slot] = skb;
-	dev->rx_desc[slot].data_len = 0;
-
-	dev->rx_desc[slot].data_ptr =
-	    dma_map_single(&dev->ofdev->dev, skb->data - NET_IP_ALIGN,
-			   dev->rx_sync_size, DMA_FROM_DEVICE) + NET_IP_ALIGN;
-	wmb();
-	dev->rx_desc[slot].ctrl = MAL_RX_CTRL_EMPTY |
-	    (slot == (NUM_RX_BUFF - 1) ? MAL_RX_CTRL_WRAP : 0);
-
-	return 0;
-}
-
-static int
-emac_alloc_rx_skb(struct emac_instance *dev, int slot)
-{
-	struct sk_buff *skb;
-
-	skb = __netdev_alloc_skb_ip_align(dev->ndev, dev->rx_skb_size,
-					  GFP_KERNEL);
-
-	return __emac_prepare_rx_skb(skb, dev, slot);
-}
-
-static int
-emac_alloc_rx_skb_napi(struct emac_instance *dev, int slot)
-{
-	struct sk_buff *skb;
-
-	skb = napi_alloc_skb(&dev->mal->napi, dev->rx_skb_size);
-
-	return __emac_prepare_rx_skb(skb, dev, slot);
+	return page_pool_create(&pp);
 }
 
 static void emac_print_link_status(struct emac_instance *dev)
@@ -1232,17 +1228,27 @@ static void emac_print_link_status(struct emac_instance *dev)
 static int emac_open(struct net_device *ndev)
 {
 	struct emac_instance *dev = netdev_priv(ndev);
+	struct page_pool *pool;
 	int i;
 
 	DBG(dev, "open" NL);
 
+	pool = emac_create_rx_pool(dev);
+	if (IS_ERR(pool))
+		return PTR_ERR(pool);
+	dev->rx_pool = pool;
+
 	/* Allocate RX ring */
-	for (i = 0; i < NUM_RX_BUFF; ++i)
-		if (emac_alloc_rx_skb(dev, i)) {
+	for (i = 0; i < NUM_RX_BUFF; ++i) {
+		void *va = emac_alloc_rx_buf(dev, dev->rx_buf_size, GFP_KERNEL);
+
+		if (!va) {
 			printk(KERN_ERR "%s: failed to allocate RX ring\n",
 			       ndev->name);
 			goto oom;
 		}
+		emac_prepare_rx_buf(dev, i, va);
+	}
 
 	dev->tx_cnt = dev->tx_slot = dev->ack_slot = dev->rx_slot = 0;
 	clear_bit(MAL_COMMAC_RX_STOPPED, &dev->commac.flags);
@@ -1661,17 +1667,23 @@ static void emac_poll_tx(void *param)
 	netif_tx_unlock_bh(dev->ndev);
 }
 
+static inline void emac_rx_sync_for_cpu(struct emac_instance *dev, int slot,
+					int len)
+{
+	dma_sync_single_for_cpu(&dev->ofdev->dev, dev->rx_dma[slot],
+				SKB_DATA_ALIGN(len + NET_IP_ALIGN),
+				DMA_FROM_DEVICE);
+}
+
 static inline void emac_recycle_rx_skb(struct emac_instance *dev, int slot,
 				       int len)
 {
-	struct sk_buff *skb = dev->rx_skb[slot];
-
 	DBG2(dev, "recycle %d %d" NL, slot, len);
 
 	if (len)
-		dma_map_single(&dev->ofdev->dev, skb->data - NET_IP_ALIGN,
-			       SKB_DATA_ALIGN(len + NET_IP_ALIGN),
-			       DMA_FROM_DEVICE);
+		dma_sync_single_for_device(&dev->ofdev->dev, dev->rx_dma[slot],
+					   SKB_DATA_ALIGN(len + NET_IP_ALIGN),
+					   DMA_FROM_DEVICE);
 
 	dev->rx_desc[slot].data_len = 0;
 	wmb();
@@ -1717,23 +1729,69 @@ static inline void emac_rx_csum(struct emac_instance *dev,
 #endif
 }
 
+/* Hand the buffer of the slot to a new skb and refill the slot */
+static struct sk_buff *emac_build_rx_skb(struct emac_instance *dev, int slot,
+					 int len)
+{
+	struct sk_buff *skb;
+	void *va;
+
+	va = emac_alloc_rx_buf(dev, dev->rx_buf_size,
+			       GFP_ATOMIC | __GFP_NOWARN);
+	if (unlikely(!va))
+		return NULL;
+
+	/* napi_build_skb() only writes the skb_shared_info, which is past the
+	 * BD area, so the slot is synced for the CPU only once it is consumed.
+	 */
+	skb = napi_build_skb(dev->rx_buf[slot], dev->rx_buf_size);
+	if (unlikely(!skb)) {
+		page_pool_free_va(dev->rx_pool, va, true);
+		return NULL;
+	}
+
+	emac_rx_sync_for_cpu(dev, slot, len);
+	skb_mark_for_recycle(skb);
+	skb_reserve(skb, EMAC_RX_HEADROOM);
+	skb_put(skb, len);
+	emac_prepare_rx_buf(dev, slot, va);
+
+	return skb;
+}
+
 static inline int emac_rx_sg_append(struct emac_instance *dev, int slot)
 {
-	if (likely(dev->rx_sg_skb != NULL)) {
-		int len = dev->rx_desc[slot].data_len;
-		int tot_len = dev->rx_sg_skb->len + len;
+	struct sk_buff *skb = dev->rx_sg_skb;
 
-		if (unlikely(tot_len + NET_IP_ALIGN > dev->rx_skb_size)) {
+	if (likely(skb)) {
+		int len = dev->rx_desc[slot].data_len;
+		void *buf = dev->rx_buf[slot];
+		void *va;
+
+		if (unlikely(skb->len + len >
+			     dev->ndev->mtu + EMAC_MTU_OVERHEAD ||
+			     skb_shinfo(skb)->nr_frags >= MAX_SKB_FRAGS)) {
 			++dev->estats.rx_dropped_mtu;
-			dev_kfree_skb(dev->rx_sg_skb);
-			dev->rx_sg_skb = NULL;
-		} else {
-			memcpy(skb_tail_pointer(dev->rx_sg_skb),
-					 dev->rx_skb[slot]->data, len);
-			skb_put(dev->rx_sg_skb, len);
-			emac_recycle_rx_skb(dev, slot, len);
-			return 0;
+			goto drop;
 		}
+
+		va = emac_alloc_rx_buf(dev, dev->rx_buf_size,
+				       GFP_ATOMIC | __GFP_NOWARN);
+		if (unlikely(!va)) {
+			++dev->estats.rx_dropped_oom;
+			goto drop;
+		}
+
+		emac_rx_sync_for_cpu(dev, slot, len);
+		skb_add_rx_frag(skb, skb_shinfo(skb)->nr_frags,
+				virt_to_page(buf),
+				offset_in_page(buf) + EMAC_RX_HEADROOM,
+				len, dev->rx_buf_size);
+		emac_prepare_rx_buf(dev, slot, va);
+		return 0;
+ drop:
+		dev_kfree_skb(skb);
+		dev->rx_sg_skb = NULL;
 	}
 	emac_recycle_rx_skb(dev, slot, 0);
 	return -1;
@@ -1756,7 +1814,6 @@ static int emac_poll_rx(void *param, int budget)
 		if (ctrl & MAL_RX_CTRL_EMPTY)
 			break;
 
-		skb = dev->rx_skb[slot];
 		mb();
 		len = dev->rx_desc[slot].data_len;
 
@@ -1785,15 +1842,19 @@ static int emac_poll_rx(void *param, int budget)
 			if (unlikely(!copy_skb))
 				goto oom;
 
+			emac_rx_sync_for_cpu(dev, slot, len);
 			memcpy(copy_skb->data - NET_IP_ALIGN,
-			       skb->data - NET_IP_ALIGN,
+			       dev->rx_buf[slot] + NET_SKB_PAD,
 			       len + NET_IP_ALIGN);
 			emac_recycle_rx_skb(dev, slot, len);
 			skb = copy_skb;
-		} else if (unlikely(emac_alloc_rx_skb_napi(dev, slot)))
-			goto oom;
+			skb_put(skb, len);
+		} else {
+			skb = emac_build_rx_skb(dev, slot, len);
+			if (unlikely(!skb))
+				goto oom;
+		}
 
-		skb_put(skb, len);
 	push_packet:
 		skb->protocol = eth_type_trans(skb, dev->ndev);
 		emac_rx_csum(dev, skb, ctrl);
@@ -1810,13 +1871,11 @@ static int emac_poll_rx(void *param, int budget)
 	sg:
 		if (ctrl & MAL_RX_CTRL_FIRST) {
 			BUG_ON(dev->rx_sg_skb);
-			if (unlikely(emac_alloc_rx_skb_napi(dev, slot))) {
+			dev->rx_sg_skb = emac_build_rx_skb(dev, slot, len);
+			if (unlikely(!dev->rx_sg_skb)) {
 				DBG(dev, "rx OOM %d" NL, slot);
 				++dev->estats.rx_dropped_oom;
 				emac_recycle_rx_skb(dev, slot, 0);
-			} else {
-				dev->rx_sg_skb = skb;
-				skb_put(skb, len);
 			}
 		} else if (!emac_rx_sg_append(dev, slot) &&
 			   (ctrl & MAL_RX_CTRL_LAST)) {
@@ -3097,8 +3156,7 @@ static int emac_probe(struct platform_device *ofdev)
 		       np, dev->mal_dev->dev.of_node);
 		goto err_rel_deps;
 	}
-	dev->rx_skb_size = emac_rx_skb_size(ndev->mtu);
-	dev->rx_sync_size = emac_rx_sync_size(ndev->mtu);
+	dev->rx_buf_size = emac_rx_buf_size(ndev->mtu);
 
 	/* Get pointers to BD rings */
 	dev->tx_desc =
@@ -3113,7 +3171,7 @@ static int emac_probe(struct platform_device *ofdev)
 	emac_clear_mal_desc(dev->tx_desc, NUM_TX_BUFF);
 	emac_clear_mal_desc(dev->rx_desc, NUM_RX_BUFF);
 	memset(dev->tx_skb, 0, NUM_TX_BUFF * sizeof(struct sk_buff *));
-	memset(dev->rx_skb, 0, NUM_RX_BUFF * sizeof(struct sk_buff *));
+	memset(dev->rx_buf, 0, sizeof(dev->rx_buf));
 
 	/* Attach to ZMII, if needed */
 	if (emac_has_feature(dev, EMAC_FTR_HAS_ZMII) &&
