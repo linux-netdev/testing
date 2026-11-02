@@ -281,6 +281,8 @@ static int ionic_setup_one(struct ionic *ionic)
 		goto err_out_teardown;
 	}
 
+	ionic_update_cmd_timeout(ionic);
+
 	/* Configure the port */
 	err = ionic_port_identify(ionic);
 	if (err) {
@@ -455,6 +457,7 @@ static void ionic_reset_prepare(struct pci_dev *pdev)
 	cancel_work_sync(&lif->deferred.work);
 
 	ionic_auxbus_unregister(ionic->lif);
+	ionic_devlink_params_unregister(ionic);
 	mutex_lock(&lif->queue_lock);
 	ionic_stop_queues_reconfig(lif);
 	ionic_txrx_free(lif);
