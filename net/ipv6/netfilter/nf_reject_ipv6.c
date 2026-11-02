@@ -223,6 +223,11 @@ nf_reject_ip6_tcphdr_get(struct sk_buff *oldskb,
 	if (otcph == NULL)
 		return NULL;
 
+	/* Reject invalid or truncated TCP headers. */
+	if (otcph->doff < sizeof(struct tcphdr) / 4 ||
+	    *otcplen < (otcph->doff << 2))
+		return NULL;
+
 	/* No RST for RST. */
 	if (otcph->rst) {
 		pr_debug("RST is set\n");
