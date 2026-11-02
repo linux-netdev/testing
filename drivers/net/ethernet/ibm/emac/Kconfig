@@ -3,6 +3,7 @@ config IBM_EMAC
 	tristate "IBM EMAC Ethernet support"
 	depends on PPC_DCR
 	select CRC32
+	select PAGE_POOL
 	select PHYLIB
 	help
 	  This driver supports the IBM EMAC family of Ethernet controllers
