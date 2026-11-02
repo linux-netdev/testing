@@ -53,24 +53,31 @@
 /* Maximum L2 header length (VLAN tagged, no FCS) */
 #define EMAC_MTU_OVERHEAD		(6 * 2 + 2 + 4)
 
-/* RX BD size for the given MTU */
+/* Headroom in front of the received frame */
+#define EMAC_RX_HEADROOM		(NET_SKB_PAD + NET_IP_ALIGN)
+
+/* Largest RX BD size whose buffer still fits into one page */
+#define EMAC_RX_MAX_SIZE \
+	ALIGN_DOWN(SKB_WITH_OVERHEAD(PAGE_SIZE) - EMAC_RX_HEADROOM, 16)
+
+/* RX BD size for the given MTU, larger frames span several BDs */
 static inline int emac_rx_size(int mtu)
 {
-	return mal_rx_size(max(mtu, ETH_DATA_LEN) + EMAC_MTU_OVERHEAD);
+	int size = mal_rx_size(max(mtu, ETH_DATA_LEN) + EMAC_MTU_OVERHEAD);
+
+	return min_t(int, size, EMAC_RX_MAX_SIZE);
 }
 
-/* Size of RX skb for the given MTU */
-static inline int emac_rx_skb_size(int mtu)
+/* Size of an RX buffer for the given MTU, including the headroom and
+ * the skb_shared_info. Buffers above half a page take a whole page.
+ */
+static inline int emac_rx_buf_size(int mtu)
 {
-	int size = max(mtu + EMAC_MTU_OVERHEAD, emac_rx_size(mtu));
+	int size = SKB_HEAD_ALIGN(NET_SKB_PAD +
+				  SKB_DATA_ALIGN(emac_rx_size(mtu) +
+						 NET_IP_ALIGN));
 
-	return SKB_DATA_ALIGN(size + NET_IP_ALIGN) + NET_SKB_PAD;
-}
-
-/* RX DMA sync size */
-static inline int emac_rx_sync_size(int mtu)
-{
-	return SKB_DATA_ALIGN(emac_rx_size(mtu) + NET_IP_ALIGN);
+	return size > PAGE_SIZE / 2 ? PAGE_SIZE : size;
 }
 
 /* Driver statistcs is split into two parts to make it more cache friendly:
@@ -238,11 +245,13 @@ struct emac_instance {
 	struct mal_descriptor		*rx_desc;
 	int				rx_slot;
 	struct sk_buff			*rx_sg_skb;	/* 1 */
-	int 				rx_skb_size;
-	int				rx_sync_size;
+	int				rx_buf_size;
+	struct page_pool		*rx_pool;
 
 	struct sk_buff			*tx_skb[NUM_TX_BUFF];
-	struct sk_buff			*rx_skb[NUM_RX_BUFF];
+	void				*rx_buf[NUM_RX_BUFF];
+	/* DMA address of rx_buf + NET_SKB_PAD, cache line aligned */
+	dma_addr_t			rx_dma[NUM_RX_BUFF];
 
 	/* Stats
 	 */
