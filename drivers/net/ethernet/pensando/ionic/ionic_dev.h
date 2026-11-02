@@ -340,6 +340,9 @@ void ionic_dev_cmd_comp(struct ionic_dev *idev, union ionic_dev_cmd_comp *comp);
 void ionic_dev_cmd_identify(struct ionic_dev *idev, u8 ver);
 void ionic_dev_cmd_init(struct ionic_dev *idev);
 void ionic_dev_cmd_reset(struct ionic_dev *idev);
+int ionic_dev_getattr_cmd_timeout(struct ionic *ionic, u8 *timeout);
+int ionic_dev_setattr_cmd_timeout(struct ionic *ionic, u8 timeout);
+void ionic_update_cmd_timeout(struct ionic *ionic);
 
 void ionic_dev_cmd_port_identify(struct ionic_dev *idev);
 void ionic_dev_cmd_port_init(struct ionic_dev *idev);
