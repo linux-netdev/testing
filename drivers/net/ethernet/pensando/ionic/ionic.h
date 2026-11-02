@@ -64,7 +64,19 @@ struct ionic {
 	struct timer_list watchdog_timer;
 	int watchdog_period;
 	u8 cmd_timeout;
+	bool dl_params_registered;
 };
+
+static inline bool ionic_cmd_timeout_valid(u8 timeout)
+{
+	return !timeout || timeout >= IONIC_CMD_TIMEOUT_DEF;
+}
+
+static inline bool ionic_cmd_timeout_supported(struct ionic *ionic)
+{
+	return ionic->ident.dev.capabilities &
+	       cpu_to_le64(IONIC_DEV_CAP_CMD_TIMEOUT);
+}
 
 int ionic_adminq_post(struct ionic_lif *lif, struct ionic_admin_ctx *ctx);
 int ionic_adminq_wait(struct ionic_lif *lif, struct ionic_admin_ctx *ctx,
