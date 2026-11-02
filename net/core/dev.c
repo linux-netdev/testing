@@ -4130,6 +4130,11 @@ int skb_csum_hwoffload_help(struct sk_buff *skb,
 	}
 
 sw_checksum:
+	if (vlan_get_protocol(skb) == htons(ETH_P_IP)) {
+		if (!pskb_network_may_pull(skb, sizeof(struct iphdr)) ||
+		    ip_check_csum_start(skb))
+			return -EINVAL;
+	}
 	return skb_checksum_help(skb);
 }
 EXPORT_SYMBOL(skb_csum_hwoffload_help);
