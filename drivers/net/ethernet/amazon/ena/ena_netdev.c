@@ -16,7 +16,6 @@
 #include <net/ip.h>
 
 #include "ena_netdev.h"
-#include "ena_pci_id_tbl.h"
 #include "ena_xdp.h"
 
 #include "ena_phc.h"
@@ -41,6 +40,23 @@ static struct ena_aenq_handlers aenq_handlers;
 
 static struct workqueue_struct *ena_wq;
 
+#define PCI_DEV_ID_ENA_LLQ_PF	0x1ec2
+#define PCI_DEV_ID_ENA_LLQ_VF	0xec21
+#define PCI_DEV_ID_ENA_PF	0x0ec2
+#define PCI_DEV_ID_ENA_VF	0xec20
+#define PCI_DEV_ID_ENA_RESRV0	0x0051
+
+#define ENA_PCI_ID_TABLE_ENTRY(devid) \
+	{ PCI_DEVICE(PCI_VENDOR_ID_AMAZON, devid) }
+
+static const struct pci_device_id ena_pci_tbl[] = {
+	ENA_PCI_ID_TABLE_ENTRY(PCI_DEV_ID_ENA_RESRV0),
+	ENA_PCI_ID_TABLE_ENTRY(PCI_DEV_ID_ENA_PF),
+	ENA_PCI_ID_TABLE_ENTRY(PCI_DEV_ID_ENA_LLQ_PF),
+	ENA_PCI_ID_TABLE_ENTRY(PCI_DEV_ID_ENA_VF),
+	ENA_PCI_ID_TABLE_ENTRY(PCI_DEV_ID_ENA_LLQ_VF),
+	{ }
+};
 MODULE_DEVICE_TABLE(pci, ena_pci_tbl);
 
 static int ena_rss_init_default(struct ena_adapter *adapter);
