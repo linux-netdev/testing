@@ -2894,11 +2894,13 @@ static int igb_xdp_setup(struct net_device *dev, struct netdev_bpf *bpf)
 	bool running = netif_running(dev);
 	bool need_reset;
 
-	/* verify igb ring attributes are sufficient for XDP */
+	/* verify igb ring attributes are sufficient for XDP, leaving room
+	 * for the inline Rx timestamp header
+	 */
 	for (i = 0; i < adapter->num_rx_queues; i++) {
 		struct igb_ring *ring = adapter->rx_ring[i];
 
-		if (frame_size > igb_rx_bufsz(ring)) {
+		if (frame_size + IGB_TS_HDR_LEN > igb_rx_bufsz(ring)) {
 			NL_SET_ERR_MSG_MOD(bpf->extack,
 					   "The RX buffer size is too small for the frame size");
 			netdev_warn(dev, "XDP RX buffer size %d is too small for the frame size %d\n",
@@ -5324,6 +5326,7 @@ static void igb_set_rx_mode(struct net_device *netdev)
 	struct e1000_hw *hw = &adapter->hw;
 	unsigned int vfn = adapter->vfs_allocated_count;
 	u32 rctl = 0, vmolr = 0, rlpml = MAX_JUMBO_FRAME_SIZE;
+	u32 pool_rlpml;
 	int count;
 
 	/* Check for Promiscuous and All Multicast modes */
@@ -5386,6 +5389,12 @@ static void igb_set_rx_mode(struct net_device *netdev)
 			rlpml = IGB_MAX_FRAME_BUILD_SKB;
 	}
 #endif
+	/* XDP does not support frames that span more than one Rx buffer.
+	 * With VFs the global limit stays large and the PF pool is limited
+	 * through VMOLR below.
+	 */
+	if (!adapter->vfs_allocated_count && igb_xdp_is_enabled(adapter))
+		rlpml = min_t(u32, rlpml, adapter->max_frame_size);
 	wr32(E1000_RLPML, rlpml);
 
 	/* In order to support SR-IOV and eventually VMDq it is necessary to set
@@ -5402,15 +5411,18 @@ static void igb_set_rx_mode(struct net_device *netdev)
 	vmolr |= rd32(E1000_VMOLR(vfn)) &
 		 ~(E1000_VMOLR_ROPE | E1000_VMOLR_MPME | E1000_VMOLR_ROMPE);
 
-	/* enable Rx jumbo frames, restrict as needed to support build_skb */
-	vmolr &= ~E1000_VMOLR_RLPML_MASK;
+	/* enable Rx jumbo frames, restrict as needed to support build_skb
+	 * and XDP
+	 */
+	pool_rlpml = MAX_JUMBO_FRAME_SIZE;
 #if (PAGE_SIZE < 8192)
 	if (adapter->max_frame_size <= IGB_MAX_FRAME_BUILD_SKB)
-		vmolr |= IGB_MAX_FRAME_BUILD_SKB;
-	else
+		pool_rlpml = IGB_MAX_FRAME_BUILD_SKB;
 #endif
-		vmolr |= MAX_JUMBO_FRAME_SIZE;
-	vmolr |= E1000_VMOLR_LPE;
+	if (igb_xdp_is_enabled(adapter))
+		pool_rlpml = min_t(u32, pool_rlpml, adapter->max_frame_size);
+	vmolr &= ~E1000_VMOLR_RLPML_MASK;
+	vmolr |= pool_rlpml | E1000_VMOLR_LPE;
 
 	wr32(E1000_VMOLR(vfn), vmolr);
 
@@ -6713,7 +6725,7 @@ static int igb_change_mtu(struct net_device *netdev, int new_mtu)
 		for (i = 0; i < adapter->num_rx_queues; i++) {
 			struct igb_ring *ring = adapter->rx_ring[i];
 
-			if (max_frame > igb_rx_bufsz(ring)) {
+			if (max_frame + IGB_TS_HDR_LEN > igb_rx_bufsz(ring)) {
 				netdev_warn(adapter->netdev,
 					    "Requested MTU size is not supported with XDP. Max frame size is %d\n",
 					    max_frame);
