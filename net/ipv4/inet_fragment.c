@@ -455,6 +455,9 @@ int inet_frag_queue_insert(struct inet_frag_queue *q, struct sk_buff *skb,
 	 * that reach the reassembled skb, whose head keeps the first
 	 * fragment's shinfo and whose frag_list is not GRO-shaped.
 	 */
+	if (last && !skb_mem_provider_compat(last, skb))
+		return IPFRAG_OVERLAP;
+
 	skb_gso_reset(skb);
 
 	/* RFC5722, Section 4, amended by Errata ID : 3089
