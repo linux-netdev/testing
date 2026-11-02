@@ -276,6 +276,8 @@ void mal_disable_rx_channel(struct mal_instance *mal, int channel);
 void mal_poll_disable(struct mal_instance *mal, struct mal_commac *commac);
 void mal_poll_enable(struct mal_instance *mal, struct mal_commac *commac);
 
+void mal_destroy_page_pool(struct mal_instance *mal, struct page_pool *pool);
+
 /* Add/remove EMAC to/from MAL polling list */
 void mal_poll_add(struct mal_instance *mal, struct mal_commac *commac);
 void mal_poll_del(struct mal_instance *mal, struct mal_commac *commac);
