@@ -3398,6 +3398,7 @@ static void ionic_lif_handle_fw_down(struct ionic_lif *lif)
 	netif_device_detach(lif->netdev);
 
 	ionic_auxbus_unregister(ionic->lif);
+	ionic_devlink_params_unregister(ionic);
 	mutex_lock(&lif->queue_lock);
 	if (test_bit(IONIC_LIF_F_UP, lif->state)) {
 		dev_info(ionic->dev, "Surprise FW stop, stopping queues\n");
@@ -3460,6 +3461,7 @@ int ionic_restart_lif(struct ionic_lif *lif)
 	netif_device_attach(lif->netdev);
 	ionic_queue_doorbell_check(ionic, IONIC_NAPI_DEADLINE);
 
+	ionic_devlink_params_register(ionic);
 	ionic_auxbus_register(ionic->lif);
 
 	return 0;
@@ -3495,6 +3497,7 @@ static void ionic_lif_handle_fw_up(struct ionic_lif *lif)
 	err = ionic_identify(ionic);
 	if (err)
 		goto err_out;
+	ionic_update_cmd_timeout(ionic);
 	err = ionic_port_identify(ionic);
 	if (err)
 		goto err_out;
