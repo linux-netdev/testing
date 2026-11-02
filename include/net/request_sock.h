@@ -16,6 +16,7 @@
 #include <linux/types.h>
 #include <linux/bug.h>
 #include <linux/refcount.h>
+#include <linux/rcupdate.h>
 
 #include <net/sock.h>
 #include <net/rstreason.h>
@@ -39,6 +40,7 @@ struct request_sock_ops {
 };
 
 struct saved_syn {
+	struct rcu_head rcu;
 	u32 mac_hdrlen;
 	u32 network_hdrlen;
 	u32 tcp_hdrlen;

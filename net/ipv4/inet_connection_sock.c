@@ -908,7 +908,7 @@ void __reqsk_free(struct request_sock *req)
 	req->rsk_ops->destructor(req);
 	if (req->rsk_listener)
 		sock_put(req->rsk_listener);
-	kfree(req->saved_syn);
+	kfree_rcu(req->saved_syn, rcu);
 	kmem_cache_free(req->rsk_ops->slab, req);
 }
 
