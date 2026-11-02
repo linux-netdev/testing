@@ -323,7 +323,8 @@ net_devmem_bind_dmabuf(struct net_device *dev, void *vdev,
 		nr_niovs = len >> niov_shift;
 		for (i = 0; i < nr_niovs; i++, niov_idx++) {
 			niov = &binding->area.niovs[niov_idx];
-			net_iov_init(niov, &binding->area, NET_IOV_DMABUF);
+			net_iov_init(niov, &binding->area, NET_IOV_DMABUF,
+				     binding);
 			if (net_mp_niov_set_dma_addr(niov, dma_addr)) {
 				err = -EFAULT;
 				NL_SET_ERR_MSG(extack,

@@ -857,7 +857,7 @@ static void netmem_ref_test_net_iov(struct kunit *test)
 			      PERCPU_REF_INIT_ATOMIC, GFP_KERNEL);
 	KUNIT_ASSERT_EQ(test, err, 0);
 
-	net_iov_init(&niov, &binding.area, NET_IOV_DMABUF);
+	net_iov_init(&niov, &binding.area, NET_IOV_DMABUF, &binding);
 	netmem = net_iov_to_netmem(&niov);
 	base_ref = atomic_long_read(&binding.ref.data->count);
 
@@ -1145,7 +1145,7 @@ static void netmem_ref_test_release_data(struct kunit *test)
 			percpu_ref_init(&binding.ref, dummy_percpu_ref_release,
 					PERCPU_REF_INIT_ATOMIC, GFP_KERNEL),
 			0);
-	net_iov_init(&niov, &binding.area, NET_IOV_DMABUF);
+	net_iov_init(&niov, &binding.area, NET_IOV_DMABUF, &binding);
 	netmem = net_iov_to_netmem(&niov);
 	netmem_set_pp(netmem, pool);
 	netmem_or_pp_magic(netmem, PP_SIGNATURE);
@@ -1206,7 +1206,7 @@ static void netmem_ref_test_skb_segment(struct kunit *test)
 			percpu_ref_init(&binding.ref, dummy_percpu_ref_release,
 					PERCPU_REF_INIT_ATOMIC, GFP_KERNEL),
 			0);
-	net_iov_init(&niov, &binding.area, NET_IOV_DMABUF);
+	net_iov_init(&niov, &binding.area, NET_IOV_DMABUF, &binding);
 	niov_nm = net_iov_to_netmem(&niov);
 	netmem_set_pp(niov_nm, pool);
 	netmem_or_pp_magic(niov_nm, PP_SIGNATURE);
@@ -1508,7 +1508,7 @@ static void netmem_ref_test_try_coalesce(struct kunit *test)
 			percpu_ref_init(&binding.ref, dummy_percpu_ref_release,
 					PERCPU_REF_INIT_ATOMIC, GFP_KERNEL),
 			0);
-	net_iov_init(&niov, &binding.area, NET_IOV_DMABUF);
+	net_iov_init(&niov, &binding.area, NET_IOV_DMABUF, &binding);
 	niov_nm = net_iov_to_netmem(&niov);
 	netmem_set_pp(niov_nm, pool);
 	netmem_or_pp_magic(niov_nm, PP_SIGNATURE);
@@ -1654,7 +1654,7 @@ static void netmem_ref_test_tcp_devmem_recv(struct kunit *test)
 		KUNIT_ASSERT_EQ(test, ret, 0);
 	}
 	binding.area.niovs = &niov;
-	net_iov_init(&niov, &binding.area, NET_IOV_DMABUF);
+	net_iov_init(&niov, &binding.area, NET_IOV_DMABUF, &binding);
 	niov_nm = net_iov_to_netmem(&niov);
 	netmem_set_pp(niov_nm, pool);
 	netmem_or_pp_magic(niov_nm, PP_SIGNATURE);
