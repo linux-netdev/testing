@@ -25,6 +25,7 @@
 #include <linux/of.h>
 #include <linux/of_irq.h>
 #include <linux/platform_device.h>
+#include <net/page_pool/types.h>
 
 #include "core.h"
 #include <asm/dcr-regs.h>
@@ -83,6 +84,23 @@ void mal_unregister_commac(struct mal_instance	*mal,
 	spin_unlock_irqrestore(&mal->lock, flags);
 	if (disable_napi)
 		napi_disable_locked(&mal->napi);
+	netdev_unlock(mal->napi.dev);
+}
+
+/* A page pool that recycles directly into the MAL NAPI instance can only be
+ * destroyed while that instance is disabled.
+ */
+void mal_destroy_page_pool(struct mal_instance *mal, struct page_pool *pool)
+{
+	bool enabled;
+
+	netdev_lock(mal->napi.dev);
+	enabled = !list_empty(&mal->list);
+	if (enabled)
+		napi_disable_locked(&mal->napi);
+	page_pool_destroy(pool);
+	if (enabled)
+		napi_enable_locked(&mal->napi);
 	netdev_unlock(mal->napi.dev);
 }
 
