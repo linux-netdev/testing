@@ -1882,6 +1882,16 @@ static inline bool skb_frags_readable(const struct sk_buff *skb)
 	return !skb->unreadable;
 }
 
+/* Return true if frags in this skb are backed by net_iovs.
+ * Assumes skb->unreadable and net_iov-backed frags are equivalent for now;
+ * the two can be decoupled in the future if readable net_iovs in skbs are
+ * introduced.
+ */
+static inline bool skb_has_net_iovs(const struct sk_buff *skb)
+{
+	return skb->unreadable;
+}
+
 static inline void skb_mark_not_on_list(struct sk_buff *skb)
 {
 	skb->next = NULL;
@@ -3761,6 +3771,54 @@ static inline void *skb_frag_address(const skb_frag_t *frag)
 		return NULL;
 
 	return page_address(skb_frag_page(frag)) + skb_frag_off(frag);
+}
+
+static inline void *skb_mem_provider_priv(const struct sk_buff *skb)
+{
+	netmem_ref netmem;
+
+	if (!skb_has_net_iovs(skb) || !skb_shinfo(skb)->nr_frags)
+		return NULL;
+
+	netmem = skb_frag_netmem(&skb_shinfo(skb)->frags[0]);
+	return netmem_to_net_iov(netmem)->mp_priv;
+}
+
+/* Return true if the memory providers of @skb1 and @skb2 are compatible
+ * for coalescing. For any struct page-backed provider (the buddy allocator
+ * or a future provider handing out struct pages), coalescing is assumed
+ * feasible. For net_iov-backed providers, the exact mp_priv pointer must
+ * match.
+ */
+static inline bool skb_mem_provider_compat(const struct sk_buff *skb1,
+					   const struct sk_buff *skb2)
+{
+	void *priv1, *priv2;
+
+	if (!skb1->len || !skb2->len)
+		return true;
+
+	if (skb_has_net_iovs(skb1) != skb_has_net_iovs(skb2))
+		return false;
+
+	if (!skb_has_net_iovs(skb1))
+		return true;
+
+	priv1 = skb_mem_provider_priv(skb1);
+	priv2 = skb_mem_provider_priv(skb2);
+	return priv1 && priv1 == priv2;
+}
+
+static inline bool skb_frags_can_coalesce(struct sk_buff *to,
+					  struct sk_buff *from)
+{
+	if (to->pp_recycle != from->pp_recycle)
+		return false;
+
+	if (skb_zcopy(to) || skb_zcopy(from))
+		return false;
+
+	return skb_mem_provider_compat(to, from);
 }
 
 /**
