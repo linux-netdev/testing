@@ -144,7 +144,7 @@ static int ionic_watchdog_init(struct ionic *ionic)
 
 	/* set times to ensure the first check will proceed */
 	atomic_long_set(&idev->last_check_time, jiffies - 2 * HZ);
-	idev->last_hb_time = jiffies - 2 * ionic->watchdog_period;
+	idev->last_hb_time = jiffies - 2 * U8_MAX * HZ;
 	/* init as ready, so no transition if the first check succeeds */
 	idev->last_fw_hb = 0;
 	idev->fw_hb_ready = true;
@@ -594,7 +594,8 @@ do_check_time:
 	 */
 	last_check_time = idev->last_hb_time;
 	if (time_before(check_time,
-			last_check_time + ionic->cmd_timeout * 2 * HZ))
+			last_check_time +
+			READ_ONCE(ionic->cmd_timeout) * 2 * HZ))
 		return 0;
 
 	fw_hb = ioread32(&idev->dev_info_regs->fw_heartbeat);
@@ -687,6 +688,82 @@ void ionic_dev_cmd_reset(struct ionic_dev *idev)
 	};
 
 	ionic_dev_cmd_go(idev, &cmd);
+}
+
+static void ionic_dev_cmd_getattr(struct ionic_dev *idev, u8 attr)
+{
+	union ionic_dev_cmd cmd = {
+		.getattr.opcode = IONIC_CMD_GETATTR,
+		.getattr.attr = attr,
+	};
+
+	ionic_dev_cmd_go(idev, &cmd);
+}
+
+int ionic_dev_getattr_cmd_timeout(struct ionic *ionic, u8 *timeout)
+{
+	struct ionic_dev_getattr_comp comp = {};
+	int err;
+
+	mutex_lock(&ionic->dev_cmd_lock);
+	ionic_dev_cmd_getattr(&ionic->idev, IONIC_DEV_ATTR_CMD_TIMEOUT);
+
+	err = ionic_dev_cmd_wait_nomsg(ionic, ionic->cmd_timeout);
+	if (err) {
+		mutex_unlock(&ionic->dev_cmd_lock);
+		return err;
+	}
+
+	ionic_dev_cmd_comp(&ionic->idev, (union ionic_dev_cmd_comp *)&comp);
+	*timeout = comp.cmd_timeout;
+	mutex_unlock(&ionic->dev_cmd_lock);
+
+	return 0;
+}
+
+int ionic_dev_setattr_cmd_timeout(struct ionic *ionic, u8 timeout)
+{
+	union ionic_dev_cmd cmd = {
+		.setattr.opcode = IONIC_CMD_SETATTR,
+		.setattr.attr = IONIC_DEV_ATTR_CMD_TIMEOUT,
+		.setattr.cmd_timeout = timeout,
+	};
+	int err;
+
+	mutex_lock(&ionic->dev_cmd_lock);
+	ionic_dev_cmd_go(&ionic->idev, &cmd);
+	err = ionic_dev_cmd_wait(ionic, ionic->cmd_timeout);
+	mutex_unlock(&ionic->dev_cmd_lock);
+
+	return err;
+}
+
+void ionic_update_cmd_timeout(struct ionic *ionic)
+{
+	u8 timeout = IONIC_CMD_TIMEOUT_DEF;
+	int err;
+	u8 val;
+
+	if (!ionic_cmd_timeout_supported(ionic))
+		goto out;
+
+	err = ionic_dev_getattr_cmd_timeout(ionic, &val);
+	if (err) {
+		dev_warn(ionic->dev,
+			 "Cannot get cmd_timeout: %d, using default\n", err);
+		goto out;
+	}
+	if (!ionic_cmd_timeout_valid(val)) {
+		dev_warn(ionic->dev, "Ignoring out of range cmd_timeout %u\n",
+			 val);
+		goto out;
+	}
+	if (val)
+		timeout = val;
+out:
+	mutex_lock(&ionic->dev_cmd_lock);
+	WRITE_ONCE(ionic->cmd_timeout, timeout);
+	mutex_unlock(&ionic->dev_cmd_lock);
 }
 
 /* Port commands */
