@@ -10,6 +10,7 @@
 #ifndef _NET_DEVMEM_H
 #define _NET_DEVMEM_H
 
+#include <linux/skbuff.h>
 #include <net/net_namespace.h>
 #include <net/netmem.h>
 #include <net/netdev_netlink.h>
@@ -103,6 +104,21 @@ static inline struct net_devmem_dmabuf_binding *
 net_devmem_iov_binding(const struct net_iov *niov)
 {
 	return niov->mp_priv;
+}
+
+static inline struct net_devmem_dmabuf_binding *
+net_devmem_skb_binding(const struct sk_buff *skb)
+{
+	struct net_iov *niov;
+
+	if (!skb_has_net_iovs(skb) || !skb_shinfo(skb)->nr_frags)
+		return NULL;
+
+	niov = netmem_to_net_iov(skb_frag_netmem(&skb_shinfo(skb)->frags[0]));
+	if (!net_is_devmem_iov(niov))
+		return NULL;
+
+	return net_devmem_iov_binding(niov);
 }
 
 static inline u32 net_devmem_iov_binding_id(const struct net_iov *niov)
@@ -219,6 +235,12 @@ net_devmem_get_niov_at(struct net_devmem_dmabuf_binding *binding, size_t addr,
 
 static inline struct net_devmem_dmabuf_binding *
 net_devmem_iov_binding(const struct net_iov *niov)
+{
+	return NULL;
+}
+
+static inline struct net_devmem_dmabuf_binding *
+net_devmem_skb_binding(const struct sk_buff *skb)
 {
 	return NULL;
 }
