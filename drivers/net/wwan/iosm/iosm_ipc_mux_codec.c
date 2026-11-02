@@ -693,8 +693,10 @@ void ipc_mux_dl_decode(struct iosm_mux *ipc_mux, struct sk_buff *skb)
 {
 	u32 signature;
 
-	if (!skb->data)
+	if (!skb->data) {
+		ipc_pcie_kfree_skb(ipc_mux->pcie, skb);
 		return;
+	}
 
 	/* Decode the MUX header type. */
 	signature = le32_to_cpup((__le32 *)skb->data);
