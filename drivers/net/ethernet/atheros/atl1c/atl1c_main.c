@@ -1864,6 +1864,23 @@ static void atl1c_clean_rfd(struct atl1c_rfd_ring *rfd_ring,
 	rfd_ring->next_to_clean = rfd_index;
 }
 
+static struct atl1c_buffer *
+atl1c_unmap_rx_buffer(struct pci_dev *pdev, struct atl1c_rfd_ring *rfd_ring,
+		      struct atl1c_recv_ret_status *rrs)
+{
+	struct atl1c_buffer *buffer_info;
+	u16 rfd_index;
+
+	rfd_index = (le32_to_cpu(rrs->word0) >> RRS_RX_RFD_INDEX_SHIFT) &
+		    RRS_RX_RFD_INDEX_MASK;
+	buffer_info = &rfd_ring->buffer_info[rfd_index];
+	if (buffer_info->skb)
+		dma_unmap_single(&pdev->dev, buffer_info->dma,
+				 buffer_info->length, DMA_FROM_DEVICE);
+
+	return buffer_info;
+}
+
 /**
  * atl1c_clean_rx - NAPI Rx polling callback
  * @napi: napi info
@@ -1874,7 +1891,7 @@ static int atl1c_clean_rx(struct napi_struct *napi, int budget)
 	struct atl1c_rrd_ring *rrd_ring =
 		container_of(napi, struct atl1c_rrd_ring, napi);
 	struct atl1c_adapter *adapter = rrd_ring->adapter;
-	u16 rfd_num, rfd_index;
+	u16 rfd_num;
 	u16 length;
 	struct pci_dev *pdev = adapter->pdev;
 	struct net_device *netdev  = adapter->netdev;
@@ -1908,6 +1925,14 @@ static int atl1c_clean_rx(struct napi_struct *napi, int budget)
 rrs_checked:
 		atl1c_clean_rrd(rrd_ring, rrs, rfd_num);
 		if (rrs->word3 & (RRS_RX_ERR_SUM | RRS_802_3_LEN_ERR)) {
+			/* atl1c_clean_rfd() drops the only pointer to the skb. */
+			if (likely(rfd_num == 1)) {
+				buffer_info = atl1c_unmap_rx_buffer(pdev, rfd_ring,
+								    rrs);
+				if (buffer_info->skb)
+					kfree_skb_reason(buffer_info->skb,
+							 SKB_DROP_REASON_NOT_SPECIFIED);
+			}
 			atl1c_clean_rfd(rfd_ring, rrs, rfd_num);
 			if (netif_msg_rx_err(adapter))
 				dev_warn(&pdev->dev,
@@ -1920,11 +1945,7 @@ rrs_checked:
 				RRS_PKT_SIZE_MASK);
 		/* Good Receive */
 		if (likely(rfd_num == 1)) {
-			rfd_index = (rrs->word0 >> RRS_RX_RFD_INDEX_SHIFT) &
-					RRS_RX_RFD_INDEX_MASK;
-			buffer_info = &rfd_ring->buffer_info[rfd_index];
-			dma_unmap_single(&pdev->dev, buffer_info->dma,
-					 buffer_info->length, DMA_FROM_DEVICE);
+			buffer_info = atl1c_unmap_rx_buffer(pdev, rfd_ring, rrs);
 			skb = buffer_info->skb;
 		} else {
 			/* TODO */
