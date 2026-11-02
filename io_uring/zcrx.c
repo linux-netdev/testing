@@ -562,7 +562,7 @@ static int __zcrx_create_area(struct io_zcrx_ifq *ifq,
 	for (i = 0; i < nr_iovs; i++) {
 		struct net_iov *niov = &area->nia.niovs[i];
 
-		net_iov_init(niov, &area->nia, NET_IOV_IOURING);
+		net_iov_init(niov, &area->nia, NET_IOV_IOURING, ifq);
 		area->freelist[i] = i;
 		atomic_set(&area->user_refs[i], 0);
 	}

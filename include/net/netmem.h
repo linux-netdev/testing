@@ -95,10 +95,19 @@ enum net_iov_type {
  *		supported.
  */
 struct net_iov {
-	struct netmem_desc desc;
+	union {
+		struct netmem_desc desc;
+		struct {
+			unsigned long _pad[3];
+			void *mp_priv;
+		};
+	};
 	enum net_iov_type type;
 	struct net_iov_area *owner;
 };
+
+static_assert(offsetof(struct net_iov, mp_priv) ==
+	      offsetof(struct netmem_desc, _pp_mapping_pad));
 
 struct net_iov_area {
 	/* Array of net_iovs for this area. */
@@ -120,10 +129,12 @@ static inline unsigned int net_iov_idx(const struct net_iov *niov)
  */
 static inline void net_iov_init(struct net_iov *niov,
 				struct net_iov_area *owner,
-				enum net_iov_type type)
+				enum net_iov_type type,
+				void *mp_priv)
 {
 	niov->owner = owner;
 	niov->type = type;
+	niov->mp_priv = mp_priv;
 }
 
 /* netmem */

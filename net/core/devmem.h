@@ -102,8 +102,7 @@ int net_devmem_bind_dmabuf_to_queue(struct net_device *dev, u32 rxq_idx,
 static inline struct net_devmem_dmabuf_binding *
 net_devmem_iov_binding(const struct net_iov *niov)
 {
-	return container_of(net_iov_owner(niov),
-			    struct net_devmem_dmabuf_binding, area);
+	return niov->mp_priv;
 }
 
 static inline u32 net_devmem_iov_binding_id(const struct net_iov *niov)
