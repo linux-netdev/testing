@@ -189,6 +189,11 @@ nf_reject_ip_tcphdr_get(struct sk_buff *oldskb,
 	if (oth == NULL)
 		return NULL;
 
+	/* Reject invalid or truncated TCP headers. */
+	if (oth->doff < sizeof(struct tcphdr) / 4 ||
+	    oldskb->len - ip_hdrlen(oldskb) < (oth->doff << 2))
+		return NULL;
+
 	/* No RST for RST. */
 	if (oth->rst)
 		return NULL;
