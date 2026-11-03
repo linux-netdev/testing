@@ -5781,12 +5781,18 @@ static int sol_tcp_sockopt(struct sock *sk, int optname,
 
 	if (getopt) {
 		if (optname == TCP_SAVED_SYN) {
+			struct saved_syn *saved_syn;
 			struct tcp_sock *tp = tcp_sk(sk);
 
-			if (!tp->saved_syn ||
-			    *optlen > tcp_saved_syn_len(tp->saved_syn))
+			rcu_read_lock();
+			saved_syn = rcu_dereference(tp->saved_syn);
+			if (!saved_syn ||
+			    *optlen > tcp_saved_syn_len(saved_syn)) {
+				rcu_read_unlock();
 				return -EINVAL;
-			memcpy(optval, tp->saved_syn->data, *optlen);
+			}
+			memcpy(optval, saved_syn->data, *optlen);
+			rcu_read_unlock();
 			/* It cannot free tp->saved_syn here because it
 			 * does not know if the user space still needs it.
 			 */
@@ -6192,9 +6198,9 @@ static int bpf_sock_ops_get_syn(struct bpf_sock_ops_kern *bpf_sock,
 			 * not be available.  It has to resort to
 			 * saved_syn (if it is saved).
 			 */
-			saved_syn = inet_reqsk(sk)->saved_syn;
+			saved_syn = rcu_dereference(inet_reqsk(sk)->saved_syn);
 		else
-			saved_syn = tcp_sk(sk)->saved_syn;
+			saved_syn = rcu_dereference(tcp_sk(sk)->saved_syn);
 
 		if (!saved_syn)
 			return -ENOENT;
