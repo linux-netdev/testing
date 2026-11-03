@@ -1850,15 +1850,13 @@ static int fman_port_probe(struct platform_device *of_dev)
 
 	port->dts_params.fman = fman;
 
-	of_node_put(port_node);
-
 	dev_res = __devm_request_region(port->dev, &res, res.start,
 					resource_size(&res), "fman-port");
 	if (!dev_res) {
 		dev_err(port->dev, "%s: __devm_request_region() failed\n",
 			__func__);
 		err = -EINVAL;
-		goto free_port;
+		goto put_device;
 	}
 
 	port->dts_params.base_addr = devm_ioremap(port->dev, res.start,
@@ -1868,13 +1866,14 @@ static int fman_port_probe(struct platform_device *of_dev)
 
 	dev_set_drvdata(&of_dev->dev, port);
 
+	of_node_put(port_node);
+	put_device(&fm_pdev->dev);
 	return 0;
 
 put_device:
 	put_device(&fm_pdev->dev);
 return_err:
 	of_node_put(port_node);
-free_port:
 	kfree(port);
 	return err;
 }
