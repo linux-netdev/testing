@@ -405,34 +405,61 @@ do_encap:
 
 	if (unlikely(!dst)) {
 		struct ipv6hdr *hdr = ipv6_hdr(skb);
-		struct flowi6 fl6;
 
-		memset(&fl6, 0, sizeof(fl6));
-		fl6.daddr = hdr->daddr;
-		fl6.saddr = hdr->saddr;
-		fl6.flowlabel = ip6_flowinfo(hdr);
-		fl6.flowi6_mark = skb->mark;
-		fl6.flowi6_proto = hdr->nexthdr;
-
-		dst = ip6_route_output(net, NULL, &fl6);
-		if (dst->error) {
-			err = dst->error;
-			goto drop;
-		}
-
-		/* If the destination is the same after transformation (which is
-		 * a valid use case for IOAM), then we don't want to add it to
-		 * the cache in order to avoid a reference loop. Instead, we add
-		 * our fake dst_entry to the cache as a way to detect this case.
-		 * Otherwise, we add the resolved destination to the cache.
+		/* Inline insertion does not change the destination. Keep
+		 * orig_dst so the ECMP sibling from the original lookup is
+		 * preserved (RFC 9486 C2 for locally generated traffic).
+		 * Cache the fake null_rt so later packets take the same path.
 		 */
-		local_bh_disable();
-		if (orig_dst->lwtstate == dst->lwtstate)
-			dst_cache_set_ip6(&ilwt->cache,
-					  &ilwt->null_rt.dst, &fl6.saddr);
-		else
-			dst_cache_set_ip6(&ilwt->cache, dst, &fl6.saddr);
-		local_bh_enable();
+		if (ilwt->mode == IOAM6_IPTUNNEL_MODE_INLINE ||
+		    (ilwt->mode == IOAM6_IPTUNNEL_MODE_AUTO && !skb->dev)) {
+			dst = orig_dst;
+			dst_hold(dst);
+
+			local_bh_disable();
+			dst_cache_set_ip6(&ilwt->cache, &ilwt->null_rt.dst,
+					  &hdr->saddr);
+			local_bh_enable();
+		} else {
+			/* Encapsulation may change the destination (tundst);
+			 * re-lookup with the transformed packet keys so the
+			 * outer hash matches the identical packet without IOAM.
+			 */
+			const struct ipv6_opt_hdr *hhdr;
+			struct flowi6 fl6;
+
+			hhdr = (const struct ipv6_opt_hdr *)skb_transport_header(skb);
+
+			memset(&fl6, 0, sizeof(fl6));
+			fl6.daddr = hdr->daddr;
+			fl6.saddr = hdr->saddr;
+			fl6.flowlabel = ip6_flowinfo(hdr);
+			fl6.flowi6_mark = skb->mark;
+			fl6.flowi6_proto = hhdr->nexthdr;
+			fl6.mp_hash = rt6_multipath_hash(net, &fl6, skb, NULL);
+
+			dst = ip6_route_output(net, NULL, &fl6);
+			if (dst->error) {
+				err = dst->error;
+				goto drop;
+			}
+
+			/* If the destination is the same after transformation
+			 * (which is a valid use case for IOAM), then we don't
+			 * want to add it to the cache in order to avoid a
+			 * reference loop. Instead, we add our fake dst_entry
+			 * to the cache as a way to detect this case.
+			 * Otherwise, we add the resolved destination to the
+			 * cache.
+			 */
+			local_bh_disable();
+			if (orig_dst->lwtstate == dst->lwtstate)
+				dst_cache_set_ip6(&ilwt->cache,
+						  &ilwt->null_rt.dst, &fl6.saddr);
+			else
+				dst_cache_set_ip6(&ilwt->cache, dst, &fl6.saddr);
+			local_bh_enable();
+		}
 
 		err = skb_cow_head(skb, LL_RESERVED_SPACE(dst_dev(dst)));
 		if (unlikely(err))
