@@ -282,6 +282,31 @@ static inline unsigned int virtio_l3min(bool is_ipv6)
 	return is_ipv6 ? sizeof(struct ipv6hdr) : sizeof(struct iphdr);
 }
 
+/* The outer network header of a UDP tunnel GSO packet must match the
+ * tunnel type declared in the virtio header, otherwise the GSO stack
+ * would parse the packet as something else (e.g. NSH).
+ */
+static inline bool virtio_net_tnl_outer_proto_ok(const struct sk_buff *skb,
+						 bool outer_isv6,
+						 unsigned int outer_th)
+{
+	__be16 expected = outer_isv6 ? htons(ETH_P_IPV6) : htons(ETH_P_IP);
+	__be16 proto = skb->protocol;
+	int nh_off = ETH_HLEN;
+
+	/* L3 device (IFF_TUN): the caller already set the protocol. */
+	if (proto)
+		return proto == expected;
+
+	/* Ethernet frame, possibly VLAN tagged. */
+	proto = eth_hdr(skb)->h_proto;
+	if (eth_type_vlan(proto))
+		proto = __vlan_get_protocol(skb, proto, &nh_off);
+
+	return proto == expected &&
+	       nh_off + virtio_l3min(outer_isv6) <= outer_th;
+}
+
 static inline int
 virtio_net_hdr_tnl_to_skb(struct sk_buff *skb,
 			  const struct virtio_net_hdr_v1_hash_tunnel *vhdr,
@@ -337,6 +362,9 @@ virtio_net_hdr_tnl_to_skb(struct sk_buff *skb,
 				      hdr->gso_type & ~gso_tunnel_type);
 	if (ret)
 		return ret;
+
+	if (!virtio_net_tnl_outer_proto_ok(skb, outer_isv6, outer_th))
+		return -EINVAL;
 
 	/* In case of USO, the inner protocol is still unknown and
 	 * `inner_isv6` is just a guess, additional parsing is needed.
