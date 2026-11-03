@@ -238,6 +238,7 @@ int skb_gro_receive_list(struct sk_buff *p, struct sk_buff *skb)
 		     NAPI_GRO_CB(skb)->flush))
 		return -E2BIG;
 
+	skb_gro_frag0_invalidate(skb);
 	if (!pskb_may_pull(skb, skb_gro_offset(skb))) {
 		NAPI_GRO_CB(skb)->flush = 1;
 		return -ENOMEM;
@@ -455,8 +456,14 @@ static void gro_try_pull_from_frag0(struct sk_buff *skb)
 {
 	int grow = skb_gro_offset(skb) - skb_headlen(skb);
 
-	if (grow > 0)
+	if (grow <= 0)
+		return;
+
+	/* frag0 can only be used if no pull happened. */
+	if (likely(NAPI_GRO_CB(skb)->frag0_len))
 		gro_pull_from_frag0(skb, grow);
+	else
+		pskb_may_pull(skb, skb_gro_offset(skb));
 }
 
 static void gro_flush_oldest(struct gro_node *gro, struct list_head *head)
