@@ -1108,7 +1108,7 @@ static int bnge_alloc_vnic_attributes(struct bnge_net *bn)
 		vnic = &bn->vnic_info[i];
 
 		if (vnic->flags & BNGE_VNIC_UCAST_FLAG) {
-			int mem_size = (BNGE_MAX_UC_ADDRS - 1) * ETH_ALEN;
+			int mem_size = (BNGE_MAX_L2_FLTRS - 1) * ETH_ALEN;
 
 			vnic->uc_list = kmalloc(mem_size, GFP_KERNEL);
 			if (!vnic->uc_list)
@@ -2056,6 +2056,7 @@ static int bnge_cfg_rx_mode(struct bnge_net *bn, struct netdev_hw_addr_list *uc,
 	int i, off = 0, rc, uc_count = 0;
 	struct bnge_dev *bd = bn->bd;
 	struct netdev_hw_addr *ha;
+	int l2_free;
 
 	if (!uc_update)
 		goto skip_uc;
@@ -2063,6 +2064,8 @@ static int bnge_cfg_rx_mode(struct bnge_net *bn, struct netdev_hw_addr_list *uc,
 	for (i = 1; i < vnic->uc_filter_count; i++) {
 		struct bnge_l2_filter *fltr = vnic->l2_filters[i];
 
+		if (!fltr)
+			continue;
 		bnge_hwrm_l2_filter_free(bd, fltr);
 		bnge_del_l2_filter_rcu(bn, fltr);
 	}
@@ -2079,7 +2082,12 @@ static int bnge_cfg_rx_mode(struct bnge_net *bn, struct netdev_hw_addr_list *uc,
 	netdev_hw_addr_list_for_each(ha, uc)
 		if (!ether_addr_equal(ha->addr, dev->dev_addr))
 			uc_count++;
-	if (uc_count > BNGE_MAX_UC_ADDRS - 1) {
+	/* The unicast addresses and the user ETHER_FLOW rules share the L2
+	 * filters. Receive the addresses that do not fit in promiscuous mode.
+	 */
+	l2_free = BNGE_MAX_L2_FLTRS -
+		  bitmap_weight(bn->l2_fltr_bmap, BNGE_MAX_L2_FLTRS);
+	if (uc_count > BNGE_MAX_L2_FLTRS - 1 || uc_count > l2_free) {
 		vnic->rx_mask |= CFA_L2_SET_RX_MASK_REQ_MASK_PROMISCUOUS;
 	} else {
 		netdev_hw_addr_list_for_each(ha, uc) {
@@ -2095,6 +2103,11 @@ static int bnge_cfg_rx_mode(struct bnge_net *bn, struct netdev_hw_addr_list *uc,
 
 	for (i = 1, off = 0; i < vnic->uc_filter_count; i++, off += ETH_ALEN) {
 		rc = bnge_hwrm_set_vnic_filter(bn, 0, i, vnic->uc_list + off);
+		if (rc == -EEXIST) {
+			/* Already delivered by a user L2 rule */
+			vnic->l2_filters[i] = NULL;
+			continue;
+		}
 		if (rc) {
 			if (rc == -EAGAIN)
 				netdev_warn(dev, "FW busy while setting vnic filter, will retry\n");
@@ -2281,6 +2294,8 @@ static void bnge_hwrm_clear_vnic_filter(struct bnge_net *bn)
 	for (i = 0; i < vnic->uc_filter_count; i++) {
 		struct bnge_l2_filter *fltr = vnic->l2_filters[i];
 
+		if (!fltr)
+			continue;
 		bnge_hwrm_l2_filter_free(bn->bd, fltr);
 		bnge_del_l2_filter_rcu(bn, fltr);
 	}
@@ -2805,6 +2820,7 @@ static int bnge_open_core(struct bnge_net *bn)
 	bnge_get_port_module_status(bn);
 
 	bnge_hwrm_realloc_rss_ctx_vnic(bn);
+	bnge_cfg_usr_fltrs(bn);
 
 	return 0;
 
@@ -3176,6 +3192,9 @@ static int bnge_set_features(struct net_device *dev, netdev_features_t features)
 	if ((bn->priv_flags & BNGE_NET_EN_NTUPLE) &&
 	    !(flags & BNGE_NET_EN_NTUPLE) && bn->num_rss_ctx)
 		return -EBUSY;
+
+	if (!(flags & BNGE_NET_EN_NTUPLE))
+		bnge_clear_usr_fltrs(bn);
 
 	bn->priv_flags = flags;
 
