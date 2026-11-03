@@ -2375,6 +2375,8 @@ static int ip_vs_zero_all(struct netns_ipvs *ipvs)
 
 #ifdef CONFIG_SYSCTL
 
+static unsigned int sync_refresh_period_max = INT_MAX / HZ;
+
 static int
 proc_do_conn_max(const struct ctl_table *table, int write,
 		 void *buffer, size_t *lenp, loff_t *ppos)
@@ -2830,9 +2832,11 @@ static struct ctl_table vs_vars[] = {
 	},
 	{
 		.procname	= "sync_refresh_period",
-		.maxlen		= sizeof(int),
+		.maxlen		= sizeof(unsigned int),
 		.mode		= 0644,
-		.proc_handler	= proc_dointvec_jiffies,
+		.proc_handler	= proc_douintvec_minmax,
+		.extra1		= SYSCTL_ZERO,
+		.extra2		= &sync_refresh_period_max,
 	},
 	{
 		.procname	= "sync_retries",
