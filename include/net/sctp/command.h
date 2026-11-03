@@ -39,6 +39,7 @@ enum sctp_verb {
 	SCTP_CMD_CHUNK_ULP,	/* Send a chunk to the sockets layer.  */
 	SCTP_CMD_EVENT_ULP,	/* Send a notification to the sockets layer. */
 	SCTP_CMD_REPLY,		/* Send a chunk to our peer.  */
+	SCTP_CMD_OUTQ_FLUSH,	/* Flush pending output when uncorked. */
 	SCTP_CMD_SEND_PKT,	/* Send a full packet to our peer.  */
 	SCTP_CMD_RETRAN,	/* Mark a transport for retransmission.  */
 	SCTP_CMD_ECN_CE,        /* Do delayed CE processing.   */
