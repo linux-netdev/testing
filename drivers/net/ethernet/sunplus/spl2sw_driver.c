@@ -427,6 +427,7 @@ static int spl2sw_probe(struct platform_device *pdev)
 		if (of_get_phy_mode(port_np, &phy_mode)) {
 			dev_err(&pdev->dev, "Failed to get phy-mode property of port@%d!\n",
 				i);
+			of_node_put(port_np);
 			continue;
 		}
 
@@ -435,17 +436,20 @@ static int spl2sw_probe(struct platform_device *pdev)
 		if (!phy_np) {
 			dev_err(&pdev->dev, "Failed to get phy-handle property of port@%d!\n",
 				i);
+			of_node_put(port_np);
 			continue;
 		}
 
 		/* Get mac-address from nvmem. */
 		ret = spl2sw_nvmem_get_mac_address(&pdev->dev, port_np, mac_addr);
 		if (ret == -EPROBE_DEFER) {
+			of_node_put(port_np);
 			goto out_unregister_dev;
 		} else if (ret) {
 			dev_info(&pdev->dev, "Generate a random mac address!\n");
 			eth_random_addr(mac_addr);
 		}
+		of_node_put(port_np);
 
 		/* Initialize the net device. */
 		ret = spl2sw_init_netdev(pdev, mac_addr, &ndev);
