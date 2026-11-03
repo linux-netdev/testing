@@ -1498,6 +1498,14 @@ static int sctp_cmd_interpreter(enum sctp_event_type event_type,
 			sctp_outq_tail(&asoc->outqueue, cmd->obj.chunk, gfp);
 			break;
 
+		case SCTP_CMD_OUTQ_FLUSH:
+			/* Request a flush without taking over an outer cork. */
+			if (!asoc->outqueue.cork) {
+				sctp_outq_cork(&asoc->outqueue);
+				local_cork = 1;
+			}
+			break;
+
 		case SCTP_CMD_SEND_PKT:
 			/* Send a full packet to our peer.  */
 			packet = cmd->obj.packet;
