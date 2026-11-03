@@ -5073,6 +5073,10 @@ static int hns3_alloc_ring_memory(struct hns3_enet_ring *ring)
 
 out_with_desc:
 	hns3_free_desc(ring);
+	if (ring->page_pool) {
+		page_pool_destroy(ring->page_pool);
+		ring->page_pool = NULL;
+	}
 out_with_desc_cb:
 	devm_kfree(ring_to_dev(ring), ring->desc_cb);
 	ring->desc_cb = NULL;
