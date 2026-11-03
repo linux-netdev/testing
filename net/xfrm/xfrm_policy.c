@@ -3530,9 +3530,25 @@ int __xfrm_decode_session(struct net *net, struct sk_buff *skb, struct flowi *fl
 		decode_session4(&flkeys, fl, reverse);
 		break;
 #if IS_ENABLED(CONFIG_IPV6)
-	case AF_INET6:
+	case AF_INET6: {
+		struct frag_hdr _fh, *fh;
+		unsigned int offset = 0;
+
+		if ((flkeys.control.flags & FLOW_DIS_IS_FRAGMENT) &&
+		    ipv6_find_hdr(skb, &offset, NEXTHDR_FRAGMENT,
+				  NULL, NULL) == NEXTHDR_FRAGMENT) {
+			fh = skb_header_pointer(skb, offset, sizeof(_fh), &_fh);
+			if (fh && !(fh->frag_off & htons(IP6_OFFSET | IP6_MF))) {
+				flkeys.control.flags &= ~FLOW_DIS_IS_FRAGMENT;
+				flkeys.ports.ports = skb_flow_get_ports(skb,
+									flkeys.control.thoff,
+									flkeys.basic.ip_proto,
+									NULL, 0);
+			}
+		}
 		decode_session6(&flkeys, fl, reverse);
 		break;
+	}
 #endif
 	default:
 		return -EAFNOSUPPORT;
