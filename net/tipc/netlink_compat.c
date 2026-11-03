@@ -497,6 +497,9 @@ static int tipc_nl_compat_bearer_disable(struct tipc_nl_compat_cmd_doit *cmd,
 
 static inline u32 perc(u32 count, u32 total)
 {
+	if (!total)
+		return 0;
+
 	return (count * 100 + (total / 2)) / total;
 }
 
