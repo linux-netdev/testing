@@ -354,6 +354,23 @@ static inline void skb_gro_remcsum_cleanup(struct sk_buff *skb,
 	if (!grc->delta)
 		return;
 
+	if (NAPI_GRO_CB(skb)->same_flow) {
+		/* skb_segment_list() keeps the inner headers of fraglist
+		 * members: restore their checksum. skb_gro_receive_list()
+		 * pulled these headers, then moved skb->data past them.
+		 * A valid remote checksum offset points to the inner
+		 * transport header, which is part of these headers.
+		 * Headers of other merged skbs are not used anymore.
+		 */
+		if (NAPI_GRO_CB(skb)->is_flist &&
+		    grc->offset + sizeof(u16) <= skb_gro_offset(skb))
+			remcsum_unadjust((__sum16 *)(skb->data -
+						     skb_gro_offset(skb) +
+						     grc->offset),
+					 grc->delta);
+		return;
+	}
+
 	ptr = skb_gro_header(skb, plen, grc->offset);
 	if (!ptr)
 		return;
