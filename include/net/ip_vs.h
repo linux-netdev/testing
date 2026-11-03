@@ -1280,7 +1280,7 @@ struct netns_ipvs {
 	int			sysctl_sloppy_sctp;
 	int			sysctl_expire_quiescent_template;
 	int			sysctl_sync_threshold[2];
-	unsigned int		sysctl_sync_refresh_period;
+	unsigned int		sysctl_sync_refresh_period; /* seconds */
 	int			sysctl_sync_retries;
 	int			sysctl_nat_icmp_send;
 	int			sysctl_pmtu_disc;
@@ -1348,7 +1348,7 @@ struct netns_ipvs {
 #define DEFAULT_SYNC_VER	1
 #define DEFAULT_SLOPPY_TCP	0
 #define DEFAULT_SLOPPY_SCTP	0
-#define DEFAULT_SYNC_REFRESH_PERIOD	(0U * HZ)
+#define DEFAULT_SYNC_REFRESH_PERIOD	0U
 #define DEFAULT_SYNC_RETRIES		0
 #define IPVS_SYNC_WAKEUP_RATE	8
 #define IPVS_SYNC_QLEN_MAX	(IPVS_SYNC_WAKEUP_RATE * 4)
@@ -1376,7 +1376,7 @@ static inline int sysctl_sync_period(struct netns_ipvs *ipvs)
 
 static inline unsigned int sysctl_sync_refresh_period(struct netns_ipvs *ipvs)
 {
-	return READ_ONCE(ipvs->sysctl_sync_refresh_period);
+	return secs_to_jiffies(READ_ONCE(ipvs->sysctl_sync_refresh_period));
 }
 
 static inline int sysctl_sync_retries(struct netns_ipvs *ipvs)
