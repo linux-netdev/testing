@@ -2356,6 +2356,71 @@ struct dst_entry *ip6_route_input_lookup(struct net *net,
 }
 EXPORT_SYMBOL_GPL(ip6_route_input_lookup);
 
+/* RFC 9486 (C2) requires that the ECMP hash of a packet carrying IOAM
+ * options is the same as the hash of the identical packet without them.
+ * Recover the nexthdr if its Hop-by-Hop header carried only IOAM options
+ * and padding, every other packet is hashed exactly as before.
+ *
+ * iph_off: offset of the IPv6 header from skb->data
+ * nexthdr: iph->nexthdr (NEXTHDR_HOP or not)
+ */
+static u8 ip6_nexthdr_without_ioam(const struct sk_buff *skb,
+				   int iph_off, u8 nexthdr)
+{
+	const struct ipv6_opt_hdr *hhdr;
+	struct ipv6_opt_hdr hbuf;
+	bool has_ioam = false;
+	u8 obuf[2], *opt;
+	int off, len, i;
+
+	if (likely(nexthdr != NEXTHDR_HOP))
+		return nexthdr;
+
+	off = iph_off + sizeof(struct ipv6hdr);
+	hhdr = skb_header_pointer(skb, off, sizeof(hbuf), &hbuf);
+	if (!hhdr)
+		return nexthdr;
+
+	len = (hhdr->hdrlen + 1) << 3;
+
+	for (i = 2; i < len; ) {
+		const u8 *type;
+		u8 type_buf;
+
+		/* Always check PAD1 first as ip6_parse_tlv() accepts Pad1
+		 * as the last byte of the HBH header
+		 */
+		type = skb_header_pointer(skb, off + i, 1, &type_buf);
+		if (!type)
+			return has_ioam ? hhdr->nexthdr : nexthdr;
+		if (*type == IPV6_TLV_PAD1) {
+			i++;
+			continue;
+		}
+
+		opt = skb_header_pointer(skb, off + i, sizeof(obuf), obuf);
+		if (!opt)
+			return nexthdr;
+
+		if (opt[0] == IPV6_TLV_PADN) {
+			i += opt[1] + 2;
+			continue;
+		}
+		if (opt[0] != IPV6_TLV_IOAM && opt[0] != IPV6_TLV_IOAM_DEX)
+			return nexthdr;
+
+		has_ioam = true;
+
+		/* Keep searching for the next TLV. As long as non-IOAM
+		 * options (Router Alert, Jumbo, etc.) exist in the HBH
+		 * header, we should preserve the original NEXTHDR_HOP.
+		 */
+		i += opt[1] + 2;
+	}
+
+	return has_ioam ? hhdr->nexthdr : nexthdr;
+}
+
 static void ip6_multipath_l3_keys(const struct sk_buff *skb,
 				  struct flow_keys *keys,
 				  struct flow_keys *flkeys)
@@ -2363,15 +2428,34 @@ static void ip6_multipath_l3_keys(const struct sk_buff *skb,
 	const struct ipv6hdr *outer_iph = ipv6_hdr(skb);
 	const struct ipv6hdr *key_iph = outer_iph;
 	struct flow_keys *_flkeys = flkeys;
+	const struct ipv6_opt_hdr *opt_hdr;
 	const struct ipv6hdr *inner_iph;
 	const struct icmp6hdr *icmph;
+	struct ipv6_opt_hdr _opt_hdr;
 	struct ipv6hdr _inner_iph;
 	struct icmp6hdr _icmph;
+	int extlen = 0;
+	int inner_off;
+	u8 nexthdr;
 
-	if (likely(outer_iph->nexthdr != IPPROTO_ICMPV6))
+	nexthdr = ip6_nexthdr_without_ioam(skb, skb_network_offset(skb),
+					   outer_iph->nexthdr);
+	if (likely(nexthdr != IPPROTO_ICMPV6))
 		goto out;
 
-	icmph = skb_header_pointer(skb, skb_transport_offset(skb),
+	/* Outer header has IOAM (NEXTHDR_HOP) and the recovered nexthdr is
+	 * IPPROTO_ICMPV6. transport_header may still point at the Hop-by-Hop
+	 * header (e.g. ipv6_hop_ioam() -> ip6_route_input() before
+	 * ipv6_parse_hopopts() advances it).
+	 */
+	if (outer_iph->nexthdr == NEXTHDR_HOP) {
+		opt_hdr = skb_header_pointer(skb, skb_transport_offset(skb),
+					     sizeof(_opt_hdr), &_opt_hdr);
+		if (opt_hdr && opt_hdr->nexthdr == IPPROTO_ICMPV6)
+			extlen = (opt_hdr->hdrlen + 1) << 3;
+	}
+
+	icmph = skb_header_pointer(skb, skb_transport_offset(skb) + extlen,
 				   sizeof(_icmph), &_icmph);
 	if (!icmph)
 		goto out;
@@ -2379,14 +2463,15 @@ static void ip6_multipath_l3_keys(const struct sk_buff *skb,
 	if (!icmpv6_is_err(icmph->icmp6_type))
 		goto out;
 
-	inner_iph = skb_header_pointer(skb,
-				       skb_transport_offset(skb) + sizeof(*icmph),
+	inner_off = skb_transport_offset(skb) + extlen + sizeof(*icmph);
+	inner_iph = skb_header_pointer(skb, inner_off,
 				       sizeof(_inner_iph), &_inner_iph);
 	if (!inner_iph)
 		goto out;
 
 	key_iph = inner_iph;
 	_flkeys = NULL;
+	nexthdr = ip6_nexthdr_without_ioam(skb, inner_off, inner_iph->nexthdr);
 out:
 	if (_flkeys) {
 		keys->addrs.v6addrs.src = _flkeys->addrs.v6addrs.src;
@@ -2397,7 +2482,7 @@ out:
 		keys->addrs.v6addrs.src = key_iph->saddr;
 		keys->addrs.v6addrs.dst = key_iph->daddr;
 		keys->tags.flow_label = ip6_flowlabel(key_iph);
-		keys->basic.ip_proto = key_iph->nexthdr;
+		keys->basic.ip_proto = nexthdr;
 	}
 }
 
