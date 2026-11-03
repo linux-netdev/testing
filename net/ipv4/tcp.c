@@ -4722,13 +4722,17 @@ int do_tcp_getsockopt(struct sock *sk, int level,
 		val = tp->save_syn;
 		break;
 	case TCP_SAVED_SYN: {
+		struct saved_syn *saved_syn;
+
 		if (copy_from_sockptr(&len, optlen, sizeof(int)))
 			return -EFAULT;
 
 		sockopt_lock_sock(sk);
-		if (tp->saved_syn) {
-			if (len < tcp_saved_syn_len(tp->saved_syn)) {
-				len = tcp_saved_syn_len(tp->saved_syn);
+		saved_syn = rcu_dereference_protected(tp->saved_syn,
+						      lockdep_sock_is_held(sk));
+		if (saved_syn) {
+			if (len < tcp_saved_syn_len(saved_syn)) {
+				len = tcp_saved_syn_len(saved_syn);
 				if (copy_to_sockptr(optlen, &len, sizeof(int))) {
 					sockopt_release_sock(sk);
 					return -EFAULT;
@@ -4736,12 +4740,12 @@ int do_tcp_getsockopt(struct sock *sk, int level,
 				sockopt_release_sock(sk);
 				return -EINVAL;
 			}
-			len = tcp_saved_syn_len(tp->saved_syn);
+			len = tcp_saved_syn_len(saved_syn);
 			if (copy_to_sockptr(optlen, &len, sizeof(int))) {
 				sockopt_release_sock(sk);
 				return -EFAULT;
 			}
-			if (copy_to_sockptr(optval, tp->saved_syn->data, len)) {
+			if (copy_to_sockptr(optval, saved_syn->data, len)) {
 				sockopt_release_sock(sk);
 				return -EFAULT;
 			}
