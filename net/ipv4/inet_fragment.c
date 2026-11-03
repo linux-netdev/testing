@@ -17,6 +17,7 @@
 #include <linux/rtnetlink.h>
 #include <linux/slab.h>
 #include <linux/rhashtable.h>
+#include <linux/sizes.h>
 
 #include <net/sock.h>
 #include <net/inet_frag.h>
@@ -519,6 +520,25 @@ int inet_frag_queue_insert(struct inet_frag_queue *q, struct sk_buff *skb,
 }
 EXPORT_SYMBOL(inet_frag_queue_insert);
 
+/* When a socket owned fragment completes a queue, the truesize of all
+ * other fragments is charged to its sk_wmem_alloc, although they were
+ * orphaned when queued and possibly sent by someone else.
+ * Bound this like ip_append_data() bounds the memory a socket can
+ * allocate (2 * sk_sndbuf), plus slack for fragments inflated by a
+ * refragmentation using a small MTU. Otherwise, several reassembled skbs
+ * alive at the same time can saturate sk_wmem_alloc, and leak the socket.
+ */
+#define INET_FRAG_WMEM_SLACK	SZ_4M
+
+static bool inet_frag_wmem_ok(const struct inet_frag_queue *q,
+			      const struct sock *sk)
+{
+	u64 limit = 2ULL * READ_ONCE(sk->sk_sndbuf) + INET_FRAG_WMEM_SLACK;
+	u64 wmem = (u64)refcount_read(&sk->sk_wmem_alloc) + q->truesize;
+
+	return wmem <= min_t(u64, limit, INET_FRAG_MAX_TRUESIZE);
+}
+
 void *inet_frag_reasm_prepare(struct inet_frag_queue *q, struct sk_buff *skb,
 			      struct sk_buff *parent)
 {
@@ -530,6 +550,8 @@ void *inet_frag_reasm_prepare(struct inet_frag_queue *q, struct sk_buff *skb,
 	int delta;
 
 	if (sk && is_skb_wmem(skb)) {
+		if (!inet_frag_wmem_ok(q, sk))
+			return NULL;
 		/* TX: skb->sk might have been passed as argument to
 		 * dst->output and must remain valid until tx completes.
 		 *
