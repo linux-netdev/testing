@@ -335,7 +335,7 @@ static inline void build_udp_packet_csum(uint8_t *buf, int family,
 	sum += htons(IPPROTO_UDP) + udph->len;
 
 	if (!csum_off)
-		sum += add_csum(buf, udph->len);
+		sum += add_csum(buf, ntohs(udph->len));
 
 	udph->check = finish_ip_csum(sum);
 }
