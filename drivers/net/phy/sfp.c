@@ -623,6 +623,10 @@ static const struct sfp_quirk sfp_quirks[] = {
 
 	SFP_QUIRK_F("YV", "SFP+ONU-XGSPON", sfp_fixup_potron),
 
+	// OEM SFP+ONU-XGSPON is a XGS-PON ONT stick with broken TX_FAULT
+	// and slow startup, just like potron.
+	SFP_QUIRK_F("OEM", "SFP+ONU-XGSPON", sfp_fixup_potron),
+
 	// HORACO HC-10GE-113C uses Rollball protocol to talk to the PHY.
 	SFP_QUIRK_F("OEM", "HC-10GE-113C", sfp_fixup_rollball),
 
