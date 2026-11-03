@@ -3063,6 +3063,10 @@ static int handle_port_change(struct mlx5_ib_dev *ibdev, struct mlx5_eqe *eqe,
 {
 	u32 port = (eqe->data.port.port >> 4) & 0xf;
 
+	if (!rdma_is_port_valid(&ibdev->ib_dev, port) ||
+	    port > ARRAY_SIZE(ibdev->devr.ports))
+		return -EINVAL;
+
 	ibev->element.port_num = port;
 
 	switch (eqe->sub_type) {
