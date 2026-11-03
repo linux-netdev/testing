@@ -539,7 +539,7 @@ struct tcp_sock {
 	 * socket. Used to retransmit SYNACKs etc.
 	 */
 	struct request_sock __rcu *fastopen_rsk;
-	struct saved_syn *saved_syn;
+	struct saved_syn __rcu *saved_syn;
 };
 
 enum tsq_enum {
@@ -621,14 +621,20 @@ static inline void fastopen_queue_tune(struct sock *sk, int backlog)
 static inline void tcp_move_syn(struct tcp_sock *tp,
 				struct request_sock *req)
 {
-	tp->saved_syn = req->saved_syn;
-	req->saved_syn = NULL;
+	struct saved_syn *saved_syn;
+
+	saved_syn = rcu_dereference(req->saved_syn);
+	rcu_assign_pointer(tp->saved_syn, saved_syn);
+	RCU_INIT_POINTER(req->saved_syn, NULL);
 }
 
 static inline void tcp_saved_syn_free(struct tcp_sock *tp)
 {
-	kfree(tp->saved_syn);
-	tp->saved_syn = NULL;
+	struct saved_syn *saved_syn;
+
+	saved_syn = rcu_dereference_protected(tp->saved_syn, 1);
+	RCU_INIT_POINTER(tp->saved_syn, NULL);
+	kfree_rcu(saved_syn, rcu);
 }
 
 static inline u32 tcp_saved_syn_len(const struct saved_syn *saved_syn)
