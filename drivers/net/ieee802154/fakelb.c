@@ -243,12 +243,20 @@ static struct platform_driver ieee802154fake_driver = {
 
 static __init int fakelb_init_module(void)
 {
+	int rc;
+
 	ieee802154fake_dev = platform_device_register_simple(
 			     "ieee802154fakelb", -1, NULL, 0);
+	if (IS_ERR(ieee802154fake_dev))
+		return PTR_ERR(ieee802154fake_dev);
 
 	pr_warn("fakelb driver is marked as deprecated, please use mac802154_hwsim!\n");
 
-	return platform_driver_register(&ieee802154fake_driver);
+	rc = platform_driver_register(&ieee802154fake_driver);
+	if (rc)
+		platform_device_unregister(ieee802154fake_dev);
+
+	return rc;
 }
 
 static __exit void fake_remove_module(void)
