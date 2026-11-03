@@ -9636,6 +9636,7 @@ static int __igb_resume(struct device *dev, bool rpm)
 
 	if (igb_init_interrupt_scheme(adapter, true)) {
 		dev_err(&pdev->dev, "Unable to allocate memory for queues\n");
+		pci_disable_device(pdev);
 		return -ENOMEM;
 	}
 
@@ -9661,6 +9662,9 @@ static int __igb_resume(struct device *dev, bool rpm)
 		netif_device_attach(netdev);
 	if (!rpm)
 		rtnl_unlock();
+
+	if (err)
+		pci_disable_device(pdev);
 
 	return err;
 }
