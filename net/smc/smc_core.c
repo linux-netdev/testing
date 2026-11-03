@@ -688,9 +688,15 @@ void smc_lgr_cleanup_early(struct smc_link_group *lgr)
 
 	smc_lgr_list_head(lgr, &lgr_lock);
 	spin_lock_bh(lgr_lock);
+	if (list_empty(&lgr->list)) {
+		/* another context already removed the link group from the
+		 * list and will terminate it
+		 */
+		spin_unlock_bh(lgr_lock);
+		return;
+	}
 	/* do not use this link group for new connections */
-	if (!list_empty(&lgr->list))
-		list_del_init(&lgr->list);
+	list_del_init(&lgr->list);
 	spin_unlock_bh(lgr_lock);
 	__smc_lgr_terminate(lgr, true);
 }
@@ -1518,6 +1524,17 @@ static void smc_sk_wake_ups(struct smc_sock *smc)
 static void smc_conn_kill(struct smc_connection *conn, bool soft)
 {
 	struct smc_sock *smc = container_of(conn, struct smc_sock, conn);
+
+	if (conn->freed) {
+		/* connection was already freed, e.g. by an aborted
+		 * handshake, but kept its entry because smc_conn_free() skips
+		 * the unregister for a link group that is no longer on the lgr
+		 * list. Remove the stale entry, but do not kill a socket that
+		 * may be an established fallback connection.
+		 */
+		smc_lgr_unregister_conn(conn);
+		return;
+	}
 
 	if (conn->lgr->is_smcd && conn->lgr->peer_shutdown)
 		conn->local_tx_ctrl.conn_state_flags.peer_conn_abort = 1;
