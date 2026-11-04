@@ -31,6 +31,7 @@
 #include <linux/string.h>
 #include <linux/stat.h>
 #include <linux/socket.h>
+#include <linux/sysctl.h>
 #include <linux/un.h>
 #include <linux/fcntl.h>
 #include <linux/termios.h>
@@ -92,6 +93,69 @@ struct netlink_table *nl_table __read_mostly;
 EXPORT_SYMBOL_GPL(nl_table);
 
 static DECLARE_WAIT_QUEUE_HEAD(nl_table_wait);
+
+/*
+ * Auxiliary NETLINK_ROUTE candidate indexes. Writers hold the table grabbed;
+ * broadcasts pin the same table with netlink_lock_table(). Socket/netns
+ * lifetime therefore follows the original mc_list, without another RCU domain.
+ */
+struct netlink_route_net {
+	struct hlist_head mc_list;
+};
+
+static unsigned int netlink_route_net_id;
+static HLIST_HEAD(netlink_route_all_nsid);
+
+/* Indexes stay populated in both modes; each broadcast samples this once. */
+static int netlink_route_mc_index __read_mostly;
+
+#ifdef CONFIG_SYSCTL
+static const struct ctl_table netlink_route_sysctls[] = {
+	{
+		.procname	= "netlink_route_mc_index",
+		.data		= &netlink_route_mc_index,
+		.maxlen		= sizeof(netlink_route_mc_index),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= SYSCTL_ZERO,
+		.extra2		= SYSCTL_ONE,
+	},
+};
+
+static int __init netlink_route_sysctl_init(void)
+{
+	if (!register_net_sysctl(&init_net, "net/core", netlink_route_sysctls))
+		return -ENOMEM;
+	return 0;
+}
+fs_initcall(netlink_route_sysctl_init);
+#endif
+
+static void netlink_update_route_mc(struct sock *sk, unsigned int subscriptions)
+{
+	struct netlink_sock *nlk = nlk_sk(sk);
+	struct netlink_route_net *nn;
+
+	if (sk->sk_protocol != NETLINK_ROUTE)
+		return;
+
+	lockdep_assert_held(&nl_table_lock);
+	nn = net_generic(sock_net(sk), netlink_route_net_id);
+	if (subscriptions) {
+		if (hlist_unhashed(&nlk->mc_net_node))
+			hlist_add_head(&nlk->mc_net_node, &nn->mc_list);
+	} else if (!hlist_unhashed(&nlk->mc_net_node)) {
+		hlist_del_init(&nlk->mc_net_node);
+	}
+
+	if (subscriptions && nlk_test_bit(LISTEN_ALL_NSID, sk)) {
+		if (hlist_unhashed(&nlk->mc_all_nsid_node))
+			hlist_add_head(&nlk->mc_all_nsid_node,
+				       &netlink_route_all_nsid);
+	} else if (!hlist_unhashed(&nlk->mc_all_nsid_node)) {
+		hlist_del_init(&nlk->mc_all_nsid_node);
+	}
+}
 
 static struct lock_class_key nlk_cb_mutex_keys[MAX_LINKS];
 
@@ -598,6 +662,7 @@ static void netlink_remove(struct sock *sk)
 		__sock_put(sk);
 
 	netlink_table_grab();
+	netlink_update_route_mc(sk, 0);
 	if (nlk_sk(sk)->subscriptions) {
 		__sk_del_bind_node(sk);
 		netlink_update_listeners(sk);
@@ -628,6 +693,8 @@ static int __netlink_create(struct net *net, struct socket *sock,
 	sock_init_data(sock, sk);
 
 	nlk = nlk_sk(sk);
+	INIT_HLIST_NODE(&nlk->mc_net_node);
+	INIT_HLIST_NODE(&nlk->mc_all_nsid_node);
 	mutex_init(&nlk->nl_cb_mutex);
 	lockdep_set_class_and_name(&nlk->nl_cb_mutex,
 					   nlk_cb_mutex_keys + protocol,
@@ -917,6 +984,7 @@ netlink_update_subscriptions(struct sock *sk, unsigned int subscriptions)
 	else if (!nlk->subscriptions && subscriptions)
 		sk_add_bind_node(sk, &nl_table[sk->sk_protocol].mc_list);
 	nlk->subscriptions = subscriptions;
+	netlink_update_route_mc(sk, subscriptions);
 }
 
 static int netlink_realloc_groups(struct sock *sk)
@@ -1590,8 +1658,25 @@ int netlink_broadcast_filtered(struct sock *ssk, struct sk_buff *skb,
 
 	netlink_lock_table();
 
-	sk_for_each_bound(sk, &nl_table[ssk->sk_protocol].mc_list)
-		do_one_broadcast(sk, &info);
+	if (ssk->sk_protocol == NETLINK_ROUTE &&
+	    READ_ONCE(netlink_route_mc_index)) {
+		struct netlink_route_net *nn;
+		struct netlink_sock *nlk;
+
+		nn = net_generic(net, netlink_route_net_id);
+		hlist_for_each_entry(nlk, &nn->mc_list, mc_net_node)
+			do_one_broadcast(&nlk->sk, &info);
+
+		/* Local all-nsid listeners were visited above. */
+		hlist_for_each_entry(nlk, &netlink_route_all_nsid,
+				     mc_all_nsid_node) {
+			if (!net_eq(sock_net(&nlk->sk), net))
+				do_one_broadcast(&nlk->sk, &info);
+		}
+	} else {
+		sk_for_each_bound(sk, &nl_table[ssk->sk_protocol].mc_list)
+			do_one_broadcast(sk, &info);
+	}
 
 	consume_skb(skb);
 
@@ -1781,6 +1866,13 @@ retry:
 	case NETLINK_LISTEN_ALL_NSID:
 		if (!ns_capable(sock_net(sk)->user_ns, CAP_NET_BROADCAST))
 			return -EPERM;
+		if (sk->sk_protocol == NETLINK_ROUTE) {
+			netlink_table_grab();
+			assign_bit(NETLINK_F_LISTEN_ALL_NSID, &nlk->flags, val);
+			netlink_update_route_mc(sk, nlk->subscriptions);
+			netlink_table_ungrab();
+			return 0;
+		}
 		nr = NETLINK_F_LISTEN_ALL_NSID;
 		break;
 	case NETLINK_CAP_ACK:
@@ -2945,6 +3037,9 @@ static const struct net_proto_family netlink_family_ops = {
 
 static int __net_init netlink_net_init(struct net *net)
 {
+	struct netlink_route_net *nn = net_generic(net, netlink_route_net_id);
+
+	INIT_HLIST_HEAD(&nn->mc_list);
 #ifdef CONFIG_PROC_FS
 	if (!proc_create_net("netlink", 0, net->proc_net, &netlink_seq_ops,
 			sizeof(struct nl_seq_iter)))
@@ -2955,6 +3050,11 @@ static int __net_init netlink_net_init(struct net *net)
 
 static void __net_exit netlink_net_exit(struct net *net)
 {
+	struct netlink_route_net *nn = net_generic(net, netlink_route_net_id);
+
+	netlink_table_grab();
+	WARN_ON_ONCE(!hlist_empty(&nn->mc_list));
+	netlink_table_ungrab();
 #ifdef CONFIG_PROC_FS
 	remove_proc_entry("netlink", net->proc_net);
 #endif
@@ -2983,6 +3083,8 @@ static void __init netlink_add_usersock_entry(void)
 static struct pernet_operations __net_initdata netlink_net_ops = {
 	.init = netlink_net_init,
 	.exit = netlink_net_exit,
+	.id = &netlink_route_net_id,
+	.size = sizeof(struct netlink_route_net),
 };
 
 static inline u32 netlink_hash(const void *data, u32 len, u32 seed)
@@ -3058,7 +3160,8 @@ static int __init netlink_proto_init(void)
 	netlink_add_usersock_entry();
 
 	sock_register(&netlink_family_ops);
-	register_pernet_subsys(&netlink_net_ops);
+	if (register_pernet_subsys(&netlink_net_ops))
+		goto panic;
 	register_pernet_subsys(&netlink_tap_net_ops);
 	/* The netlink device handler may be needed early. */
 	rtnetlink_init();

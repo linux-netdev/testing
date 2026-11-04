@@ -47,6 +47,10 @@ struct netlink_sock {
 						   unsigned long *groups);
 	struct module		*module;
 
+	/* NETLINK_ROUTE auxiliary multicast indexes; nl_table_lock protected. */
+	struct hlist_node	mc_net_node;
+	struct hlist_node	mc_all_nsid_node;
+
 	struct rhash_head	node;
 	struct rcu_head		rcu;
 };

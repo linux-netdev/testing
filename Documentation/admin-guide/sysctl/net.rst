@@ -280,6 +280,33 @@ checksums.
 These messages are now emitted at KERN_DEBUG and can generally be enabled
 and controlled by the dynamic_debug facility.
 
+netlink_route_mc_index
+---------------------
+
+Selects the multicast candidate lists used for NETLINK_ROUTE notifications.
+This setting is available only in the initial network namespace and applies
+to notifications originating in all network namespaces.
+
+Values:
+
+	- 0 - walk the original global subscription list (default).
+	- 1 - walk the sender's network namespace subscription list and the
+	  global NETLINK_LISTEN_ALL_NSID subscription list, regardless of the
+	  number of subscribers.
+
+Both auxiliary indexes are maintained in either mode.
+Existing sockets are therefore included immediately when the index is enabled.
+Each broadcast reads the setting once and completes using its selected path;
+changing the setting does not restart broadcasts already in progress.
+Group membership, namespace, permission and socket filter checks still apply
+in both modes. Other Netlink protocols continue to use their original lists.
+
+The indexed path can reduce notification costs when there are many ordinary
+subscribers in other network namespaces. It may add overhead when most
+subscribers are local or listen across network namespaces. Disabling the
+indexed path does not remove its memory or subscription maintenance costs.
+Without CONFIG_SYSCTL, the setting remains at its default value of 0.
+
 netdev_budget
 -------------
 
