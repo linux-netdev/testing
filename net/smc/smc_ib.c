@@ -735,8 +735,11 @@ int smc_ib_get_memory_region(struct ib_pd *pd, int access_flags,
 	}
 
 	if (smc_ib_map_mr_sg(buf_slot, link_idx) !=
-			     buf_slot->sgt[link_idx].orig_nents)
+			     buf_slot->sgt[link_idx].orig_nents) {
+		smc_ib_put_memory_region(buf_slot->mr[link_idx]);
+		buf_slot->mr[link_idx] = NULL;
 		return -EINVAL;
+	}
 
 	return 0;
 }
