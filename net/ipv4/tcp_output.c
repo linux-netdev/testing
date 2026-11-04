@@ -2657,6 +2657,9 @@ static bool tcp_can_coalesce_send_queue_head(struct sock *sk, int len)
 
 	skb = tcp_send_head(sk);
 	tcp_for_write_queue_from_safe(skb, next, sk) {
+		if (!skb_frags_readable(skb))
+			return false;
+
 		if (len <= skb->len)
 			break;
 
