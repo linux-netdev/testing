@@ -1375,9 +1375,11 @@ static int process_rcf(struct sk_buff *skb, struct nf_conn *ct,
 	}
 
 	if (info->timeout > 0) {
+		u32 timeout = nf_ct_secs_to_jiffies(info->timeout);
+
 		pr_debug("nf_ct_ras: set RAS connection timeout to "
 			 "%u seconds\n", info->timeout);
-		nf_ct_refresh(ct, info->timeout * HZ);
+		nf_ct_refresh(ct, timeout);
 
 		/* Set expect timeout */
 		spin_lock_bh(&nf_conntrack_expect_lock);
@@ -1388,8 +1390,7 @@ static int process_rcf(struct sk_buff *skb, struct nf_conn *ct,
 				 "timeout to %u seconds for",
 				 info->timeout);
 			nf_ct_dump_tuple(&exp->tuple);
-			WRITE_ONCE(exp->timeout,
-				   nfct_time_stamp + (info->timeout * HZ));
+			WRITE_ONCE(exp->timeout, nfct_time_stamp + timeout);
 		}
 		spin_unlock_bh(&nf_conntrack_expect_lock);
 	}
