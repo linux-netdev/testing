@@ -183,6 +183,7 @@ static void atusb_work_urbs(struct work_struct *work)
 	} while (!ret);
 
 	usb_anchor_urb(urb, &atusb->idle_urbs);
+	usb_free_urb(urb);
 	dev_warn_ratelimited(&usb_dev->dev,
 			     "atusb_in: can't allocate/submit URB (%d)\n", ret);
 	schedule_delayed_work(&atusb->work,
