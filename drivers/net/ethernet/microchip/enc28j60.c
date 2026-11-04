@@ -1600,7 +1600,16 @@ static void enc28j60_remove(struct spi_device *spi)
 {
 	struct enc28j60_net *priv = spi_get_drvdata(spi);
 
+	/*
+	 * Stop the interface first so the xmit and set_rx_mode paths can no
+	 * longer queue new work.  Then drain the works that were already
+	 * queued; the IRQ handler does not queue work, so the IRQ can be
+	 * released after the drain and before free_netdev().
+	 */
 	unregister_netdev(priv->netdev);
+	disable_work_sync(&priv->tx_work);
+	disable_work_sync(&priv->setrx_work);
+	disable_work_sync(&priv->restart_work);
 	free_irq(spi->irq, priv);
 	free_netdev(priv->netdev);
 }
