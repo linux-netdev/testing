@@ -953,8 +953,13 @@ static void nfc_llcp_recv_connect(struct nfc_llcp_local *local,
 
 	if (dsap != LLCP_SAP_SDP) {
 		sock = nfc_llcp_sock_get(local, dsap, LLCP_SAP_SDP);
-		if (sock == NULL || sock->sk.sk_state != LLCP_LISTEN) {
+		if (sock == NULL) {
 			reason = LLCP_DM_NOBOUND;
+			goto fail;
+		}
+		if (sock->sk.sk_state != LLCP_LISTEN) {
+			reason = LLCP_DM_NOBOUND;
+			sock_put(&sock->sk);
 			goto fail;
 		}
 	} else {
