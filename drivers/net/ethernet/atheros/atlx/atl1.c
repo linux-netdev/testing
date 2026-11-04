@@ -3133,6 +3133,18 @@ static void atl1_remove(struct pci_dev *pdev)
 	adapter = netdev_priv(netdev);
 
 	/*
+	 * reset_dev_task is queued from the interrupt handler and from the
+	 * tx watchdog; link_chg_task is queued from the interrupt handler
+	 * when ISR_GPHY reports a link event.  Disable both before
+	 * unregistering the interface so that neither a pending nor a late
+	 * queue attempt can run after free_netdev().
+	 */
+	disable_work_sync(&adapter->reset_dev_task);
+	disable_work_sync(&adapter->link_chg_task);
+	timer_delete_sync(&adapter->phy_config_timer);
+	adapter->phy_timer_pending = false;
+
+	/*
 	 * Some atl1 boards lack persistent storage for their MAC, and get it
 	 * from the BIOS during POST.  If we've been messing with the MAC
 	 * address, we need to save the permanent one.
