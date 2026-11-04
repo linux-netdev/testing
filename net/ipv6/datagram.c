@@ -823,6 +823,8 @@ int ip6_datagram_send_ctl(struct net *net, struct sock *sk,
 			err = __sock_cmsg_send(sk, cmsg, &ipc6->sockc);
 			if (err)
 				return err;
+			if (cmsg->cmsg_type == SO_MARK)
+				ipc6->mark_set = true;
 			continue;
 		}
 
