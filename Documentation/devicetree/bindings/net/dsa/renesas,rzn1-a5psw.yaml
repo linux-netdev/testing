@@ -63,12 +63,22 @@ properties:
 
   ethernet-ports:
     type: object
-    additionalProperties: true
+    additionalProperties: false
+
+    properties:
+      '#address-cells':
+        const: 1
+      '#size-cells':
+        const: 0
+
     patternProperties:
       "^(ethernet-)?port@[0-4]$":
         type: object
         additionalProperties: true
         properties:
+          reg:
+            items:
+              - maximum: 4
           pcs-handle:
             maxItems: 1
             description:
