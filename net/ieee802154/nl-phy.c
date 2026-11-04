@@ -311,6 +311,8 @@ int ieee802154_del_iface(struct sk_buff *skb, struct genl_info *info)
 			wpan_phy_put(phy2);
 			goto out_dev;
 		}
+
+		wpan_phy_put(phy2);
 	}
 
 	rc = -ENOBUFS;
