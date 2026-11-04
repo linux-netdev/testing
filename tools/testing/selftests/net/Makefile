@@ -72,6 +72,8 @@ TEST_PROGS := \
 	netdev-l2addr.sh \
 	netdev_lock.py \
 	netdevice.sh \
+	netlink_mcast_semantics.py \
+	netlink_mcast_switch.py \
 	netns-name.sh \
 	netns-sysctl.sh \
 	nk_qlease.py \
