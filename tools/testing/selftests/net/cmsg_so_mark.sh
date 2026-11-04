@@ -68,6 +68,22 @@ for ovr in setsock cmsg both; do
     done
 done
 
+# Check per-message marks after connect() has populated the route cache.
+for i in 4 6; do
+    [ "$i" = 4 ] && TGT=$TGT4 || TGT=$TGT6
+
+    for p in u i r; do
+	for mark in "$((MARK + 1))" "$MARK" 0; do
+	    expected=0
+	    [ "$mark" -eq "$MARK" ] && expected=1
+
+	    ip netns exec "$NS" ./cmsg_sender -"$i" -p "$p" -k \
+		-M "$((MARK + 1))" -m "$mark" -s "$TGT" 1234
+	    check_result "$?" "$expected" "IPv$i $p connected mark $mark"
+	done
+    done
+done
+
 # Summary
 if [ $BAD -ne 0 ]; then
     echo "FAIL - $BAD/$TOTAL cases failed"
