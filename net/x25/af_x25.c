@@ -812,7 +812,7 @@ static int x25_connect(struct socket *sock, struct sockaddr_unsized *uaddr,
 	/* Now the loop */
 	rc = -EINPROGRESS;
 	if (sk->sk_state != TCP_ESTABLISHED && (flags & O_NONBLOCK))
-		goto out;
+		goto out_put_route;
 
 	rc = x25_wait_for_connection_establishment(sk);
 	if (rc)
