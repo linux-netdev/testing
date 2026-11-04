@@ -148,7 +148,10 @@ static int ping_v6_sendmsg(struct sock *sk, struct msghdr *msg, size_t len)
 
 	fl6.flowlabel = ip6_make_flowinfo(ipc6.tclass, fl6.flowlabel);
 
-	dst = ip6_sk_dst_lookup_flow(sk, &fl6, daddr, false);
+	if (ipc6.mark_set)
+		dst = ip6_dst_lookup_flow(sock_net(sk), sk, &fl6, daddr);
+	else
+		dst = ip6_sk_dst_lookup_flow(sk, &fl6, daddr, false);
 	if (IS_ERR(dst))
 		return PTR_ERR(dst);
 	rt = dst_rt6_info(dst);

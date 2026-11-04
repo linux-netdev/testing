@@ -353,6 +353,7 @@ struct ipcm6_cookie {
 	__s16 tclass;
 	__u16 gso_size;
 	__s8  dontfrag;
+	bool mark_set;
 	struct ipv6_txoptions *opt;
 };
 
