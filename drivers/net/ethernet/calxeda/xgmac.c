@@ -1023,6 +1023,9 @@ static int xgmac_open(struct net_device *dev)
 	if (ret < 0)
 		return ret;
 
+	/* xgmac_stop() disables this work before freeing the rings. */
+	enable_work(&priv->tx_timeout_work);
+
 	/* Enable the MAC Rx/Tx */
 	xgmac_mac_enable(ioaddr);
 
@@ -1045,6 +1048,13 @@ static int xgmac_open(struct net_device *dev)
 static int xgmac_stop(struct net_device *dev)
 {
 	struct xgmac_priv *priv = netdev_priv(dev);
+
+	/*
+	 * The timeout work programs the DMA rings that are freed below, and
+	 * it toggles NAPI.  Disable it synchronously before touching either;
+	 * xgmac_open() and xgmac_resume() enable it again.
+	 */
+	disable_work_sync(&priv->tx_timeout_work);
 
 	if (readl(priv->base + XGMAC_DMA_INTR_ENA))
 		napi_disable(&priv->napi);
@@ -1713,6 +1723,12 @@ static int xgmac_probe(struct platform_device *pdev)
 	ndev->ethtool_ops = &xgmac_ethtool_ops;
 	spin_lock_init(&priv->stats_lock);
 	INIT_WORK(&priv->tx_timeout_work, xgmac_tx_timeout_work);
+	/*
+	 * The work is enabled while the interface is up.  Start it disabled
+	 * so the enable_work() in xgmac_open()/xgmac_resume() has a matching
+	 * disable and never underflows.
+	 */
+	disable_work(&priv->tx_timeout_work);
 
 	priv->device = &pdev->dev;
 	priv->dev = ndev;
@@ -1823,6 +1839,13 @@ static void xgmac_remove(struct platform_device *pdev)
 	struct xgmac_priv *priv = netdev_priv(ndev);
 	struct resource *res;
 
+	/*
+	 * The timeout work can be queued from ndo_tx_timeout() and from the
+	 * DMA error interrupt.  Disable it before the IRQs are released and
+	 * the registers are unmapped.
+	 */
+	disable_work_sync(&priv->tx_timeout_work);
+
 	xgmac_mac_disable(priv->base);
 
 	/* Free the IRQ lines */
@@ -1862,6 +1885,12 @@ static int xgmac_suspend(struct device *dev)
 		return 0;
 
 	netif_device_detach(ndev);
+	/*
+	 * The timeout work touches the DMA registers and toggles NAPI.
+	 * Disable it before NAPI and the interrupts are torn down;
+	 * xgmac_resume() enables it again.
+	 */
+	disable_work_sync(&priv->tx_timeout_work);
 	napi_disable(&priv->napi);
 	writel(0, priv->base + XGMAC_DMA_INTR_ENA);
 
@@ -1891,6 +1920,7 @@ static int xgmac_resume(struct device *dev)
 
 	/* Enable the MAC and DMA */
 	xgmac_mac_enable(ioaddr);
+	enable_work(&priv->tx_timeout_work);
 	writel(DMA_INTR_DEFAULT_MASK, ioaddr + XGMAC_DMA_STATUS);
 	writel(DMA_INTR_DEFAULT_MASK, ioaddr + XGMAC_DMA_INTR_ENA);
 
