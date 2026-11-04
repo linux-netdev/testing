@@ -591,6 +591,7 @@ void *rds_ib_get_mr(struct scatterlist *sg, unsigned long nents,
 		}
 		ibmr->u.mr = ib_mr;
 		ibmr->odp = 1;
+		ibmr->device = rds_ibdev;
 
 		sge.addr = virt_addr;
 		sge.length = length;
@@ -697,5 +698,6 @@ static void rds_ib_odp_mr_worker(struct work_struct  *work)
 
 	ibmr = container_of(work, struct rds_ib_mr, work.work);
 	ib_dereg_mr(ibmr->u.mr);
+	rds_ib_dev_put(ibmr->device);
 	kfree(ibmr);
 }
