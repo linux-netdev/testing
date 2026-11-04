@@ -330,14 +330,22 @@ static inline void build_udp_packet_csum(uint8_t *buf, int family,
 	size_t ipalen = ip_addr_len(family);
 	uint32_t sum;
 
+	udph->check = 0;
+
 	/* No extension IPv4 and IPv6 headers addresses are the last fields */
 	sum = add_csum(buf - 2 * ipalen, 2 * ipalen);
 	sum += htons(IPPROTO_UDP) + udph->len;
 
 	if (!csum_off)
-		sum += add_csum(buf, udph->len);
+		sum += add_csum(buf, ntohs(udph->len));
 
 	udph->check = finish_ip_csum(sum);
+
+	/* A zero UDP checksum means no checksum: send 0xffff instead,
+	 * as the kernel does with CSUM_MANGLED_0.
+	 */
+	if (!csum_off && !udph->check)
+		udph->check = 0xffff;
 }
 
 static inline int build_udp_packet(uint8_t *buf, uint16_t sport, uint16_t dport,
