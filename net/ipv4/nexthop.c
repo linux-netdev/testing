@@ -3996,7 +3996,16 @@ static int nh_netdev_event(struct notifier_block *this,
 
 	switch (event) {
 	case NETDEV_DOWN:
+		nexthop_flush_dev(dev, event);
+		break;
 	case NETDEV_UNREGISTER:
+		/* netdev_wait_allrefs_any() rebroadcasts NETDEV_UNREGISTER
+		 * while waiting for the last references to be dropped; the
+		 * netns and its nexthop pernet state may already be torn
+		 * down by then.
+		 */
+		if (READ_ONCE(dev->reg_state) == NETREG_UNREGISTERED)
+			break;
 		nexthop_flush_dev(dev, event);
 		break;
 	case NETDEV_CHANGE:
