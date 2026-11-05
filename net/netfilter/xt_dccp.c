@@ -62,10 +62,15 @@ dccp_find_option(u_int8_t option,
 			return true;
 		}
 
-		if (op[i] <= DCCPO_MAX_RESERVED || i == optlen - 1)
+		if (op[i] <= DCCPO_MAX_RESERVED || i == optlen - 1) {
 			i++;
-		else
-			i += op[i + 1] ? : 1;
+		} else {
+			if (op[i + 1] < 2) {
+				spin_unlock_bh(&dccp_buflock);
+				goto invalid;
+			}
+			i += op[i + 1];
+		}
 	}
 
 	spin_unlock_bh(&dccp_buflock);
