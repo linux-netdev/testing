@@ -151,6 +151,7 @@ int tls_hkdf_expand_label(const u8 *secret, size_t secret_len,
 			  const char *label, u8 *out, size_t out_len);
 int tls_keyupdate_rekey(struct sock *sk, int tx);
 int tls_keyupdate_rx(struct sock *sk, struct sk_buff *skb);
+int tls_sw_key_update(struct sock *sk, int request);
 int tls_set_sw_offload(struct sock *sk, int tx,
 		       struct tls_crypto_info *new_crypto_info);
 void tls_update_rx_zc_capable(struct tls_context *tls_ctx);

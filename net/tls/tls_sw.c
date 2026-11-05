@@ -40,6 +40,7 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/splice.h>
+#include <linux/unaligned.h>
 #include <crypto/aead.h>
 
 #include <net/strparser.h>
@@ -763,6 +764,8 @@ static int tls_sw_sendmsg_splice(struct sock *sk, struct msghdr *msg,
 	return 0;
 }
 
+static int tls_tx_maybe_update_key(struct sock *sk, int flags);
+
 static int tls_sw_sendmsg_locked(struct sock *sk, struct msghdr *msg,
 				 size_t size)
 {
@@ -803,6 +806,19 @@ static int tls_sw_sendmsg_locked(struct sock *sk, struct msghdr *msg,
 		if (sk->sk_err) {
 			ret = -sk->sk_err;
 			goto send_end;
+		}
+
+		/* Check before each new record: one call can write many
+		 * records, and a KeyUpdate reply must go before the next
+		 * one. A send that failed before it copied any data leaves
+		 * an empty open record. The KeyUpdate itself is a handshake
+		 * record.
+		 */
+		if ((!ctx->open_rec || !ctx->open_rec->msg_plaintext.sg.size) &&
+		    record_type == TLS_RECORD_TYPE_DATA) {
+			ret = tls_tx_maybe_update_key(sk, msg->msg_flags);
+			if (ret)
+				goto send_end;
 		}
 
 		if (ctx->open_rec)
@@ -1003,6 +1019,153 @@ send_end:
 end:
 	ret = sk_stream_error(sk, msg->msg_flags, ret);
 	return copied > 0 ? copied : ret;
+}
+
+/* RFC 9846 section 5.5 allows 2^24.5 full-size records per AES-GCM key.
+ * Send the KeyUpdate a little earlier.
+ */
+#define TLS_KEYUPDATE_TX_RECORDS	BIT_ULL(24)
+
+/* Section 4.7.3: the epoch must not exceed 2^48-1. The application
+ * traffic secrets start at epoch 3.
+ */
+#define TLS_KEYUPDATE_MAX		(BIT_ULL(48) - 4)
+
+/* Send a KeyUpdate with the current key, then install the next key.
+ * Called with tx_lock held and the socket locked.
+ */
+static int tls_tx_key_update(struct sock *sk, u8 request, int flags)
+{
+	u8 body[TLS_KEYUPDATE_MSG_SIZE] = {
+		TLS_HANDSHAKE_KEYUPDATE, 0, 0, 1, request
+	};
+	struct tls_context *tls_ctx = tls_get_ctx(sk);
+	struct tls_sw_context_tx *ctx = tls_sw_ctx_tx(tls_ctx);
+	u8 record_type = TLS_RECORD_TYPE_HANDSHAKE;
+	union {
+		struct cmsghdr cmsg;
+		u8 buf[CMSG_SPACE(sizeof(record_type))];
+	} ctrl = {};
+	struct msghdr msg = {};
+	struct cmsghdr *cmsg;
+	struct kvec iov;
+	int ret;
+
+	msg.msg_control = &ctrl;
+	msg.msg_controllen = sizeof(ctrl);
+	msg.msg_flags = flags & (MSG_DONTWAIT | MSG_NOSIGNAL);
+
+	cmsg = CMSG_FIRSTHDR(&msg);
+	cmsg->cmsg_level = SOL_TLS;
+	cmsg->cmsg_type = TLS_SET_RECORD_TYPE;
+	cmsg->cmsg_len = CMSG_LEN(sizeof(record_type));
+	memcpy(CMSG_DATA(cmsg), &record_type, sizeof(record_type));
+
+	iov.iov_base = body;
+	iov.iov_len = sizeof(body);
+	iov_iter_kvec(&msg.msg_iter, ITER_SOURCE, &iov, 1, sizeof(body));
+
+	/* A control record closes the open record first, so all data
+	 * written so far goes out with the current key, ahead of the
+	 * KeyUpdate.
+	 */
+	ret = tls_sw_sendmsg_locked(sk, &msg, sizeof(body));
+	if (ret < 0)
+		return ret;
+
+	/* Nothing may be encrypted with the next key before the KeyUpdate
+	 * is encrypted with the current one.
+	 */
+	ret = tls_encrypt_async_wait(ctx);
+	if (!ret)
+		ret = tls_keyupdate_rekey(sk, 1);
+	if (ret) {
+		/* The peer expects the next key: the connection is lost */
+		TLS_INC_STATS(sock_net(sk), LINUX_MIB_TLSTXREKEYERROR);
+		tls_err_abort(sk, ret);
+		return ret;
+	}
+
+	TLS_INC_STATS(sock_net(sk), LINUX_MIB_TLSTXREKEYOK);
+	tls_ctx->tx_key_updates++;
+	if (request == TLS_KEY_UPDATE_NOT_REQUESTED)
+		tls_ctx->tx_key_update_reply = false;
+
+	return 0;
+}
+
+/* Send a KeyUpdate if one is due: in reply to the peer's
+ * update_requested (RFC 9846 section 4.7.3), or before the key reaches
+ * its record limit (section 5.5). ChaCha20-Poly1305 has no record limit:
+ * the sequence number would wrap first.
+ */
+static int tls_tx_maybe_update_key(struct sock *sk, int flags)
+{
+	struct tls_context *ctx = tls_get_ctx(sk);
+	bool limit;
+
+	if (likely(!ctx->tx_secret.len))
+		return 0;
+
+	limit = ctx->prot_info.cipher_type != TLS_CIPHER_CHACHA20_POLY1305 &&
+		get_unaligned_be64(ctx->tx.rec_seq) >= TLS_KEYUPDATE_TX_RECORDS;
+	if (!limit && !ctx->tx_key_update_reply)
+		return 0;
+
+	if (ctx->tx_key_updates >= TLS_KEYUPDATE_MAX) {
+		/* Ignore update_requested. At the record limit the
+		 * connection must end.
+		 */
+		ctx->tx_key_update_reply = false;
+		return limit ? -EKEYEXPIRED : 0;
+	}
+
+	return tls_tx_key_update(sk, TLS_KEY_UPDATE_NOT_REQUESTED, flags);
+}
+
+/**
+ * tls_sw_key_update - send a KeyUpdate now, for TLS_TX_KEY_UPDATE
+ * @sk: socket
+ * @request: non-zero to also ask the peer to update its key
+ *
+ * Called with tx_lock held and the socket locked.
+ *
+ * Return: 0 on success, or a negative errno.
+ */
+int tls_sw_key_update(struct sock *sk, int request)
+{
+	struct tls_context *ctx = tls_get_ctx(sk);
+	int ret;
+
+	if (!ctx->tx_secret.len)
+		return -EINVAL;
+
+	if (request) {
+		/* Only the kernel sees the answer */
+		if (!ctx->rx_secret.len)
+			return -EINVAL;
+		/* Section 4.7.3: wait for the answer to the previous one */
+		if (ctx->tx_key_update_asked)
+			return -EBUSY;
+	}
+
+	if (ctx->tx_key_updates >= TLS_KEYUPDATE_MAX - 1)
+		return -EKEYEXPIRED;
+
+	/* A reply must carry update_not_requested */
+	if (request && ctx->tx_key_update_reply) {
+		ret = tls_tx_key_update(sk, TLS_KEY_UPDATE_NOT_REQUESTED,
+					MSG_NOSIGNAL);
+		if (ret)
+			return ret;
+	}
+
+	ret = tls_tx_key_update(sk, request ? TLS_KEY_UPDATE_REQUESTED :
+				TLS_KEY_UPDATE_NOT_REQUESTED, MSG_NOSIGNAL);
+	if (!ret && request)
+		ctx->tx_key_update_asked = true;
+
+	return ret;
 }
 
 int tls_sw_sendmsg(struct sock *sk, struct msghdr *msg, size_t size)

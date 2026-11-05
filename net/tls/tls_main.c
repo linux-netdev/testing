@@ -765,10 +765,14 @@ static int do_tls_setsockopt_conf(struct sock *sk, sockptr_t optval,
 		/* The registered secret no longer matches the key. The RX
 		 * secret also needs the TX one, see do_tls_setsockopt_secret().
 		 */
-		if (tx)
+		if (tx) {
 			memzero_explicit(&ctx->tx_secret,
 					 sizeof(ctx->tx_secret));
+			ctx->tx_key_update_reply = false;
+		}
 		memzero_explicit(&ctx->rx_secret, sizeof(ctx->rx_secret));
+		/* the answer now goes to user space */
+		ctx->tx_key_update_asked = false;
 		return 0;
 	}
 
@@ -1004,6 +1008,35 @@ out:
 	return rc;
 }
 
+static int do_tls_setsockopt_key_update(struct sock *sk, sockptr_t optval,
+					unsigned int optlen)
+{
+	struct tls_context *ctx = tls_get_ctx(sk);
+	int value, rc;
+
+	if (sockptr_is_null(optval) || optlen != sizeof(value))
+		return -EINVAL;
+
+	if (copy_from_sockptr(&value, optval, sizeof(value)))
+		return -EFAULT;
+
+	if (value != 0 && value != 1)
+		return -EINVAL;
+
+	rc = mutex_lock_interruptible(&ctx->tx_lock);
+	if (rc)
+		return rc;
+	lock_sock(sk);
+	if (ctx->tx_conf == TLS_SW)
+		rc = tls_sw_key_update(sk, value);
+	else
+		rc = -EINVAL;
+	release_sock(sk);
+	mutex_unlock(&ctx->tx_lock);
+
+	return rc;
+}
+
 static int do_tls_setsockopt(struct sock *sk, int optname, sockptr_t optval,
 			     unsigned int optlen)
 {
@@ -1043,6 +1076,9 @@ static int do_tls_setsockopt(struct sock *sk, int optname, sockptr_t optval,
 		rc = do_tls_setsockopt_secret(sk, optval, optlen,
 					      optname == TLS_TX_TRAFFIC_SECRET);
 		release_sock(sk);
+		break;
+	case TLS_TX_KEY_UPDATE:
+		rc = do_tls_setsockopt_key_update(sk, optval, optlen);
 		break;
 	default:
 		rc = -ENOPROTOOPT;

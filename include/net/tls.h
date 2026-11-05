@@ -282,9 +282,12 @@ struct tls_context {
 	union tls_crypto_context crypto_send;
 	union tls_crypto_context crypto_recv;
 
-	/* Registered for KeyUpdate, protected by the socket lock */
+	/* KeyUpdate state, protected by the socket lock */
 	struct tls_traffic_secret tx_secret;
 	struct tls_traffic_secret rx_secret;
+	u64 tx_key_updates;		/* KeyUpdates sent */
+	bool tx_key_update_reply;	/* peer set update_requested */
+	bool tx_key_update_asked;	/* we set it, no answer yet */
 
 	struct list_head list;
 	refcount_t refcount;

@@ -151,5 +151,10 @@ int tls_keyupdate_rx(struct sock *sk, struct sk_buff *skb)
 	}
 	TLS_INC_STATS(sock_net(sk), LINUX_MIB_TLSRXREKEYOK);
 
+	/* Any KeyUpdate from the peer answers our update_requested */
+	ctx->tx_key_update_asked = false;
+	if (msg[4] == TLS_KEY_UPDATE_REQUESTED)
+		ctx->tx_key_update_reply = true;
+
 	return 0;
 }

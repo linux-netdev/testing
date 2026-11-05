@@ -44,6 +44,7 @@
 #define TLS_TX_MAX_PAYLOAD_LEN	5	/* Maximum plaintext size */
 #define TLS_TX_TRAFFIC_SECRET	6	/* TLS 1.3 TX traffic secret */
 #define TLS_RX_TRAFFIC_SECRET	7	/* TLS 1.3 RX traffic secret */
+#define TLS_TX_KEY_UPDATE	8	/* Send a TLS 1.3 KeyUpdate now */
 
 /* Supported versions */
 #define TLS_VERSION_MINOR(ver)	((ver) & 0xFF)

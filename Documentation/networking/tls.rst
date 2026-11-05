@@ -326,6 +326,23 @@ direction is then left to the application again.
 
 The secrets cannot be read back.
 
+With a registered TX secret, the kernel sends a KeyUpdate before the key
+reaches its record limit (RFC 9846, section 5.5): after 2^24 records, except
+for ChaCha20-Poly1305, which has no limit. It also sends one before the next
+record when a received KeyUpdate asks for it. With a registered RX secret,
+the kernel processes a received KeyUpdate and does not pass the record to
+the application. A peer that sends more than 8 KeyUpdates in one second ends
+the connection.
+
+TLS_TX_KEY_UPDATE
+~~~~~~~~~~~~~~~~~
+
+TLS 1.3 only. Send a KeyUpdate now and install the next TX key. Needs a
+registered TX secret. The value is an ``int``: 0 to send a KeyUpdate, 1 to
+also ask the peer to update its key. Asking the peer needs a registered RX
+secret, and fails with ``EBUSY`` until the peer has answered the previous
+request.
+
 Statistics
 ==========
 
