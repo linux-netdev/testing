@@ -1065,6 +1065,59 @@ TEST_F(tun_vnet_udptnl_proto, outer_proto_bad)
 	ASSERT_EQ(errno, EINVAL);
 }
 
+/* Change the link type of a tun device, which has to be down for it. */
+static int tun_set_link_type(int fd, const char *dev, int type)
+{
+	struct ifreq ifr = { 0 };
+	int sk, ret = -1;
+
+	sk = socket(PF_INET, SOCK_DGRAM, 0);
+	if (sk < 0)
+		return -1;
+
+	strncpy(ifr.ifr_name, dev, IFNAMSIZ - 1);
+	if (ioctl(sk, SIOCGIFFLAGS, &ifr) < 0)
+		goto out;
+	ifr.ifr_flags &= ~IFF_UP;
+	if (ioctl(sk, SIOCSIFFLAGS, &ifr) < 0)
+		goto out;
+	if (ioctl(fd, TUNSETLINK, type) < 0)
+		goto out;
+	ifr.ifr_flags |= IFF_UP;
+	if (ioctl(sk, SIOCSIFFLAGS, &ifr) < 0)
+		goto out;
+	ret = 0;
+out:
+	close(sk);
+	return ret;
+}
+
+TEST_F(tun_vnet_udptnl_proto, outer_proto_link_type)
+{
+	uint8_t *pkt = self->pkt;
+	int len, ret;
+
+	/* The frames still start with an Ethernet header, but the device
+	 * type no longer says so: the Ethernet header must still be
+	 * checked.
+	 */
+	ASSERT_EQ(tun_set_link_type(self->fd, self->ifname, ARPHRD_NONE), 0);
+
+	len = build_udptnl_frame(pkt, false, ETH_P_NSH, 2800);
+	ret = write(self->fd, pkt, len);
+	ASSERT_EQ(ret, -1);
+	ASSERT_EQ(errno, EINVAL);
+
+	len = build_udptnl_frame(pkt, true, ETH_P_NSH, 2800);
+	ret = write(self->fd, pkt, len);
+	ASSERT_EQ(ret, -1);
+	ASSERT_EQ(errno, EINVAL);
+
+	len = build_udptnl_frame(pkt, false, ETH_P_IP, 2800);
+	ret = write(self->fd, pkt, len);
+	ASSERT_EQ(ret, len);
+}
+
 /* IFF_TUN device with a tun_pi header: skb->protocol comes from
  * userspace, and there is no Ethernet header.
  */
@@ -1197,6 +1250,27 @@ TEST_F(tun_vnet_udptnl_proto_l3, outer_proto_bad)
 	/* tun_pi claims IPv4, but the frame says otherwise. */
 	len = build_udptnl_l3_frame(pkt, ETH_P_IP, 6, 2800);
 	ret = write(self->fd, pkt, len);
+	ASSERT_EQ(ret, -1);
+	ASSERT_EQ(errno, EINVAL);
+}
+
+TEST_F(tun_vnet_udptnl_proto_l3, outer_proto_link_type)
+{
+	struct tun_pi *pi = (struct tun_pi *)self->pkt;
+	int len, ret;
+
+	/* The device type now claims an Ethernet header, but IFF_TUN
+	 * frames still start with the L3 header: an Ethernet frame
+	 * behind tun_pi must not pass for a valid tunnel packet.
+	 */
+	ASSERT_EQ(tun_set_link_type(self->fd, self->ifname, ARPHRD_ETHER), 0);
+
+	len = build_udptnl_frame(self->pkt + sizeof(*pi), false, ETH_P_IP,
+				 2800);
+	pi->flags = 0;
+	pi->proto = htons(ETH_P_IP);
+	len += sizeof(*pi);
+	ret = write(self->fd, self->pkt, len);
 	ASSERT_EQ(ret, -1);
 	ASSERT_EQ(errno, EINVAL);
 }
