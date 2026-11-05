@@ -672,6 +672,14 @@ static int nft_offload_netdev_event(struct notifier_block *this,
 	if (event != NETDEV_UNREGISTER)
 		return NOTIFY_DONE;
 
+	/* netdev_wait_allrefs_any() rebroadcasts NETDEV_UNREGISTER
+	 * while waiting for the last references to be dropped; the
+	 * netns and its nftables pernet storage may already be torn
+	 * down by then.
+	 */
+	if (READ_ONCE(dev->reg_state) == NETREG_UNREGISTERED)
+		return NOTIFY_DONE;
+
 	nft_net = nft_pernet(net);
 	mutex_lock(&nft_net->commit_mutex);
 	chain = __nft_offload_get_chain(nft_net, dev);
