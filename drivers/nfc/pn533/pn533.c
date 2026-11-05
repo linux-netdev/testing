@@ -1310,6 +1310,11 @@ static int pn533_poll_dep_complete(struct pn533 *dev, void *arg,
 
 	rsp = (struct pn533_cmd_jump_dep_response *)resp->data;
 
+	if (resp->len < sizeof(*rsp)) {
+		rc = -EINVAL;
+		goto error;
+	}
+
 	rc = rsp->status & PN533_CMD_RET_MASK;
 	if (rc != PN533_CMD_RET_SUCCESS) {
 		/* Not target found, turn radio off */
@@ -1929,6 +1934,11 @@ static int pn533_in_dep_link_up_complete(struct pn533 *dev, void *arg,
 	}
 
 	rsp = (struct pn533_cmd_jump_dep_response *)resp->data;
+
+	if (resp->len < sizeof(*rsp)) {
+		rc = -EINVAL;
+		goto error;
+	}
 
 	rc = rsp->status & PN533_CMD_RET_MASK;
 	if (rc != PN533_CMD_RET_SUCCESS) {
