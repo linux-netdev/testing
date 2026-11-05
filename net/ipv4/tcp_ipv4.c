@@ -1954,6 +1954,7 @@ enum skb_drop_reason tcp_add_backlog(struct sock *sk, struct sk_buff *skb)
 	thtail = (struct tcphdr *)tail->data;
 
 	if (TCP_SKB_CB(tail)->end_seq != TCP_SKB_CB(skb)->seq ||
+	    (TCP_SKB_CB(tail)->tcp_flags & TCPHDR_FIN) ||
 	    TCP_SKB_CB(tail)->ip_dsfield != TCP_SKB_CB(skb)->ip_dsfield ||
 	    ((TCP_SKB_CB(tail)->tcp_flags |
 	      TCP_SKB_CB(skb)->tcp_flags) & (TCPHDR_SYN | TCPHDR_RST | TCPHDR_URG)) ||
