@@ -5314,7 +5314,8 @@ static bool tcp_ooo_try_coalesce(struct sock *sk,
 			     struct sk_buff *from,
 			     bool *fragstolen)
 {
-	bool res = tcp_try_coalesce(sk, to, from, fragstolen);
+	bool res = !(TCP_SKB_CB(to)->tcp_flags & TCPHDR_FIN) &&
+		   tcp_try_coalesce(sk, to, from, fragstolen);
 
 	/* In case tcp_drop_reason() is called later, update to->gso_segs */
 	if (res) {
