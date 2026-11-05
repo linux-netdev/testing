@@ -142,6 +142,7 @@ TEST_PROGS := \
 # end of TEST_PROGS
 
 TEST_PROGS_EXTENDED := \
+	test_xsk.sh \
 	xfrm_policy_add_speed.sh \
 # end of TEST_PROGS_EXTENDED
 
@@ -213,6 +214,7 @@ TEST_FILES := \
 	in_netns.sh \
 	lib.sh \
 	settings \
+	xsk_prereqs.sh \
 # end of TEST_FILES
 
 # YNL files, must be before "include ..lib.mk"
