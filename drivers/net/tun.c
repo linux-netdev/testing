@@ -2011,6 +2011,11 @@ static ssize_t tun_get_user(struct tun_struct *tun, struct tun_file *tfile,
 			goto drop;
 		}
 		skb_set_network_header(skb, ETH_HLEN);
+		/* A NAPI frags skb recycled by napi_reuse_skb() keeps the
+		 * protocol of a previous frame. eth_type_trans() sets it
+		 * below, the virtio header checks must not see a stale one.
+		 */
+		skb->protocol = 0;
 		break;
 	}
 
