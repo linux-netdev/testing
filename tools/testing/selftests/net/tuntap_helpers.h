@@ -3,6 +3,7 @@
 #ifndef _TUNTAP_HELPERS_H
 #define _TUNTAP_HELPERS_H
 
+#include <endian.h>
 #include <errno.h>
 #include <linux/if_packet.h>
 #include <linux/ipv6.h>
@@ -368,6 +369,7 @@ static inline int build_virtio_net_hdr_v1_hash_tunnel(uint8_t *buf, bool is_tap,
 	struct virtio_net_hdr_v1_hash_tunnel *vh_tunnel = (void *)buf;
 	struct virtio_net_hdr_v1 *vh = &vh_tunnel->hash_hdr.hdr;
 	int outer_iphlen, inner_iphlen, eth_hlen, gso_type;
+	int outer_th, inner_nh;
 
 	eth_hlen = is_tap ? ETH_HLEN : 0;
 	outer_iphlen = (outer_family == AF_INET) ? sizeof(struct iphdr) :
@@ -375,11 +377,14 @@ static inline int build_virtio_net_hdr_v1_hash_tunnel(uint8_t *buf, bool is_tap,
 	inner_iphlen = (inner_family == AF_INET) ? sizeof(struct iphdr) :
 						   sizeof(struct ipv6hdr);
 
-	vh_tunnel->outer_th_offset = eth_hlen + outer_iphlen;
-	vh_tunnel->inner_nh_offset = vh_tunnel->outer_th_offset + ETH_HLEN +
-				     GENEVE_HLEN + sizeof(struct udphdr);
+	outer_th = eth_hlen + outer_iphlen;
+	inner_nh = outer_th + ETH_HLEN + GENEVE_HLEN + sizeof(struct udphdr);
 
-	vh->csum_start = vh_tunnel->inner_nh_offset + inner_iphlen;
+	/* The tunnel offsets are always little endian. */
+	vh_tunnel->outer_th_offset = htole16(outer_th);
+	vh_tunnel->inner_nh_offset = htole16(inner_nh);
+
+	vh->csum_start = inner_nh + inner_iphlen;
 	vh->csum_offset = __builtin_offsetof(struct udphdr, check);
 	vh->flags = VIRTIO_NET_HDR_F_NEEDS_CSUM;
 	vh->hdr_len = hdr_len;
@@ -393,6 +398,12 @@ static inline int build_virtio_net_hdr_v1_hash_tunnel(uint8_t *buf, bool is_tap,
 	}
 
 	return sizeof(struct virtio_net_hdr_v1_hash_tunnel);
+}
+
+/* Add @delta to a little endian tunnel offset of the virtio header. */
+static inline void vnet_tnl_offset_add(__le16 *off, int delta)
+{
+	*off = htole16(le16toh(*off) + delta);
 }
 
 #endif /* _TUNTAP_HELPERS_H */
