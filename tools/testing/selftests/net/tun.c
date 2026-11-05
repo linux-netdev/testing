@@ -987,8 +987,8 @@ static int build_udptnl_frame(uint8_t *buf, bool vlan, uint16_t l3proto,
 
 	cur += build_virtio_net_hdr_v1_hash_tunnel(cur, true, hlen, 1400,
 						   AF_INET, AF_INET);
-	vh->outer_th_offset += vlan_len;
-	vh->inner_nh_offset += vlan_len;
+	vnet_tnl_offset_add(&vh->outer_th_offset, vlan_len);
+	vnet_tnl_offset_add(&vh->inner_nh_offset, vlan_len);
 	vh->hash_hdr.hdr.csum_start += vlan_len;
 
 	if (vlan) {
@@ -1193,7 +1193,7 @@ TEST_F(tun_vnet_udptnl_proto, outer_proto_bad_vlan_offset)
 	int len, ret;
 
 	len = build_udptnl_frame(self->pkt, true, ETH_P_IP, 2800);
-	vh->outer_th_offset -= 4;
+	vnet_tnl_offset_add(&vh->outer_th_offset, -4);
 	ret = write(self->fd, self->pkt, len);
 	ASSERT_EQ(ret, -1);
 	ASSERT_EQ(errno, EINVAL);
@@ -1280,8 +1280,8 @@ static int build_udptnl_l3_frame(uint8_t *buf, uint16_t pi_proto,
 	cur = vnet + build_virtio_net_hdr_v1_hash_tunnel(vnet, false, hlen,
 							 1400, AF_INET,
 							 AF_INET);
-	vh->outer_th_offset += IPV4_OPT_LEN;
-	vh->inner_nh_offset += IPV4_OPT_LEN;
+	vnet_tnl_offset_add(&vh->outer_th_offset, IPV4_OPT_LEN);
+	vnet_tnl_offset_add(&vh->inner_nh_offset, IPV4_OPT_LEN);
 	vh->hash_hdr.hdr.csum_start += IPV4_OPT_LEN;
 
 	/* Build the frame without options first: build_udp_packet_csum()
