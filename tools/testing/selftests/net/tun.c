@@ -1118,6 +1118,103 @@ TEST_F(tun_vnet_udptnl_proto, outer_proto_link_type)
 	ASSERT_EQ(ret, len);
 }
 
+/* Build a 4in6 Geneve GSO frame whose outer ethertype is @l3proto. */
+static int build_udptnl6_frame(uint8_t *buf, uint16_t l3proto,
+			       int payload_len)
+{
+	int hlen = UDP_TUNNEL_GENEVE_4IN6_HDRLEN;
+	uint8_t *outer_udph, *cur = buf;
+	int pktlen;
+
+	memset(buf, 0, TUN_VNET_TNL_SIZE + hlen + payload_len);
+
+	cur += build_virtio_net_hdr_v1_hash_tunnel(cur, true, hlen, 1400,
+						   AF_INET6, AF_INET);
+	cur += build_eth(cur, l3proto, param_hwaddr_outer_dst,
+			 param_hwaddr_outer_src);
+
+	pktlen = UDP_TUNNEL_GENEVE_4IN6_HDRLEN - ETH_HLEN -
+		 sizeof(struct ipv6hdr) + payload_len;
+	cur += build_ipv6_header(cur, IPPROTO_UDP, 0, pktlen,
+				 &param_ipaddr6_outer_dst,
+				 &param_ipaddr6_outer_src);
+
+	outer_udph = cur;
+	cur += build_udp_header(cur, UDP_SRC_PORT, VN_PORT,
+				pktlen - sizeof(struct udphdr));
+	cur += build_geneve_header(cur, VN_ID);
+	cur += build_eth(cur, ETH_P_IP, param_hwaddr_inner_dst,
+			 param_hwaddr_inner_src);
+	cur += build_ipv4_header(cur, IPPROTO_UDP,
+				 sizeof(struct udphdr) + payload_len,
+				 &param_ipaddr4_inner_dst,
+				 &param_ipaddr4_inner_src);
+	cur += build_udp_packet(cur, UDP_DST_PORT, UDP_SRC_PORT, payload_len,
+				AF_INET, false);
+	build_udp_packet_csum(outer_udph, AF_INET6, false);
+
+	return cur - buf;
+}
+
+TEST_F(tun_vnet_udptnl_proto, outer_proto_ok_ipv6)
+{
+	int len, ret;
+
+	len = build_udptnl6_frame(self->pkt, ETH_P_IPV6, 2800);
+	ret = write(self->fd, self->pkt, len);
+	ASSERT_EQ(ret, len);
+}
+
+/* An IPv4 ethertype on a declared IPv6 tunnel. */
+TEST_F(tun_vnet_udptnl_proto, outer_proto_bad_family)
+{
+	int len, ret;
+
+	len = build_udptnl6_frame(self->pkt, ETH_P_IP, 2800);
+	ret = write(self->fd, self->pkt, len);
+	ASSERT_EQ(ret, -1);
+	ASSERT_EQ(errno, EINVAL);
+}
+
+TEST_F(tun_vnet_udptnl_proto, outer_proto_bad_vlan_ipv6)
+{
+	int len, ret;
+
+	len = build_udptnl_frame(self->pkt, true, ETH_P_IPV6, 2800);
+	ret = write(self->fd, self->pkt, len);
+	ASSERT_EQ(ret, -1);
+	ASSERT_EQ(errno, EINVAL);
+}
+
+/* outer_th_offset does not account for the VLAN tag. */
+TEST_F(tun_vnet_udptnl_proto, outer_proto_bad_vlan_offset)
+{
+	struct virtio_net_hdr_v1_hash_tunnel *vh = (void *)self->pkt;
+	int len, ret;
+
+	len = build_udptnl_frame(self->pkt, true, ETH_P_IP, 2800);
+	vh->outer_th_offset -= 4;
+	ret = write(self->fd, self->pkt, len);
+	ASSERT_EQ(ret, -1);
+	ASSERT_EQ(errno, EINVAL);
+}
+
+/* The outer IPv4 header does not carry UDP. */
+TEST_F(tun_vnet_udptnl_proto, outer_proto_bad_l4)
+{
+	struct iphdr *iph;
+	int len, ret;
+
+	len = build_udptnl_frame(self->pkt, false, ETH_P_IP, 2800);
+	iph = (struct iphdr *)(self->pkt + TUN_VNET_TNL_SIZE + ETH_HLEN);
+	iph->protocol = IPPROTO_GRE;
+	iph->check = 0;
+	iph->check = build_ip_csum((uint8_t *)iph, iph->ihl << 2, 0);
+	ret = write(self->fd, self->pkt, len);
+	ASSERT_EQ(ret, -1);
+	ASSERT_EQ(errno, EINVAL);
+}
+
 /* IFF_TUN device with a tun_pi header: skb->protocol comes from
  * userspace, and there is no Ethernet header.
  */
