@@ -35,6 +35,10 @@ struct yt921x_priv;
 
 int yt921x_intif_read(struct yt921x_priv *priv, int port, int reg, u16 *valp);
 int yt921x_intif_write(struct yt921x_priv *priv, int port, int reg, u16 val);
+int yt921x_intif_ext_write(struct yt921x_priv *priv, int port, int reg,
+			   u16 val);
+int yt921x_intif_ext_read(struct yt921x_priv *priv, int port, int reg,
+			  u16 *valp);
 int yt921x_intif_modify_changed(struct yt921x_priv *priv, int port, int reg,
 				u16 mask, u16 val);
 
