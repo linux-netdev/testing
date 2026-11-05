@@ -155,3 +155,10 @@ Driver TX Requirements
 
    - `NETMEM_TX_NO_DMA`: for virtual or passthrough devices that do
      not DMA, but still support handling of netmem-backed skbs.
+
+3. Devmem TX frags are capped at `netdev->netmem_tx_max_frag_size`,
+   PAGE_SIZE by default. Drivers which can describe larger TX buffers
+   may raise it, up to the largest buffer a single TX descriptor can
+   describe. A frag can then span a whole net_iov, which may be much
+   larger than a page. The value is read when the dmabuf binding is
+   created.
