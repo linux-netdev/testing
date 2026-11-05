@@ -87,20 +87,18 @@ static inline struct iphdr *virtio_net_ip4_parse(struct sk_buff *skb,
 }
 
 /* Where does the L3 header start, and what protocol is it?
- * Handles Ethernet and VLAN headers; other devices use the
- * network header offset the caller set up.
+ * With @has_eth, the frame starts with an Ethernet header, possibly
+ * followed by VLAN tags. Otherwise the L3 header starts at the network
+ * header offset the caller set up.
+ *
+ * The caller knows how the frame will be parsed later: the device
+ * type does not tell, as tun can change it with TUNSETLINK.
  */
 static inline bool
-virtio_net_l3_start(struct sk_buff *skb, int *nhoff, __be16 *proto)
+virtio_net_l3_start(struct sk_buff *skb, bool has_eth, int *nhoff,
+		    __be16 *proto)
 {
-	/* skb->dev should always be set here already,
-	 * but let's not crash when it is not.
-	 */
-	if (WARN_ON_ONCE(!skb->dev))
-		return false;
-
-	if (skb->dev->type == ARPHRD_ETHER ||
-	    skb->dev->type == ARPHRD_LOOPBACK) {
+	if (has_eth) {
 		__be16 h_proto;
 
 		if (!pskb_may_pull(skb, ETH_HLEN))
@@ -431,7 +429,7 @@ static inline unsigned int virtio_l3min(bool is_ipv6)
  * carries, with UDP following it at @outer_th.
  */
 static inline bool
-virtio_net_tnl_offsets_ok(struct sk_buff *skb, bool outer_isv6,
+virtio_net_tnl_offsets_ok(struct sk_buff *skb, bool has_eth, bool outer_isv6,
 			  unsigned int outer_th)
 {
 	int nhoff;
@@ -439,7 +437,7 @@ virtio_net_tnl_offsets_ok(struct sk_buff *skb, bool outer_isv6,
 	unsigned int thoff;
 	int ip_proto;
 
-	if (!virtio_net_l3_start(skb, &nhoff, &proto))
+	if (!virtio_net_l3_start(skb, has_eth, &nhoff, &proto))
 		return false;
 	if (outer_isv6 != (proto == htons(ETH_P_IPV6)))
 		return false;
@@ -452,6 +450,7 @@ virtio_net_tnl_offsets_ok(struct sk_buff *skb, bool outer_isv6,
 static inline int
 virtio_net_hdr_tnl_to_skb(struct sk_buff *skb,
 			  const struct virtio_net_hdr_v1_hash_tunnel *vhdr,
+			  bool has_eth,
 			  bool tnl_hdr_negotiated,
 			  bool tnl_csum_negotiated,
 			  bool little_endian)
@@ -505,7 +504,7 @@ virtio_net_hdr_tnl_to_skb(struct sk_buff *skb,
 	if (ret)
 		return ret;
 
-	if (!virtio_net_tnl_offsets_ok(skb, outer_isv6, outer_th))
+	if (!virtio_net_tnl_offsets_ok(skb, has_eth, outer_isv6, outer_th))
 		return -EINVAL;
 
 	/* In case of USO, the inner protocol is still unknown and
