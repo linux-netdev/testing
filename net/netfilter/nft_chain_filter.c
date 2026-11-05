@@ -412,6 +412,15 @@ static int nf_tables_netdev_event(struct notifier_block *this,
 	    event != NETDEV_CHANGENAME)
 		return NOTIFY_DONE;
 
+	/* netdev_wait_allrefs_any() rebroadcasts NETDEV_UNREGISTER
+	 * while waiting for the last references to be dropped; the
+	 * netns and its nftables pernet storage may already be torn
+	 * down by then.
+	 */
+	if (event == NETDEV_UNREGISTER &&
+	    READ_ONCE(dev->reg_state) == NETREG_UNREGISTERED)
+		return NOTIFY_DONE;
+
 	nft_net = nft_pernet(dev_net(dev));
 	mutex_lock(&nft_net->commit_mutex);
 
