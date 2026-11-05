@@ -300,6 +300,32 @@ extra byte used by the ContentType field.
 
 [1] https://datatracker.ietf.org/doc/html/rfc8449
 
+TLS_TX_TRAFFIC_SECRET and TLS_RX_TRAFFIC_SECRET
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``TLS_TX_TRAFFIC_SECRET`` registers the TLS 1.3 application traffic secret
+of the transmit direction, ``TLS_RX_TRAFFIC_SECRET`` that of the receive
+direction. With a registered secret, the kernel performs KeyUpdate for that
+direction itself (RFC 9846, section 4.7.3). The value is the secret itself.
+TLS 1.3 only, software path only.
+
+Install the key of the direction first, with the ``TLS_TX`` or ``TLS_RX``
+socket option described above. The cipher of that key selects the hash, and
+the secret must have the length of that hash: 32 bytes for SHA-256
+(AES-128-GCM, AES-128-CCM, ChaCha20-Poly1305) or 48 bytes for SHA-384
+(AES-256-GCM). Other ciphers return ``EOPNOTSUPP``.
+
+Each secret can be registered once. ``TLS_RX_TRAFFIC_SECRET`` needs
+``TLS_TX_TRAFFIC_SECRET`` first: a received KeyUpdate can ask for one in
+reply, and only the kernel sees it. ``TLS_TX_TRAFFIC_SECRET`` alone is
+allowed.
+
+If the application installs a new key itself with ``TLS_TX``, both secrets
+are removed. With ``TLS_RX``, the RX secret is removed. KeyUpdate for that
+direction is then left to the application again.
+
+The secrets cannot be read back.
+
 Statistics
 ==========
 

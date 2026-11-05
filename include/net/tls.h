@@ -65,6 +65,9 @@ struct tls_rec;
 
 #define TLS_AAD_SPACE_SIZE		13
 
+/* SHA-384, the longest hash of a TLS 1.3 cipher suite kTLS supports */
+#define TLS_MAX_TRAFFIC_SECRET_SIZE	48
+
 #define TLS_MAX_IV_SIZE			16
 #define TLS_MAX_SALT_SIZE		4
 #define TLS_TAG_SIZE			16
@@ -224,6 +227,12 @@ struct tls_prot_info {
 	u16 tail_size;
 };
 
+/* A TLS 1.3 application traffic secret. len is 0 if none is registered. */
+struct tls_traffic_secret {
+	u8 data[TLS_MAX_TRAFFIC_SECRET_SIZE];
+	u8 len;
+};
+
 struct tls_context {
 	/* read-only cache line */
 	struct tls_prot_info prot_info;
@@ -265,6 +274,10 @@ struct tls_context {
 
 	union tls_crypto_context crypto_send;
 	union tls_crypto_context crypto_recv;
+
+	/* Registered for KeyUpdate, protected by the socket lock */
+	struct tls_traffic_secret tx_secret;
+	struct tls_traffic_secret rx_secret;
 
 	struct list_head list;
 	refcount_t refcount;

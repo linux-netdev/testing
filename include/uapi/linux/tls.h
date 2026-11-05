@@ -42,6 +42,8 @@
 #define TLS_TX_ZEROCOPY_RO	3	/* TX zerocopy (only sendfile now) */
 #define TLS_RX_EXPECT_NO_PAD	4	/* Attempt opportunistic zero-copy */
 #define TLS_TX_MAX_PAYLOAD_LEN	5	/* Maximum plaintext size */
+#define TLS_TX_TRAFFIC_SECRET	6	/* TLS 1.3 TX traffic secret */
+#define TLS_RX_TRAFFIC_SECRET	7	/* TLS 1.3 RX traffic secret */
 
 /* Supported versions */
 #define TLS_VERSION_MINOR(ver)	((ver) & 0xFF)
