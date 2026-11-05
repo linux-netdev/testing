@@ -718,6 +718,7 @@ EXPORT_SYMBOL_GPL(nf_flow_dnat_port);
 
 int nf_flow_table_init(struct nf_flowtable *flowtable)
 {
+	struct net *net;
 	int err;
 
 	INIT_DELAYED_WORK(&flowtable->gc_work, nf_flow_offload_work_gc);
@@ -735,6 +736,13 @@ int nf_flow_table_init(struct nf_flowtable *flowtable)
 	mutex_lock(&flowtable_lock);
 	list_add(&flowtable->list, &flowtables);
 	mutex_unlock(&flowtable_lock);
+
+	net = read_pnet(&flowtable->net);
+	if (net) {
+		spin_lock(&net->ft.lock);
+		net->ft.nr_ft++;
+		spin_unlock(&net->ft.lock);
+	}
 
 	return 0;
 }
@@ -774,6 +782,8 @@ EXPORT_SYMBOL_GPL(nf_flow_table_cleanup);
 
 void nf_flow_table_free(struct nf_flowtable *flow_table)
 {
+	struct net *net;
+
 	mutex_lock(&flowtable_lock);
 	list_del(&flow_table->list);
 	mutex_unlock(&flowtable_lock);
@@ -784,19 +794,51 @@ void nf_flow_table_free(struct nf_flowtable *flow_table)
 	nf_flow_table_iterate(flow_table, nf_flow_table_do_cleanup, NULL);
 	nf_flow_table_gc_run(flow_table);
 	nf_flow_table_offload_flush_cleanup(flow_table);
+
+	/* The gc pass above can still queue offload works whose handlers
+	 * decrement the pernet statistics.  Drain them all.
+	 */
+	nf_flow_table_offload_drain();
 	rhashtable_destroy(&flow_table->rhashtable);
+
+	net = read_pnet(&flow_table->net);
+	if (net) {
+		bool release;
+
+		spin_lock(&net->ft.lock);
+		release = net->ft.exiting && !--net->ft.nr_ft;
+		spin_unlock(&net->ft.lock);
+
+		/* Released by the last flowtable teardown, see
+		 * nf_flow_table_fini_net().
+		 */
+		if (release)
+			free_percpu(net->ft.stat);
+	}
 }
 EXPORT_SYMBOL_GPL(nf_flow_table_free);
 
 static int nf_flow_table_init_net(struct net *net)
 {
+	spin_lock_init(&net->ft.lock);
 	net->ft.stat = alloc_percpu(struct nf_flow_table_stat);
 	return net->ft.stat ? 0 : -ENOMEM;
 }
 
 static void nf_flow_table_fini_net(struct net *net)
 {
-	free_percpu(net->ft.stat);
+	bool release;
+
+	spin_lock(&net->ft.lock);
+	net->ft.exiting = true;
+	release = !net->ft.nr_ft;
+	spin_unlock(&net->ft.lock);
+
+	/* Pending flowtables still update the statistics from workqueue
+	 * context; the last one releases them, see nf_flow_table_free().
+	 */
+	if (release)
+		free_percpu(net->ft.stat);
 }
 
 static int nf_flow_table_pernet_init(struct net *net)

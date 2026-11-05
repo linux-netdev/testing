@@ -1180,6 +1180,13 @@ void nf_flow_table_offload_flush(struct nf_flowtable *flowtable)
 	}
 }
 
+void nf_flow_table_offload_drain(void)
+{
+	flush_workqueue(nf_flow_offload_add_wq);
+	flush_workqueue(nf_flow_offload_del_wq);
+	flush_workqueue(nf_flow_offload_stats_wq);
+}
+
 static int nf_flow_table_block_setup(struct nf_flowtable *flowtable,
 				     struct flow_block_offload *bo,
 				     enum flow_block_command cmd)
