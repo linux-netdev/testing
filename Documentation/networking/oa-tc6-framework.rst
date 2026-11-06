@@ -501,6 +501,19 @@ Zero align receive frame feature can be enabled to align all receive ethernet
 frames data to start at the beginning of any receive data chunk payload with a
 start word offset (SWO) of zero.
 
+.. c:function:: int oa_tc6_rx_cut_through_enable(struct oa_tc6 *tc6);
+
+Receive cut-through mode can be enabled, when supported by the MAC-PHY, to
+start transferring a received frame to the SPI host before the whole frame has
+been received from the network.
+
+.. c:function:: int oa_tc6_tx_credit_threshold_set(struct oa_tc6 *tc6, \
+                                                   u8 thresh);
+
+Sets the minimum number of free transmit credits that must be available
+before the MAC-PHY asserts the interrupt. The default is one credit
+according to OPEN Alliance 10BASE-T1x MAC-PHY Serial Interface specification.
+
 .. c:function:: int oa_tc6_ptp_register(struct oa_tc6 *tc6, \
                                         struct ptp_clock_info *info);
 
