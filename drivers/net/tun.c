@@ -70,7 +70,6 @@
 #include <linux/bpf.h>
 #include <linux/bpf_trace.h>
 #include <linux/mutex.h>
-#include <linux/ieee802154.h>
 #include <uapi/linux/if_ltalk.h>
 #include <uapi/linux/if_fddi.h>
 #include <uapi/linux/if_hippi.h>
@@ -3281,9 +3280,6 @@ static unsigned char tun_get_addr_len(unsigned short type)
 		return 4;
 	case ARPHRD_ETHER:
 		return ETH_ALEN;
-	case ARPHRD_IEEE802154:
-	case ARPHRD_IEEE802154_MONITOR:
-		return IEEE802154_EXTENDED_ADDR_LEN;
 	case ARPHRD_PHONET_PIPE:
 	case ARPHRD_PPP:
 	case ARPHRD_NONE:
@@ -3460,22 +3456,33 @@ static long __tun_chr_ioctl(struct file *file, unsigned int cmd,
 			netif_info(tun, drv, tun->dev,
 				   "Linktype set failed because interface is up\n");
 			ret = -EBUSY;
-		} else {
-			ret = call_netdevice_notifiers(NETDEV_PRE_TYPE_CHANGE,
-						       tun->dev);
-			ret = notifier_to_errno(ret);
-			if (ret) {
-				netif_info(tun, drv, tun->dev,
-					   "Refused to change device type\n");
-				break;
-			}
-			tun->dev->type = (int) arg;
-			tun->dev->addr_len = tun_get_addr_len(tun->dev->type);
-			netif_info(tun, drv, tun->dev, "linktype set to %d\n",
-				   tun->dev->type);
-			call_netdevice_notifiers(NETDEV_POST_TYPE_CHANGE,
-						 tun->dev);
+			break;
 		}
+
+		if (arg > USHRT_MAX) {
+			ret = -EINVAL;
+			break;
+		}
+
+		if (arg == ARPHRD_IEEE802154 || arg == ARPHRD_IEEE802154_MONITOR) {
+			ret = -EINVAL;
+			break;
+		}
+
+		ret = call_netdevice_notifiers(NETDEV_PRE_TYPE_CHANGE,
+					       tun->dev);
+		ret = notifier_to_errno(ret);
+		if (ret) {
+			netif_info(tun, drv, tun->dev,
+				   "Refused to change device type\n");
+			break;
+		}
+		tun->dev->type = (unsigned short)arg;
+		tun->dev->addr_len = tun_get_addr_len(tun->dev->type);
+		netif_info(tun, drv, tun->dev, "linktype set to %d\n",
+			   tun->dev->type);
+		call_netdevice_notifiers(NETDEV_POST_TYPE_CHANGE,
+					 tun->dev);
 		break;
 
 	case TUNSETDEBUG:
