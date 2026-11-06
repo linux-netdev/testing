@@ -167,15 +167,17 @@ out:
 int wg_socket_send_skb_to_peer(struct wg_peer *peer, struct sk_buff *skb, u8 ds)
 {
 	size_t skb_len = skb->len;
+	struct dst_cache *cache;
 	int ret = -EAFNOSUPPORT;
 
 	read_lock_bh(&peer->endpoint_lock);
+	cache = READ_ONCE(peer->is_dead) ? NULL : &peer->endpoint_cache;
 	if (peer->endpoint.addr.sa_family == AF_INET)
 		ret = send4(peer->device, skb, &peer->endpoint, ds,
-			    &peer->endpoint_cache);
+			    cache);
 	else if (peer->endpoint.addr.sa_family == AF_INET6)
 		ret = send6(peer->device, skb, &peer->endpoint, ds,
-			    &peer->endpoint_cache);
+			    cache);
 	else
 		dev_kfree_skb(skb);
 	if (likely(!ret))
