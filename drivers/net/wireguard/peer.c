@@ -85,8 +85,11 @@ static void peer_make_dead(struct wg_peer *peer)
 				     &peer->device->device_update_lock);
 	wg_pubkey_hashtable_remove(peer->device->peer_hashtable, peer);
 
-	/* Mark as dead, so that we don't allow jumping contexts after. */
+	/* Mark as dead and flush the cache before the peer's netns exits. */
+	write_lock_bh(&peer->endpoint_lock);
 	WRITE_ONCE(peer->is_dead, true);
+	dst_cache_reset_now(&peer->endpoint_cache);
+	write_unlock_bh(&peer->endpoint_lock);
 
 	/* The caller must now synchronize_net() for this to take effect. */
 }
