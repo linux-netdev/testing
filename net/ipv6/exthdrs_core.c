@@ -184,7 +184,8 @@ EXPORT_SYMBOL_GPL(ipv6_find_tlv);
  * isn't NULL.
  *
  * if flags is not NULL and it's a fragment, then the frag flag
- * IP6_FH_F_FRAG will be set. If it's an AH header, the
+ * IP6_FH_F_FRAG will be set. IP6_FH_F_NON_ATOMIC will be set for a
+ * non-atomic Fragment header. If it's an AH header, the
  * IP6_FH_F_AUTH flag is set and target < 0, then this function will
  * stop at the AH header. If IP6_FH_F_SKIP_RH flag was passed, then this
  * function will skip all those routing headers, where segements_left was 0.
@@ -254,6 +255,9 @@ int ipv6_find_hdr(const struct sk_buff *skb, unsigned int *offset,
 						&_frag_off);
 			if (!fp)
 				return -EBADMSG;
+
+			if (flags && (*fp & htons(IP6_OFFSET | IP6_MF)))
+				*flags |= IP6_FH_F_NON_ATOMIC;
 
 			_frag_off = ntohs(*fp) & ~0x7;
 			if (_frag_off) {
