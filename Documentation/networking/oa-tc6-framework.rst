@@ -537,6 +537,13 @@ Provides hardware timestamp related traffic statistics for ethtool.
 Helper to set hardware timestamp configuration. Part of net_device_ops
 callbacks.
 
+.. c:function:: void oa_tc6_set_vend1_mms(struct oa_tc6 *tc6, int mms);
+
+Helper to map MDIO_MMD_VEND1 command to vendor specific Memory Map Select
+(MMS) value. This function offers flexibility for vendors that may have
+used any MMS value between 10 and 15 as allowed by the specification.
+MDIO_MMD_VEND2 is already mapped to MMS4 in the OA TC6 frame work code.
+
 .. c:function:: int oa_tc6_write_register_mms(struct oa_tc6 *tc6, \
                                               u8 mms, u16 address, \
                                               u32 value);
