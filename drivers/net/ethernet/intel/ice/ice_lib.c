@@ -2852,9 +2852,14 @@ void ice_dis_vsi(struct ice_vsi *vsi, bool locked)
 		if (netif_running(vsi->netdev)) {
 			if (!locked)
 				rtnl_lock();
-			already_down = test_bit(ICE_VSI_DOWN, vsi->state);
-			if (!already_down)
-				ice_vsi_close(vsi);
+			/* ice_ena_vsi() will reopen the VSI with
+			 * ice_open_internal(), so release IRQs and rings even
+			 * if the VSI is already down: ice_down() keeps both,
+			 * and a failed restart (e.g. in ice_down_up()) leaves
+			 * the VSI in that state. ice_vsi_close() skips
+			 * ice_down() when ICE_VSI_DOWN is already set.
+			 */
+			ice_vsi_close(vsi);
 
 			if (!locked)
 				rtnl_unlock();
