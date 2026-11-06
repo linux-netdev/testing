@@ -1455,6 +1455,7 @@ static inline int rxrpc_abort_eproto(struct rxrpc_call *call,
 	struct rxrpc_skb_priv *sp = rxrpc_skb(skb);
 
 	rxrpc_abort_call(call, sp->hdr.seq, abort_code, -EPROTO, why);
+	rxrpc_poke_call(call, rxrpc_call_poke_abort);
 	return -EPROTO;
 }
 
