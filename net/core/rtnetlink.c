@@ -1409,6 +1409,7 @@ static noinline size_t if_nlmsg_size(const struct net_device *dev,
 	       + nla_total_size(4)  /* IFLA_PACING_OFFLOAD */
 	       + nla_total_size(2)  /* IFLA_HEADROOM */
 	       + nla_total_size(2)  /* IFLA_TAILROOM */
+	       + nla_total_size(4)  /* IFLA_TX_EXTRA_HEADROOM */
 	       + rtnl_dev_parent_size(dev)
 	       + 0;
 
@@ -2206,7 +2207,9 @@ static int rtnl_fill_ifinfo(struct sk_buff *skb,
 	    nla_put_u16(skb, IFLA_HEADROOM,
 			READ_ONCE(dev->needed_headroom)) ||
 	    nla_put_u16(skb, IFLA_TAILROOM,
-			READ_ONCE(dev->needed_tailroom)))
+			READ_ONCE(dev->needed_tailroom)) ||
+	    nla_put_u32(skb, IFLA_TX_EXTRA_HEADROOM,
+			READ_ONCE(dev->tx_extra_headroom)))
 		goto nla_put_failure;
 
 	if (rtnl_fill_proto_down(skb, dev))
@@ -2367,6 +2370,8 @@ static const struct nla_policy ifla_policy[IFLA_MAX+1] = {
 	[IFLA_HEADROOM]		= { .type = NLA_REJECT },
 	[IFLA_TAILROOM]		= { .type = NLA_REJECT },
 	[IFLA_PACING_OFFLOAD]	= NLA_POLICY_MAX(NLA_U32, 1),
+	[IFLA_TX_EXTRA_HEADROOM] =
+		NLA_POLICY_MAX(NLA_U32, NETDEV_TX_EXTRA_HEADROOM_MAX),
 };
 
 static const struct nla_policy ifla_info_policy[IFLA_INFO_MAX+1] = {
@@ -3374,6 +3379,15 @@ static int do_setlink(const struct sk_buff *skb, struct net_device *dev,
 		}
 	}
 
+	if (tb[IFLA_TX_EXTRA_HEADROOM]) {
+		u32 val = nla_get_u32(tb[IFLA_TX_EXTRA_HEADROOM]);
+
+		if (dev->tx_extra_headroom != val) {
+			WRITE_ONCE(dev->tx_extra_headroom, val);
+			status |= DO_SETLINK_NOTIFY;
+		}
+	}
+
 	if (tb[IFLA_OPERSTATE])
 		set_operstate(dev, nla_get_u8(tb[IFLA_OPERSTATE]));
 
@@ -3865,6 +3879,9 @@ struct net_device *rtnl_create_link(struct net *net, const char *ifname,
 		netif_set_gso_ipv4_max_size(dev, nla_get_u32(tb[IFLA_GSO_IPV4_MAX_SIZE]));
 	if (tb[IFLA_GRO_IPV4_MAX_SIZE])
 		netif_set_gro_ipv4_max_size(dev, nla_get_u32(tb[IFLA_GRO_IPV4_MAX_SIZE]));
+	if (tb[IFLA_TX_EXTRA_HEADROOM])
+		dev->tx_extra_headroom =
+			nla_get_u32(tb[IFLA_TX_EXTRA_HEADROOM]);
 
 	return dev;
 }
