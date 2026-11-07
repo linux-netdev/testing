@@ -1149,7 +1149,7 @@ yt921x_dsa_port_vlan_add(struct dsa_switch *ds, int port,
 	int res;
 
 	/* CPU port is supposed to be a member of every VLAN; see
-	 * yt921x_vlan_add() and yt921x_port_setup()
+	 * yt921x_vlan_add()
 	 */
 	if (dsa_is_cpu_port(ds, port))
 		return 0;
@@ -1194,10 +1194,17 @@ static int yt921x_userport_standalone(struct yt921x_priv *priv, int port)
 	pp->hairpin = false;
 	pp->isolated = false;
 
-	ctrl = ~dsa_cpu_ports(ds);
-	res = yt921x_reg_write(priv, YT921X_PORTn_ISOLATION(port), ctrl);
-	if (res)
-		return res;
+	/* Conduit ports should by controlled by tagging completely, skip
+	 * setting isolation to preserve the one-way isolation installed
+	 * by yt921x_chip_reset().
+	 */
+	if (dsa_is_cpu_port(ds, port)) {
+		ctrl = ~dsa_cpu_ports(ds);
+		res = yt921x_reg_write(priv, YT921X_PORTn_ISOLATION(port),
+				       ctrl);
+		if (res)
+			return res;
+	}
 
 	/* Turn off FDB learning to prevent FDB pollution */
 	mask = YT921X_PORT_LEARN_DIS;
@@ -1972,8 +1979,6 @@ yt921x_dsa_phylink_get_caps(struct dsa_switch *ds, int port,
 
 static int yt921x_port_setup(struct yt921x_priv *priv, int port)
 {
-	struct dsa_switch *ds = &priv->ds;
-	u32 ctrl;
 	int res;
 
 	res = yt921x_userport_standalone(priv, port);
@@ -1986,27 +1991,6 @@ static int yt921x_port_setup(struct yt921x_priv *priv, int port)
 	res = yt921x_reg_write(priv, YT921X_PORTn_PRIO_ORD(port), 0);
 	if (res)
 		return res;
-
-	if (dsa_is_cpu_port(ds, port)) {
-		/* Egress of CPU port is supposed to be completely controlled
-		 * via tagging, so set to oneway isolated (drop all packets
-		 * without tag).
-		 */
-		ctrl = ~(u32)0;
-		res = yt921x_reg_write(priv, YT921X_PORTn_ISOLATION(port),
-				       ctrl);
-		if (res)
-			return res;
-
-		/* To simplify FDB "isolation" simulation, we also disable
-		 * learning on the CPU port, and let software identify packets
-		 * towarding CPU (either trapped or a static FDB entry is
-		 * matched, no matter which bridge that entry is for), which is
-		 * already done by yt921x_userport_standalone(). As a result,
-		 * VLAN-awareness becomes unrelated on the CPU port (set to
-		 * VLAN-unaware by the way).
-		 */
-	}
 
 	return 0;
 }
@@ -2308,9 +2292,8 @@ static int yt921x_chip_reset(struct yt921x_priv *priv)
 static int yt921x_chip_setup_dsa(struct yt921x_priv *priv)
 {
 	struct dsa_switch *ds = &priv->ds;
-	unsigned long cpu_ports_mask;
+	u32 cpu_ports_mask;
 	u32 ctrl;
-	int port;
 	int res;
 
 	/* Enable DSA */
@@ -2328,7 +2311,7 @@ static int yt921x_chip_setup_dsa(struct yt921x_priv *priv)
 	if (res)
 		return res;
 
-	ctrl = GENMASK(10, 0);
+	ctrl = GENMASK(10, 0) & ~cpu_ports_mask;
 	res = yt921x_reg_write(priv, YT921X_FILTER_UNK_UCAST, ctrl);
 	if (res)
 		return res;
@@ -2351,13 +2334,6 @@ static int yt921x_chip_setup_dsa(struct yt921x_priv *priv)
 	ctrl = 0;
 	for (int i = 0; i < YT921X_PORT_NUM; i++)
 		ctrl |= YT921X_ACT_UNK_ACTn_TRAP(i);
-	/* Except for CPU ports, if any packets are sent via CPU ports without
-	 * tag, they should be dropped.
-	 */
-	for_each_set_bit(port, &cpu_ports_mask, YT921X_PORT_NUM) {
-		ctrl &= ~YT921X_ACT_UNK_ACTn_M(port);
-		ctrl |= YT921X_ACT_UNK_ACTn_DROP(port);
-	}
 	res = yt921x_reg_write(priv, YT921X_ACT_UNK_UCAST, ctrl);
 	if (res)
 		return res;
