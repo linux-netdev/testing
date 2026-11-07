@@ -511,8 +511,6 @@ struct yt921x_priv {
 	const struct yt921x_info *info;
 	unsigned int meter_slot_ns;
 	unsigned int port_shape_slot_ns;
-	/* cache of dsa_cpu_ports(ds) */
-	u16 cpu_ports_mask;
 	unsigned char cycle_ns;
 
 	/* protect the access to the switch registers */

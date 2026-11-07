@@ -1027,7 +1027,7 @@ yt921x_vlan_add(struct yt921x_priv *priv, int port, u16 vid, bool untagged)
 	u32 ctrls[2];
 
 	masks[0] = YT921X_VLAN_CTRLa_PORTn(port) |
-		   YT921X_VLAN_CTRLa_PORTS(priv->cpu_ports_mask);
+		   YT921X_VLAN_CTRLa_PORTS(dsa_cpu_ports(&priv->ds));
 	ctrls[0] = masks[0];
 
 	masks[1] = YT921X_VLAN_CTRLb_UNTAG_PORTn(port);
@@ -1183,6 +1183,7 @@ yt921x_dsa_port_vlan_add(struct dsa_switch *ds, int port,
 static int yt921x_userport_standalone(struct yt921x_priv *priv, int port)
 {
 	struct yt921x_port *pp = &priv->ports[port];
+	struct dsa_switch *ds = &priv->ds;
 	u32 mask;
 	u32 ctrl;
 	int res;
@@ -1193,7 +1194,7 @@ static int yt921x_userport_standalone(struct yt921x_priv *priv, int port)
 	pp->hairpin = false;
 	pp->isolated = false;
 
-	ctrl = ~priv->cpu_ports_mask;
+	ctrl = ~dsa_cpu_ports(ds);
 	res = yt921x_reg_write(priv, YT921X_PORTn_ISOLATION(port), ctrl);
 	if (res)
 		return res;
@@ -1239,7 +1240,7 @@ static int yt921x_isolate(struct yt921x_priv *priv, int port)
 
 	mask = BIT(port);
 	for (int i = 0; i < YT921X_PORT_NUM; i++) {
-		if ((BIT(i) & priv->cpu_ports_mask) || i == port)
+		if (dsa_is_cpu_port(&priv->ds, port) || i == port)
 			continue;
 
 		res = yt921x_reg_set_bits(priv, YT921X_PORTn_ISOLATION(i),
@@ -1256,7 +1257,7 @@ static int yt921x_isolate(struct yt921x_priv *priv, int port)
  */
 static int yt921x_bridge(struct yt921x_priv *priv, u16 ports_mask)
 {
-	unsigned long targets_mask = ports_mask & ~priv->cpu_ports_mask;
+	unsigned long targets_mask = ports_mask & dsa_cpu_ports(&priv->ds);
 	u32 isolated_mask;
 	u32 ctrl;
 	int port;
@@ -1369,7 +1370,7 @@ yt921x_bridge_flags(struct yt921x_priv *priv, int port,
 			u32 ports_mask;
 
 			ports_mask = dsa_bridge_ports(ds, bdev);
-			ports_mask |= priv->cpu_ports_mask;
+			ports_mask |= dsa_cpu_ports(ds);
 			res = yt921x_bridge(priv, ports_mask);
 			if (res)
 				return res;
@@ -1441,7 +1442,7 @@ yt921x_dsa_port_bridge_join(struct dsa_switch *ds, int port,
 		return 0;
 
 	ports_mask = dsa_bridge_ports(ds, bridge.dev);
-	ports_mask |= priv->cpu_ports_mask;
+	ports_mask |= dsa_cpu_ports(ds);
 
 	mutex_lock(&priv->reg_lock);
 	res = yt921x_bridge_join(priv, port, ports_mask);
@@ -2301,10 +2302,10 @@ static int yt921x_chip_setup_dsa(struct yt921x_priv *priv)
 	int res;
 
 	/* Enable DSA */
-	priv->cpu_ports_mask = dsa_cpu_ports(ds);
+	cpu_ports_mask = dsa_cpu_ports(ds);
 
 	ctrl = YT921X_EXT_CPU_PORT_TAG_EN | YT921X_EXT_CPU_PORT_PORT_EN |
-	       YT921X_EXT_CPU_PORT_PORT(__ffs(priv->cpu_ports_mask));
+	       YT921X_EXT_CPU_PORT_PORT(__ffs(cpu_ports_mask));
 	res = yt921x_reg_write(priv, YT921X_EXT_CPU_PORT, ctrl);
 	if (res)
 		return res;
@@ -2341,7 +2342,6 @@ static int yt921x_chip_setup_dsa(struct yt921x_priv *priv)
 	/* Except for CPU ports, if any packets are sent via CPU ports without
 	 * tag, they should be dropped.
 	 */
-	cpu_ports_mask = priv->cpu_ports_mask;
 	for_each_set_bit(port, &cpu_ports_mask, YT921X_PORT_NUM) {
 		ctrl &= ~YT921X_ACT_UNK_ACTn_M(port);
 		ctrl |= YT921X_ACT_UNK_ACTn_DROP(port);
