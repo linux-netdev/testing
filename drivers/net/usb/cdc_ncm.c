@@ -1838,6 +1838,9 @@ err_ndp:
 	else
 		ndpoffset = le32_to_cpu(ndp.ndp32->dwNextNdpIndex);
 
+	if (ndpoffset < 0)
+		goto error;
+
 	if (ndpoffset && loopcount--)
 		goto next_ndp;
 
