@@ -1098,6 +1098,16 @@ attribute-sets:
         name: pacing-offload
         type: u32
         doc: Enable EDT pacing offload (0 - disabled, 1 - enabled).
+      -
+        name: tx-extra-headroom
+        type: u32
+        doc: |
+          Additional headroom, in bytes, reserved on top of the driver's
+          requirement when the UDP, raw, AF_PACKET and AF_XDP copy mode transmit
+          paths allocate a packet for this device. TCP and forwarded packets are
+          not covered. Zero (the default) disables the extra reservation.
+        checks:
+          max: 512
   -
     name: prop-list-link-attrs
     subset-of: link-attrs
@@ -2471,6 +2481,7 @@ operations:
             - gso-ipv4-max-size
             - gro-ipv4-max-size
             - af-spec
+            - tx-extra-headroom
     -
       name: newlink-ntf
       doc: Notify that a link has been created
@@ -2567,6 +2578,7 @@ operations:
             - gso-ipv4-max-size
             - gro-ipv4-max-size
             - pacing-offload
+            - tx-extra-headroom
       dump:
         request:
           value: 18
