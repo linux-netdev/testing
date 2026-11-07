@@ -95,6 +95,13 @@ static int dsa_switch_rcv(struct sk_buff *skb, struct net_device *dev,
 	skb->pkt_type = PACKET_HOST;
 	skb->protocol = eth_type_trans(skb, skb->dev);
 
+	/* The RX queue the conduit recorded is an index into the conduit's
+	 * queues. It means nothing on skb->dev, a user port with a single RX
+	 * queue or a bond/team with its own queue count, and get_rps_cpu()
+	 * would check it against that device. Leave no queue recorded.
+	 */
+	skb_set_queue_mapping(skb, 0);
+
 	if (unlikely(!dsa_user_dev_check(skb->dev))) {
 		/* Packet is to be injected directly on an upper
 		 * device, e.g. a team/bond, so skip all DSA-port
