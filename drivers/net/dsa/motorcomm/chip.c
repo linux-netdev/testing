@@ -1182,9 +1182,16 @@ yt921x_dsa_port_vlan_add(struct dsa_switch *ds, int port,
 
 static int yt921x_userport_standalone(struct yt921x_priv *priv, int port)
 {
+	struct yt921x_port *pp = &priv->ports[port];
 	u32 mask;
 	u32 ctrl;
 	int res;
+
+	/* The return value got ignored by DSA core, reset flags before touching
+	 * the hardware.
+	 */
+	pp->hairpin = false;
+	pp->isolated = false;
 
 	ctrl = ~priv->cpu_ports_mask;
 	res = yt921x_reg_write(priv, YT921X_PORTn_ISOLATION(port), ctrl);
