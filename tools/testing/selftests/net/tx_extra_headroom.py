@@ -141,6 +141,19 @@ def test_not_inherited() -> None:
                 4, "vlan needed_headroom")
 
 
+def test_veth_peer_at_creation() -> None:
+    """ip can set a different value on each end of a new veth pair."""
+    if "tx_extra_headroom" not in cmd("ip link help", fail=False).stderr:
+        raise KsftSkipEx("iproute2 does not support tx_extra_headroom")
+
+    with NetNS() as ns, NetNSEnter(str(ns)):
+        ip("link add veth0 tx_extra_headroom 256 type veth "
+           "peer name veth1 tx_extra_headroom 128")
+        rtnl = RtnlFamily()
+        ksft_eq(get(rtnl, ifindex("veth0")), 256)
+        ksft_eq(get(rtnl, ifindex("veth1")), 128)
+
+
 def setup_veth(peer_ns):
     """Create veth0 in the current netns and its peer veth1 in peer_ns."""
     ip("link add veth0 type veth peer name veth1")
@@ -307,6 +320,7 @@ def main() -> None:
               test_survives_down_up,
               test_survives_netns_move,
               test_not_inherited,
+              test_veth_peer_at_creation,
               test_push,
               test_peer_xdp])
     ksft_exit()
