@@ -441,6 +441,41 @@ from a notifier.
 
 Drivers **must not** generate nested notifications of the ops-locked types.
 
+TX headroom reservation
+=======================
+
+``needed_headroom`` is the driver's own additional header-space requirement.
+It is written by the driver, or by a stacked device inheriting the value of
+the device below it, and is reported read-only through ``IFLA_HEADROOM``.
+
+``tx_extra_headroom`` is a separate reservation configured by the
+administrator through the ``IFLA_TX_EXTRA_HEADROOM`` rtnetlink attribute, a
+byte count from 0 to 512 that defaults to 0. It can be supplied when a link
+is created or changed, is reported in link dumps and change notifications,
+and setting it back to 0 removes it.
+
+The extra reservation is only applied when the stack allocates a locally
+generated packet for transmission through the device. ``LL_ALLOC_SPACE()``
+adds ``tx_extra_headroom`` before ``LL_RESERVED_SPACE()`` aligns the sum to
+``HH_DATA_MOD``, and is used by the UDP, raw and AF_PACKET transmit paths.
+AF_XDP copy mode adds it through ``netdev_tx_alloc_headroom()``. Its purpose
+is to give programs attached at TC egress room to push additional headers
+without having to reallocate the packet first.
+
+The setting is deliberately not part of ``LL_RESERVED_SPACE()``, which
+remains the threshold for deciding whether an already existing packet must
+be expanded. Packets that reach the device with less than the extra
+reservation, such as forwarded packets or TCP segments, are therefore not
+reallocated because of it. Consumers must keep their usual headroom and
+clone checks.
+
+The setting is not inherited through stacked devices. Packets are allocated
+against the device selected by the route, so configure it on the VLAN,
+bond or bridge device the route points at rather than on the device
+beneath it. It survives link down/up and network namespace moves and is
+independent of any TC or BPF attachment. It does not change the MTU or
+the bytes on the wire.
+
 NETDEV_INTERNAL symbol namespace
 ================================
 
