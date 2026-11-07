@@ -946,9 +946,7 @@ yt921x_vlan_aware_set(struct yt921x_priv *priv, int port, bool vlan_aware)
 {
 	u32 ctrl;
 
-	/* Abuse SVLAN for PCP parsing without polluting the FDB - it just works
-	 * despite YT921X_VLAN_CTRL_SVLAN_EN never being set
-	 */
+	/* Abuse SVLAN for PCP parsing without polluting the FDB */
 	if (!vlan_aware)
 		ctrl = YT921X_PORT_IGR_TPIDn_STAG(0);
 	else
