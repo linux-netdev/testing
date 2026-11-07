@@ -4,17 +4,20 @@
 """Tests for the IFLA_TX_EXTRA_HEADROOM link attribute."""
 
 import socket
+import struct
 from pathlib import Path
 
 from lib.py import ksft_run, ksft_exit, ksft_eq, ksft_raises, KsftSkipEx
-from lib.py import ksft_variants, KsftNamedVariant
-from lib.py import ip, tc, bpftool, bpf_prog_map_ids
+from lib.py import ksft_busy_wait, ksft_variants, KsftNamedVariant
+from lib.py import cmd, ip, tc, bpftool, bpf_prog_map_ids
 from lib.py import NetNS, NetNSEnter
 from lib.py import Netlink, NlError, RtnlFamily
 
 ATTR = "tx-extra-headroom"
 MAX = 512
 BPF_OBJ = Path(__file__).parent / "tx_extra_headroom.bpf.o"
+XDP_OBJ = Path(__file__).parent / "lib/xdp_dummy.bpf.o"
+XDP_HELPER = Path(__file__).parent / "lib/xdp_helper"
 PORT = 9999  # UDP_TEST_PORT in tx_extra_headroom.bpf.c
 PUSH = 20  # PUSH_LEN in tx_extra_headroom.bpf.c
 
@@ -143,11 +146,14 @@ def setup_veth(peer_ns):
     ip("link add veth0 type veth peer name veth1")
     ip(f"link set veth1 netns {peer_ns}")
     ip("addr add 192.0.2.1/24 dev veth0")
+    ip("addr add 2001:db8::1/64 dev veth0 nodad")
     ip("link set veth0 up")
     ip("addr add 192.0.2.2/24 dev veth1", ns=peer_ns)
+    ip("addr add 2001:db8::2/64 dev veth1 nodad", ns=peer_ns)
     ip("link set veth1 up", ns=peer_ns)
     peer_mac = ip("link show dev veth1", json=True, ns=peer_ns)[0]["address"]
-    ip(f"neigh replace 192.0.2.2 lladdr {peer_mac} dev veth0 nud permanent")
+    for addr in ("192.0.2.2", "2001:db8::2"):
+        ip(f"neigh replace {addr} lladdr {peer_mac} dev veth0 nud permanent")
 
 
 def load_tc_prog(dev, direction):
@@ -175,6 +181,71 @@ def send_udp4():
         s.sendto(b"x", ("192.0.2.2", PORT))
 
 
+def send_udp6():
+    """Send one UDP packet from veth0 to veth1 over IPv6."""
+    with socket.socket(socket.AF_INET6, socket.SOCK_DGRAM) as s:
+        s.sendto(b"x", ("2001:db8::2", PORT))
+
+
+def csum(data):
+    """Return the Internet checksum of data."""
+    data += b"\0" * (len(data) % 2)
+    return 0xffff - sum(struct.unpack(f"!{len(data) // 2}H", data)) % 0xffff
+
+
+def ipv4_udp():
+    """Return an IPv4 UDP packet from veth0 to veth1."""
+    udp = struct.pack("!HHHH", PORT, PORT, 9, 0) + b"x"
+    iph = struct.pack("!BBHHHBBH4s4s", 0x45, 0, 20 + len(udp), 0, 0, 64,
+                      socket.IPPROTO_UDP, 0, socket.inet_aton("192.0.2.1"),
+                      socket.inet_aton("192.0.2.2"))
+    return iph[:10] + struct.pack("!H", csum(iph)) + iph[12:] + udp
+
+
+def ipv6_udp():
+    """Return an IPv6 UDP packet from veth0 to veth1."""
+    src = socket.inet_pton(socket.AF_INET6, "2001:db8::1")
+    dst = socket.inet_pton(socket.AF_INET6, "2001:db8::2")
+    udp = struct.pack("!HHHH", PORT, PORT, 9, 0) + b"x"
+    pseudo = src + dst + struct.pack("!IxxxB", len(udp), socket.IPPROTO_UDP)
+    udp = udp[:6] + struct.pack("!H", csum(pseudo + udp)) + udp[8:]
+    return (struct.pack("!IHBB", 6 << 28, len(udp), socket.IPPROTO_UDP, 64) +
+            src + dst + udp)
+
+
+def eth_frame():
+    """Return an Ethernet frame with ipv4_udp() from veth0 to veth1."""
+    src = ip("link show dev veth0", json=True)[0]["address"]
+    dst = ip("neigh show 192.0.2.2 dev veth0", json=True)[0]["lladdr"]
+    return bytes.fromhex((dst + src).replace(":", "") + "0800") + ipv4_udp()
+
+
+def send_raw4():
+    """Send one UDP packet from veth0 to veth1 with an IPv4 raw socket."""
+    with socket.socket(socket.AF_INET, socket.SOCK_RAW,
+                       socket.IPPROTO_RAW) as s:
+        s.sendto(ipv4_udp(), ("192.0.2.2", 0))
+
+
+def send_raw6():
+    """Send one UDP packet from veth0 to veth1 with an IPv6 raw socket."""
+    with socket.socket(socket.AF_INET6, socket.SOCK_RAW,
+                       socket.IPPROTO_RAW) as s:
+        s.sendto(ipv6_udp(), ("2001:db8::2", 0))
+
+
+def send_packet():
+    """Send one UDP packet from veth0 to veth1 with an AF_PACKET socket."""
+    with socket.socket(socket.AF_PACKET, socket.SOCK_RAW) as s:
+        s.bind(("veth0", 0))
+        s.send(eth_frame())
+
+
+def send_xsk():
+    """Send one UDP packet from veth0 to veth1 with an AF_XDP socket."""
+    cmd(f"{XDP_HELPER} {ifindex('veth0')} 0 -t {eth_frame().hex()}")
+
+
 # A local IPv4 UDP packet on veth gets LL_ALLOC_SPACE() =
 # ((14 + tx_extra_headroom) & ~15) + 16 bytes of headroom. The Ethernet
 # header takes 14 of them. The push reallocates if less than PUSH bytes are
@@ -200,6 +271,33 @@ def test_push(send, hr, headroom) -> None:
     ksft_eq(bss["reallocated"], headroom < PUSH, "push reallocated the head")
 
 
+@ksft_variants([KsftNamedVariant(f"{name}_{hr}", send, hr)
+                for name, send in (("udp4", send_udp4), ("udp6", send_udp6),
+                                   ("raw4", send_raw4), ("raw6", send_raw6),
+                                   ("packet", send_packet),
+                                   ("xsk", send_xsk))
+                for hr in (0, 256)])
+def test_peer_xdp(send, hr) -> None:
+    """Check that generic XDP on the veth peer copies the skb only with 0."""
+    if send is send_xsk and cmd(f"{XDP_HELPER} - -", fail=False).ret == 255:
+        raise KsftSkipEx("AF_XDP unsupported")
+
+    with NetNS() as send_ns, NetNS() as peer_ns, NetNSEnter(str(send_ns)):
+        setup_veth(peer_ns)
+        set_hr(RtnlFamily(), ifindex("veth0"), hr)
+        with NetNSEnter(str(peer_ns)):
+            map_id = load_tc_prog("veth1", "ingress")
+        send()
+        ksft_busy_wait(lambda: read_bss(map_id)["count"] == 1)
+        before = read_bss(map_id)["headroom"]
+        ip(f"link set dev veth1 xdpgeneric obj {XDP_OBJ} sec xdp", ns=peer_ns)
+        send()
+        ksft_busy_wait(lambda: read_bss(map_id)["count"] == 2)
+        after = read_bss(map_id)["headroom"]
+
+    ksft_eq(after != before, hr == 0, "generic XDP copied the skb")
+
+
 def main() -> None:
     """Run all test cases."""
     ksft_run([test_default_and_set,
@@ -209,7 +307,8 @@ def main() -> None:
               test_survives_down_up,
               test_survives_netns_move,
               test_not_inherited,
-              test_push])
+              test_push,
+              test_peer_xdp])
     ksft_exit()
 
 

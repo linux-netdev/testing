@@ -5,6 +5,7 @@
 #include <linux/if_ether.h>
 #include <linux/in.h>
 #include <linux/ip.h>
+#include <linux/ipv6.h>
 #include <linux/pkt_cls.h>
 #include <linux/udp.h>
 #include <bpf/bpf_endian.h>
@@ -27,20 +28,28 @@ bool reallocated;
 
 static bool is_test_packet(struct __sk_buff *skb)
 {
+	struct ipv6hdr ip6h;
 	struct udphdr udph;
 	struct iphdr iph;
+	__u32 off;
 
-	if (skb->protocol != bpf_htons(ETH_P_IP))
+	if (skb->protocol == bpf_htons(ETH_P_IP)) {
+		if (bpf_skb_load_bytes(skb, ETH_HLEN, &iph, sizeof(iph)))
+			return false;
+		if (iph.protocol != IPPROTO_UDP)
+			return false;
+		off = ETH_HLEN + sizeof(iph);
+	} else if (skb->protocol == bpf_htons(ETH_P_IPV6)) {
+		if (bpf_skb_load_bytes(skb, ETH_HLEN, &ip6h, sizeof(ip6h)))
+			return false;
+		if (ip6h.nexthdr != IPPROTO_UDP)
+			return false;
+		off = ETH_HLEN + sizeof(ip6h);
+	} else {
 		return false;
+	}
 
-	if (bpf_skb_load_bytes(skb, ETH_HLEN, &iph, sizeof(iph)))
-		return false;
-
-	if (iph.protocol != IPPROTO_UDP)
-		return false;
-
-	if (bpf_skb_load_bytes(skb, ETH_HLEN + sizeof(iph), &udph,
-			       sizeof(udph)))
+	if (bpf_skb_load_bytes(skb, off, &udph, sizeof(udph)))
 		return false;
 
 	return udph.dest == bpf_htons(UDP_TEST_PORT);
@@ -65,6 +74,21 @@ int push(struct __sk_buff *skb)
 	reallocated = kskb->head != head;
 
 	return TC_ACT_SHOT;
+}
+
+SEC("tc/ingress")
+int record(struct __sk_buff *skb)
+{
+	struct sk_buff *kskb;
+
+	if (!is_test_packet(skb))
+		return TC_ACT_OK;
+
+	kskb = bpf_cast_to_kern_ctx(skb);
+	headroom = kskb->data - kskb->head;
+	count++;
+
+	return TC_ACT_OK;
 }
 
 char __license[] SEC("license") = "GPL";
