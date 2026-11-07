@@ -2969,8 +2969,11 @@ void *__pskb_pull_tail(struct sk_buff *skb, int delta)
 			return NULL;
 	}
 
-	BUG_ON(skb_copy_bits(skb, skb_headlen(skb),
-			     skb_tail_pointer(skb), delta));
+	if (unlikely(skb_copy_bits(skb, skb_headlen(skb),
+				   skb_tail_pointer(skb), delta))) {
+		DEBUG_NET_WARN_ON_ONCE(1);
+		return NULL;
+	}
 
 	/* Optimization: no fragments, no reasons to preestimate
 	 * size of pulled pages. Superb.
@@ -7313,7 +7316,8 @@ void skb_condense(struct sk_buff *skb)
 			return;
 
 		/* Nice, we can free page frag(s) right now */
-		__pskb_pull_tail(skb, skb->data_len);
+		if (!__pskb_pull_tail(skb, skb->data_len))
+			return;	/* frags are still there, keep truesize */
 	}
 	/* At this point, skb->truesize might be over estimated,
 	 * because skb had a fragment, and fragments do not tell
