@@ -884,6 +884,52 @@ yt921x_dsa_port_fdb_add(struct dsa_switch *ds, int port,
 }
 
 static int
+yt921x_dsa_lag_fdb_del(struct dsa_switch *ds, struct dsa_lag lag,
+		       const unsigned char *addr, u16 vid, struct dsa_db db)
+{
+	struct yt921x_priv *priv = dsa_to_yt921x_priv(ds);
+	struct dsa_port *dp;
+	u16 ports_mask;
+	int res;
+
+	if (!lag.id)
+		return -EINVAL;
+
+	ports_mask = 0;
+	dsa_lag_foreach_port(dp, ds->dst, &lag)
+		ports_mask |= BIT(dp->index);
+
+	mutex_lock(&priv->reg_lock);
+	res = yt921x_fdb_leave(priv, addr, vid, ports_mask);
+	mutex_unlock(&priv->reg_lock);
+
+	return res;
+}
+
+static int
+yt921x_dsa_lag_fdb_add(struct dsa_switch *ds, struct dsa_lag lag,
+		       const unsigned char *addr, u16 vid, struct dsa_db db)
+{
+	struct yt921x_priv *priv = dsa_to_yt921x_priv(ds);
+	struct dsa_port *dp;
+	u16 ports_mask;
+	int res;
+
+	if (!lag.id)
+		return -EINVAL;
+
+	ports_mask = 0;
+	dsa_lag_foreach_port(dp, ds->dst, &lag)
+		ports_mask |= BIT(dp->index);
+
+	mutex_lock(&priv->reg_lock);
+	res = yt921x_fdb_join(priv, addr, vid, ports_mask);
+	mutex_unlock(&priv->reg_lock);
+
+	return res;
+}
+
+static int
 yt921x_dsa_port_mdb_del(struct dsa_switch *ds, int port,
 			const struct switchdev_obj_port_mdb *mdb,
 			struct dsa_db db)
@@ -2529,6 +2575,8 @@ static const struct dsa_switch_ops yt921x_dsa_switch_ops = {
 	.set_ageing_time	= yt921x_dsa_set_ageing_time,
 	.port_fdb_del		= yt921x_dsa_port_fdb_del,
 	.port_fdb_add		= yt921x_dsa_port_fdb_add,
+	.lag_fdb_del		= yt921x_dsa_lag_fdb_del,
+	.lag_fdb_add		= yt921x_dsa_lag_fdb_add,
 	.port_mdb_del		= yt921x_dsa_port_mdb_del,
 	.port_mdb_add		= yt921x_dsa_port_mdb_add,
 	/* vlan */
