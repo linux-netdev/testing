@@ -1241,12 +1241,16 @@ static int yt921x_userport_standalone(struct yt921x_priv *priv, int port)
 	if (res)
 		return res;
 
-	/* Unrelated since learning is off and all packets are trapped;
-	 * set it anyway
+	/* Unrelated since learning is off and there is only one possible
+	 * destination; set it anyway
 	 */
 	res = yt921x_port_set_pvid(priv, port, YT921X_VID_UNWARE);
 	if (res)
 		return res;
+
+	/* Also unrelated for FILTER_UNK_UCAST / FILTER_UNK_MCAST since all
+	 * packets are handled by software
+	 */
 
 	return 0;
 }
@@ -1262,6 +1266,97 @@ static int yt921x_userport_bridge(struct yt921x_priv *priv, int port)
 		return res;
 
 	return 0;
+}
+
+/* ports_mask is optional */
+static int yt921x_bridge_flood_set(struct yt921x_priv *priv, u16 ports_mask)
+{
+	struct dsa_bridge *bridges[YT921X_PORT_NUM];
+	struct dsa_switch *ds = &priv->ds;
+	struct dsa_port *dp;
+	unsigned int count;
+	u32 ctrl;
+	int res;
+	int ret;
+
+	/* Offloading is only enabled if there is at most 1 bridge - see the
+	 * cross-bridge FDB mismatch below. (0 does nothing, of course.)
+	 */
+	count = 0;
+	dsa_switch_for_each_user_port(dp, ds) {
+		unsigned int i;
+
+		if (!dp->bridge)
+			continue;
+
+		for (i = 0; i < count; i++)
+			if (bridges[i] == dp->bridge)
+				break;
+		if (i == count) {
+			bridges[count] = dp->bridge;
+			count++;
+		}
+	}
+
+	ret = 0;
+	if (count != 1) {
+		ctrl = YT921X_FILTER_PORTS_M;
+		res = yt921x_reg_write(priv, YT921X_FILTER_UNK_UCAST, ctrl);
+		if (res)
+			ret = res;
+		res = yt921x_reg_write(priv, YT921X_FILTER_UNK_MCAST, ctrl);
+		if (res)
+			ret = res;
+		return ret;
+	}
+
+	if (ports_mask)
+		ports_mask &= ~dsa_cpu_ports(ds);
+	if (!ports_mask)
+		ports_mask = dsa_bridge_ports(ds, bridges[0]->dev);
+
+	for (int type = 0; type < 2; type++) {
+		unsigned long targets_mask = ports_mask;
+		u16 flood_mask;
+		u32 addr;
+		int port;
+
+		addr = !type ? YT921X_FILTER_UNK_UCAST :
+		       YT921X_FILTER_UNK_MCAST;
+
+		flood_mask = 0;
+		for_each_set_bit(port, &targets_mask, YT921X_PORT_NUM) {
+			struct yt921x_port *pp = &priv->ports[port];
+
+			if (!type ? pp->flood : pp->mcast_flood)
+				flood_mask |= BIT(port);
+		}
+
+		ctrl = 0;
+		for_each_set_bit(port, &targets_mask, YT921X_PORT_NUM) {
+			struct yt921x_port *pp = &priv->ports[port];
+
+			/* Hardware never floods back to its own ingress port,
+			 * keep hairpin port trapped: the software bridge does
+			 * deliver a flood there.
+			 */
+			if (!pp->hairpin && !((flood_mask ^ ports_mask) &
+					      ~BIT(port)))
+				continue;
+
+			ctrl |= BIT(port);
+		}
+
+		/* ACT_UNK is fixed to TRAP for every port, see
+		 * yt921x_chip_setup_dsa().
+		 */
+
+		res = yt921x_reg_update_bits(priv, addr, ports_mask, ctrl);
+		if (res)
+			ret = res;
+	}
+
+	return ret;
 }
 
 static int yt921x_isolate(struct yt921x_priv *priv, int port)
@@ -1338,6 +1433,10 @@ static int yt921x_bridge_leave(struct yt921x_priv *priv, int port)
 	if (res)
 		return res;
 
+	res = yt921x_bridge_flood_set(priv, 0);
+	if (res)
+		return res;
+
 	return 0;
 }
 
@@ -1354,6 +1453,10 @@ yt921x_bridge_join(struct yt921x_priv *priv, int port, u16 ports_mask)
 	if (res)
 		return res;
 
+	res = yt921x_bridge_flood_set(priv, ports_mask);
+	if (res)
+		return res;
+
 	return 0;
 }
 
@@ -1362,7 +1465,12 @@ yt921x_bridge_flags(struct yt921x_priv *priv, int port,
 		    struct switchdev_brport_flags flags)
 {
 	struct yt921x_port *pp = &priv->ports[port];
-	bool do_flush;
+	struct dsa_switch *ds = &priv->ds;
+	bool change_isolated = false;
+	bool change_flood = false;
+	struct net_device *bdev;
+	struct dsa_port *dp;
+	u32 ports_mask;
 	u32 mask;
 	int res;
 
@@ -1376,36 +1484,48 @@ yt921x_bridge_flags(struct yt921x_priv *priv, int port,
 			return res;
 	}
 
-	/* BR_FLOOD, BR_MCAST_FLOOD: see the comment where ACT_UNK_ACTn_TRAP
-	 * is set
-	 */
-
 	/* BR_BCAST_FLOOD: we can filter bcast, but cannot trap them */
 
-	do_flush = false;
 	if (flags.mask & BR_HAIRPIN_MODE) {
 		pp->hairpin = flags.val & BR_HAIRPIN_MODE;
-		do_flush = true;
+		change_isolated = true;
+		/* Hairpin also affects flood flags */
+		change_flood = true;
 	}
 	if (flags.mask & BR_ISOLATED) {
 		pp->isolated = flags.val & BR_ISOLATED;
-		do_flush = true;
+		change_isolated = true;
 	}
-	if (do_flush) {
-		struct dsa_switch *ds = &priv->ds;
-		struct dsa_port *dp = dsa_to_port(ds, port);
-		struct net_device *bdev;
 
-		bdev = dsa_port_bridge_dev_get(dp);
-		if (bdev) {
-			u32 ports_mask;
+	if (flags.mask & BR_FLOOD) {
+		pp->flood = flags.val & BR_FLOOD;
+		change_flood = true;
+	}
+	if (flags.mask & BR_MCAST_FLOOD) {
+		pp->mcast_flood = flags.val & BR_MCAST_FLOOD;
+		change_flood = true;
+	}
 
-			ports_mask = dsa_bridge_ports(ds, bdev);
-			ports_mask |= dsa_cpu_ports(ds);
-			res = yt921x_bridge(priv, ports_mask);
-			if (res)
-				return res;
-		}
+	if (!change_isolated && !change_flood)
+		return 0;
+
+	dp = dsa_to_port(ds, port);
+	bdev = dsa_port_bridge_dev_get(dp);
+	if (!bdev)
+		return 0;
+
+	ports_mask = dsa_bridge_ports(ds, bdev);
+	ports_mask |= dsa_cpu_ports(ds);
+
+	if (change_isolated) {
+		res = yt921x_bridge(priv, ports_mask);
+		if (res)
+			return res;
+	}
+	if (change_flood) {
+		res = yt921x_bridge_flood_set(priv, ports_mask);
+		if (res)
+			return res;
 	}
 
 	return 0;
@@ -2371,9 +2491,8 @@ static int yt921x_chip_setup_dsa(struct yt921x_priv *priv)
 	 * the "bridged" ports, thus we need to trap and handle those packets by
 	 * software.
 	 *
-	 * If there is no more than one bridge, we might be able to drop them
-	 * directly given some conditions are met, but we trap them in all cases
-	 * for now.
+	 * The flood action is offloaded to the hardware by fixing UNK_ACT to
+	 * TRAP and toggling the FILTER_UNK on the appropriate ports.
 	 */
 	ctrl = 0;
 	for (int i = 0; i < YT921X_PORT_NUM; i++)
@@ -2391,6 +2510,16 @@ static int yt921x_chip_setup_dsa(struct yt921x_priv *priv)
 	res = yt921x_reg_write(priv, YT921X_ACT_UNK_MCAST, ctrl);
 	if (res)
 		return res;
+
+	/* Capture RMA when offloading mcast flood to hardware */
+	for (int i = 0; i < 0x10; i++) {
+		/* Reuse unknown mcast code */
+		ctrl = YT921X_RMA_CTRL_CPU_CODE(0x1a) |
+		       YT921X_RMA_CTRL_COPY_TO_CPU | YT921X_RMA_CTRL_DROP;
+		res = yt921x_reg_write(priv, YT921X_RMA_CTRLn(i), ctrl);
+		if (res)
+			return res;
+	}
 
 	return 0;
 }
