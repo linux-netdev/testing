@@ -43,6 +43,8 @@ struct dsa_switchdev_event_work {
 	unsigned char addr[ETH_ALEN];
 	u16 vid;
 	bool host_addr;
+	bool sync;
+	bool replay;
 };
 
 enum dsa_standalone_event {
@@ -2813,6 +2815,7 @@ int dsa_user_create(struct dsa_port *port)
 
 	p->dp = port;
 	INIT_LIST_HEAD(&p->mall_tc_list);
+	INIT_LIST_HEAD(&p->bridge_host_fdbs);
 	port->user = user_dev;
 	dsa_user_setup_tagger(user_dev);
 
@@ -3627,6 +3630,22 @@ static int dsa_user_netdevice_event(struct notifier_block *nb,
 	return NOTIFY_DONE;
 }
 
+static bool dsa_foreign_dev_check(const struct net_device *dev,
+				  const struct net_device *foreign_dev)
+{
+	const struct dsa_port *dp = dsa_user_to_port(dev);
+	struct dsa_switch_tree *dst = dp->ds->dst;
+
+	if (netif_is_bridge_master(foreign_dev))
+		return !dsa_tree_offloads_bridge_dev(dst, foreign_dev);
+
+	if (netif_is_bridge_port(foreign_dev))
+		return !dsa_tree_offloads_bridge_port(dst, foreign_dev);
+
+	/* Everything else is foreign */
+	return true;
+}
+
 static void
 dsa_fdb_offload_notify(struct dsa_switchdev_event_work *switchdev_work)
 {
@@ -3637,6 +3656,171 @@ dsa_fdb_offload_notify(struct dsa_switchdev_event_work *switchdev_work)
 	info.offloaded = true;
 	call_switchdev_notifiers(SWITCHDEV_FDB_OFFLOADED,
 				 switchdev_work->orig_dev, &info.info, NULL);
+}
+
+/* The bridge notifies a roaming entry without a lock, so with two CPUs the
+ * deletion from the old port and the addition on the new one can arrive
+ * twice or out of order. Hold the host address while the bridge has the
+ * entry on a foreign port. A deletion that still finds the entry on its own
+ * port was sent before the bridge changed the port. An entry on a user port,
+ * also one of another tree, is notified only to that port.
+ */
+static bool dsa_user_bridge_host_fdb_wanted(struct net_device *dev,
+					    const struct dsa_bridge *bridge,
+					    const unsigned char *addr, u16 vid,
+					    const struct net_device *leaving)
+{
+	struct net_device *brport;
+	bool want;
+
+	rcu_read_lock();
+	brport = br_switchdev_fdb_find_port(bridge->dev, addr, vid);
+	want = brport && brport != leaving && !dsa_user_dev_check(brport) &&
+	       dsa_foreign_dev_check(dev, brport);
+	rcu_read_unlock();
+
+	return want;
+}
+
+static void dsa_user_bridge_host_fdb_set(struct net_device *dev,
+					 const struct dsa_bridge *bridge,
+					 const unsigned char *addr, u16 vid,
+					 bool want)
+{
+	struct dsa_user_priv *p = netdev_priv(dev);
+	struct dsa_port *dp = p->dp;
+	struct dsa_mac_addr *a;
+	bool held = false;
+	int err;
+
+	list_for_each_entry(a, &p->bridge_host_fdbs, list) {
+		if (ether_addr_equal(a->addr, addr) && a->vid == vid) {
+			held = true;
+			break;
+		}
+	}
+
+	if (want == held)
+		return;
+
+	if (want) {
+		a = kzalloc_obj(*a);
+		if (!a)
+			return;
+
+		err = __dsa_port_bridge_host_fdb_add(dp, bridge, addr, vid);
+		if (err) {
+			dev_err(dp->ds->dev,
+				"port %d failed to add %pM vid %d to fdb: %d\n",
+				dp->index, addr, vid, err);
+			kfree(a);
+			return;
+		}
+
+		ether_addr_copy(a->addr, addr);
+		a->vid = vid;
+		list_add(&a->list, &p->bridge_host_fdbs);
+	} else {
+		err = __dsa_port_bridge_host_fdb_del(dp, bridge, addr, vid);
+		if (err) {
+			dev_err(dp->ds->dev,
+				"port %d failed to delete %pM vid %d from fdb: %d\n",
+				dp->index, addr, vid, err);
+			return;
+		}
+
+		list_del(&a->list);
+		kfree(a);
+	}
+}
+
+static void
+dsa_user_bridge_host_fdb_sync(struct dsa_switchdev_event_work *switchdev_work)
+{
+	bool del = switchdev_work->event == SWITCHDEV_FDB_DEL_TO_DEVICE;
+	struct net_device *dev = switchdev_work->dev;
+	const struct dsa_bridge *bridge;
+	bool want = false;
+
+	/* Cleared before the workqueue is flushed and the bridge is freed */
+	bridge = READ_ONCE(dsa_user_to_port(dev)->bridge);
+	if (!bridge)
+		return;
+
+	if (!(del && switchdev_work->replay))
+		want = dsa_user_bridge_host_fdb_wanted(dev, bridge,
+						       switchdev_work->addr,
+						       switchdev_work->vid,
+						       del ? switchdev_work->orig_dev : NULL);
+
+	dsa_user_bridge_host_fdb_set(dev, bridge, switchdev_work->addr,
+				     switchdev_work->vid, want);
+	if (want && !del)
+		dsa_fdb_offload_notify(switchdev_work);
+}
+
+/* Only the user port an entry is on gets its events, so when the entry roams
+ * there, release it on the ports of the bridge that still hold it.
+ */
+static void dsa_user_bridge_host_fdb_release_work(struct work_struct *work)
+{
+	struct dsa_switchdev_event_work *switchdev_work =
+		container_of(work, struct dsa_switchdev_event_work, work);
+	struct dsa_port *dp = dsa_user_to_port(switchdev_work->dev);
+	const unsigned char *addr = switchdev_work->addr;
+	const struct dsa_bridge *bridge = READ_ONCE(dp->bridge);
+	u16 vid = switchdev_work->vid;
+	struct dsa_port *other;
+
+	if (bridge) {
+		dsa_tree_for_each_user_port(other, dp->ds->dst) {
+			if (dsa_port_offloads_bridge_dev(other, bridge->dev) &&
+			    !dsa_user_bridge_host_fdb_wanted(other->user, bridge,
+							     addr, vid, NULL))
+				dsa_user_bridge_host_fdb_set(other->user, bridge,
+							     addr, vid, false);
+		}
+	}
+
+	kfree(switchdev_work);
+}
+
+static int dsa_user_bridge_host_fdb_release(struct net_device *dev,
+					    const unsigned char *addr, u16 vid)
+{
+	struct dsa_switchdev_event_work *switchdev_work;
+
+	switchdev_work = kzalloc_obj(*switchdev_work, GFP_ATOMIC);
+	if (!switchdev_work)
+		return -ENOMEM;
+
+	INIT_WORK(&switchdev_work->work, dsa_user_bridge_host_fdb_release_work);
+	switchdev_work->dev = dev;
+	ether_addr_copy(switchdev_work->addr, addr);
+	switchdev_work->vid = vid;
+
+	dsa_schedule_work(&switchdev_work->work);
+
+	return 0;
+}
+
+void dsa_user_bridge_host_fdb_purge(struct dsa_port *dp,
+				    const struct dsa_bridge *bridge)
+{
+	struct dsa_user_priv *p = netdev_priv(dp->user);
+	struct dsa_mac_addr *a, *tmp;
+	int err;
+
+	list_for_each_entry_safe(a, tmp, &p->bridge_host_fdbs, list) {
+		err = __dsa_port_bridge_host_fdb_del(dp, bridge, a->addr,
+						     a->vid);
+		if (err)
+			dev_err(dp->ds->dev,
+				"port %d failed to delete %pM vid %d from fdb: %d\n",
+				dp->index, a->addr, a->vid, err);
+		list_del(&a->list);
+		kfree(a);
+	}
 }
 
 static void dsa_user_switchdev_event_work(struct work_struct *work)
@@ -3652,6 +3836,12 @@ static void dsa_user_switchdev_event_work(struct work_struct *work)
 
 	dp = dsa_user_to_port(dev);
 	ds = dp->ds;
+
+	if (switchdev_work->sync) {
+		dsa_user_bridge_host_fdb_sync(switchdev_work);
+		kfree(switchdev_work);
+		return;
+	}
 
 	switch (switchdev_work->event) {
 	case SWITCHDEV_FDB_ADD_TO_DEVICE:
@@ -3689,22 +3879,6 @@ static void dsa_user_switchdev_event_work(struct work_struct *work)
 	kfree(switchdev_work);
 }
 
-static bool dsa_foreign_dev_check(const struct net_device *dev,
-				  const struct net_device *foreign_dev)
-{
-	const struct dsa_port *dp = dsa_user_to_port(dev);
-	struct dsa_switch_tree *dst = dp->ds->dst;
-
-	if (netif_is_bridge_master(foreign_dev))
-		return !dsa_tree_offloads_bridge_dev(dst, foreign_dev);
-
-	if (netif_is_bridge_port(foreign_dev))
-		return !dsa_tree_offloads_bridge_port(dst, foreign_dev);
-
-	/* Everything else is foreign */
-	return true;
-}
-
 static int dsa_user_fdb_event(struct net_device *dev,
 			      struct net_device *orig_dev,
 			      unsigned long event, const void *ctx,
@@ -3723,7 +3897,9 @@ static int dsa_user_fdb_event(struct net_device *dev,
 
 	if (switchdev_fdb_is_dynamically_learned(fdb_info)) {
 		if (dsa_port_offloads_bridge_port(dp, orig_dev))
-			return 0;
+			return event == SWITCHDEV_FDB_ADD_TO_DEVICE ?
+			       dsa_user_bridge_host_fdb_release(dev, fdb_info->addr,
+								fdb_info->vid) : 0;
 
 		/* FDB entries learned by the software bridge or by foreign
 		 * bridge ports should be installed as host addresses only if
@@ -3768,8 +3944,14 @@ static int dsa_user_fdb_event(struct net_device *dev,
 	ether_addr_copy(switchdev_work->addr, fdb_info->addr);
 	switchdev_work->vid = fdb_info->vid;
 	switchdev_work->host_addr = host_addr;
+	switchdev_work->sync = host_addr && !fdb_info->is_local;
+	switchdev_work->replay = !!ctx;
 
 	dsa_schedule_work(&switchdev_work->work);
+
+	if (!host_addr && event == SWITCHDEV_FDB_ADD_TO_DEVICE)
+		return dsa_user_bridge_host_fdb_release(dev, fdb_info->addr,
+							fdb_info->vid);
 
 	return 0;
 }
