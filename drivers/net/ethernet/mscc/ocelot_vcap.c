@@ -957,7 +957,7 @@ ocelot_vcap_filter_add_aux_resources(struct ocelot *ocelot,
 				     struct ocelot_vcap_filter *filter,
 				     struct netlink_ext_ack *extack)
 {
-	struct ocelot_mirror *m;
+	struct ocelot_mirror *m = NULL;
 	int ret;
 
 	if (filter->block_id == VCAP_IS2 && filter->action.mirror_ena) {
@@ -971,10 +971,15 @@ ocelot_vcap_filter_add_aux_resources(struct ocelot *ocelot,
 		ret = ocelot_vcap_policer_add(ocelot, filter->action.pol_ix,
 					      &filter->action.pol);
 		if (ret)
-			return ret;
+			goto err_mirror_put;
 	}
 
 	return 0;
+
+err_mirror_put:
+	if (m)
+		ocelot_mirror_put(ocelot);
+	return ret;
 }
 
 static void
