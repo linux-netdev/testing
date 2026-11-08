@@ -910,28 +910,6 @@ static const struct attribute_group netstat_group = {
 	.attrs  = netstat_attrs,
 };
 
-static struct attribute *wireless_attrs[] = {
-	NULL
-};
-
-static const struct attribute_group wireless_group = {
-	.name = "wireless",
-	.attrs = wireless_attrs,
-};
-
-static bool wireless_group_needed(struct net_device *ndev)
-{
-#if IS_ENABLED(CONFIG_CFG80211)
-	if (ndev->ieee80211_ptr)
-		return true;
-#endif
-#if IS_ENABLED(CONFIG_WIRELESS_EXT)
-	if (ndev->wireless_handlers)
-		return true;
-#endif
-	return false;
-}
-
 #else /* CONFIG_SYSFS */
 #define net_class_groups	NULL
 #endif /* CONFIG_SYSFS */
@@ -2370,9 +2348,6 @@ int netdev_register_kobject(struct net_device *ndev)
 
 	*groups++ = &netstat_group;
 	*groups++ = &netdev_phys_group;
-
-	if (wireless_group_needed(ndev))
-		*groups++ = &wireless_group;
 #endif /* CONFIG_SYSFS */
 
 	/* Hold back the KOBJ_ADD uevent until the device is listed. */
