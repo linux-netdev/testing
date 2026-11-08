@@ -54,8 +54,14 @@ int dsa_port_standalone_host_fdb_add(struct dsa_port *dp,
 				     const unsigned char *addr, u16 vid);
 int dsa_port_standalone_host_fdb_del(struct dsa_port *dp,
 				     const unsigned char *addr, u16 vid);
+int __dsa_port_bridge_host_fdb_add(struct dsa_port *dp,
+				   const struct dsa_bridge *bridge,
+				   const unsigned char *addr, u16 vid);
 int dsa_port_bridge_host_fdb_add(struct dsa_port *dp, const unsigned char *addr,
 				 u16 vid);
+int __dsa_port_bridge_host_fdb_del(struct dsa_port *dp,
+				   const struct dsa_bridge *bridge,
+				   const unsigned char *addr, u16 vid);
 int dsa_port_bridge_host_fdb_del(struct dsa_port *dp, const unsigned char *addr,
 				 u16 vid);
 int dsa_port_lag_fdb_add(struct dsa_port *dp, const unsigned char *addr,
