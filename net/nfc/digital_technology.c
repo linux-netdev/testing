@@ -1088,7 +1088,6 @@ static int digital_tg_send_sens_res(struct nfc_digital_dev *ddev)
 void digital_tg_recv_sens_req(struct nfc_digital_dev *ddev, void *arg,
 			      struct sk_buff *resp)
 {
-	u8 sens_req;
 	int rc;
 
 	if (IS_ERR(resp)) {
@@ -1097,10 +1096,8 @@ void digital_tg_recv_sens_req(struct nfc_digital_dev *ddev, void *arg,
 		goto exit;
 	}
 
-	sens_req = resp->data[0];
-
-	if (!resp->len || (sens_req != DIGITAL_CMD_SENS_REQ &&
-	    sens_req != DIGITAL_CMD_ALL_REQ)) {
+	if (!resp->len || (resp->data[0] != DIGITAL_CMD_SENS_REQ &&
+	    resp->data[0] != DIGITAL_CMD_ALL_REQ)) {
 		rc = -EINVAL;
 		goto exit;
 	}
