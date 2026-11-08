@@ -33,6 +33,12 @@ struct dsa_user_priv {
 
 	/* TC context */
 	struct list_head	mall_tc_list;
+
+	/* Host addresses of bridge FDB entries held through this port,
+	 * changed from the DSA workqueue, or with the port out of the bridge
+	 * and the workqueue flushed
+	 */
+	struct list_head	bridge_host_fdbs;
 };
 
 void dsa_user_mii_bus_init(struct dsa_switch *ds);
@@ -47,6 +53,8 @@ void dsa_user_host_uc_uninstall(struct net_device *dev);
 void dsa_user_sync_ha(struct net_device *dev);
 void dsa_user_unsync_ha(struct net_device *dev);
 void dsa_user_setup_tagger(struct net_device *user);
+void dsa_user_bridge_host_fdb_purge(struct dsa_port *dp,
+				    const struct dsa_bridge *bridge);
 int dsa_user_change_mtu(struct net_device *dev, int new_mtu);
 int dsa_user_change_conduit(struct net_device *dev, struct net_device *conduit,
 			    struct netlink_ext_ack *extack);
