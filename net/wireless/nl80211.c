@@ -9031,6 +9031,7 @@ static int nl80211_dump_station(struct sk_buff *skb,
 								wdev);
 				if (IS_ERR(wdev)) {
 					err = PTR_ERR(wdev);
+					wdev = NULL;
 					goto out_err;
 				}
 
