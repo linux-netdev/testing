@@ -188,6 +188,7 @@ enum nfp_flower_mac_offload_cmd {
  * @ref_count:		Number of devs using this MAC address
  * @repr_list:		List of reprs sharing this MAC address
  * @bridge_count:	Number of bridge/internal devs with MAC
+ * @rcu:		RCU head used when freeing the entry
  */
 struct nfp_tun_offloaded_mac {
 	struct rhash_head ht_node;
@@ -196,6 +197,7 @@ struct nfp_tun_offloaded_mac {
 	int ref_count;
 	struct list_head repr_list;
 	int bridge_count;
+	struct rcu_head rcu;
 };
 
 static const struct rhashtable_params offloaded_macs_params = {
@@ -1145,7 +1147,7 @@ err_remove_hash:
 	rhashtable_remove_fast(&priv->tun.offloaded_macs, &entry->ht_node,
 			       offloaded_macs_params);
 err_free_entry:
-	kfree(entry);
+	kfree_rcu(entry, rcu);
 err_free_ida:
 	if (ida_idx != -1)
 		ida_free(&priv->tun.mac_off_ids, ida_idx);
@@ -1234,7 +1236,7 @@ nfp_tunnel_del_shared_mac(struct nfp_app *app, struct net_device *netdev,
 		ida_free(&priv->tun.mac_off_ids, ida_idx);
 	}
 
-	kfree(entry);
+	kfree_rcu(entry, rcu);
 
 	return __nfp_tunnel_offload_mac(app, mac, 0, true);
 }
@@ -1426,6 +1428,7 @@ int nfp_flower_xmit_pre_tun_flow(struct nfp_app *app,
 	struct nfp_flower_meta_tci *key_meta;
 	struct nfp_tun_pre_tun_rule payload;
 	struct net_device *internal_dev;
+	u16 mac_idx;
 	int err;
 
 	if (app_priv->pre_tun_rule_cnt == NFP_TUN_PRE_TUN_RULE_LIMIT)
@@ -1440,11 +1443,19 @@ int nfp_flower_xmit_pre_tun_flow(struct nfp_app *app,
 	/* Lookup MAC index for the pre-tunnel rule egress device.
 	 * Note that because the device is always an internal port, it will
 	 * have a constant global index so does not need to be tracked.
+	 *
+	 * rhashtable_lookup_fast() releases its own RCU read lock before it
+	 * returns, so the entry has to be kept alive by a critical section of
+	 * our own. nfp_flower_xmit_tun_conf() allocates an skb with GFP_KERNEL
+	 * and must stay outside of it.
 	 */
+	rcu_read_lock();
 	mac_entry = nfp_tunnel_lookup_offloaded_macs(app,
 						     internal_dev->dev_addr);
-	if (!mac_entry)
+	if (!mac_entry) {
+		rcu_read_unlock();
 		return -ENOENT;
+	}
 
 	/* Set/clear IPV6 bit. cpu_to_be16() swap will lead to MSB being
 	 * set/clear for port_idx.
@@ -1455,7 +1466,10 @@ int nfp_flower_xmit_pre_tun_flow(struct nfp_app *app,
 	else
 		mac_entry->index &= ~NFP_TUN_PRE_TUN_IPV6_BIT;
 
-	payload.port_idx = cpu_to_be16(mac_entry->index);
+	mac_idx = mac_entry->index;
+	rcu_read_unlock();
+
+	payload.port_idx = cpu_to_be16(mac_idx);
 
 	/* Copy mac id and vlan to flow - dev may not exist at delete time. */
 	flow->pre_tun_rule.vlan_tci = payload.vlan_tci;
