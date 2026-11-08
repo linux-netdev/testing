@@ -4244,7 +4244,7 @@ static void ieee80211_rx_handlers(struct ieee80211_rx_data *rx,
 		    unlikely(rx->link_id != status->link_id)) {
 			if (rx->sta) {
 				rx->link_sta =
-					rcu_dereference(rx->sta->link[rx->link_id]);
+					rcu_dereference(rx->sta->link[status->link_id]);
 
 				/* Link got disabled, just use deflink */
 				if (!rx->link_sta)
