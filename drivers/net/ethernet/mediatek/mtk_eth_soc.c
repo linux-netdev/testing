@@ -2819,7 +2819,15 @@ static int mtk_rx_alloc(struct mtk_eth *eth, int ring_no, int rx_flag)
 	if (!ring->data)
 		return -ENOMEM;
 
-	if (mtk_page_pool_enabled(eth)) {
+	/* page_pool hands out order-0 pages and caps the DMA mapping at
+	 * MTK_PP_MAX_BUF_SIZE, so it can only back a ring whose descriptor
+	 * length fits that.  Today every ring does; this is the preparation
+	 * for the 9K support in the next patch, where the normal ring grows
+	 * past the pool's limit and takes the netdev_alloc_frag()/
+	 * mtk_max_lro_buf_alloc() path below instead.
+	 */
+	if (mtk_page_pool_enabled(eth) &&
+	    ring->buf_size <= MTK_PP_MAX_BUF_SIZE) {
 		struct page_pool *pp;
 
 		pp = mtk_create_page_pool(eth, &ring->xdp_q, ring_no,
