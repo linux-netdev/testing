@@ -1765,13 +1765,6 @@ static void lan78xx_get_wol(struct net_device *netdev,
 	struct lan78xx_net *dev = netdev_priv(netdev);
 	int ret;
 	u32 buf;
-	struct lan78xx_priv *pdata = (struct lan78xx_priv *)(dev->data[0]);
-
-	if (!netdev->phydev) {
-		wol->supported = 0;
-		wol->wolopts = 0;
-		return;
-	}
 
 	if (usb_autopm_get_interface(dev->intf) < 0)
 		return;
@@ -1783,8 +1776,7 @@ static void lan78xx_get_wol(struct net_device *netdev,
 		wol->wolopts = 0;
 	} else {
 		if (buf & USB_CFG_RMT_WKP_) {
-			wol->supported = WAKE_ALL;
-			wol->wolopts = pdata->wol;
+			phylink_ethtool_get_wol(dev->phylink, wol);
 		} else {
 			wol->supported = 0;
 			wol->wolopts = 0;
@@ -1799,25 +1791,45 @@ static int lan78xx_set_wol(struct net_device *netdev,
 {
 	struct lan78xx_net *dev = netdev_priv(netdev);
 	struct lan78xx_priv *pdata = (struct lan78xx_priv *)(dev->data[0]);
+	struct ethtool_wolinfo actual = { .cmd = ETHTOOL_GWOL };
+	bool old_wakeup, enable;
+	int rollback_ret;
 	int ret;
 
 	if (wol->wolopts & ~WAKE_ALL)
 		return -EINVAL;
 
-	if (!netdev->phydev)
-		return -EOPNOTSUPP;
-
 	ret = usb_autopm_get_interface(dev->intf);
 	if (ret < 0)
 		return ret;
 
-	pdata->wol = wol->wolopts;
-
-	ret = device_set_wakeup_enable(&dev->udev->dev, (bool)wol->wolopts);
-	if (ret < 0)
+	phylink_ethtool_get_wol(dev->phylink, &actual);
+	if (wol->wolopts & ~actual.supported) {
+		ret = -EINVAL;
 		goto exit_pm_put;
+	}
 
-	ret = phy_ethtool_set_wol(netdev->phydev, wol);
+	old_wakeup = device_may_wakeup(&dev->udev->dev);
+	enable = !!wol->wolopts;
+
+	if (old_wakeup != enable) {
+		ret = device_set_wakeup_enable(&dev->udev->dev, enable);
+		if (ret < 0)
+			goto exit_pm_put;
+	}
+
+	ret = phylink_ethtool_set_wol(dev->phylink, wol);
+	if (ret < 0) {
+		if (old_wakeup != enable) {
+			rollback_ret = device_set_wakeup_enable(&dev->udev->dev, old_wakeup);
+			if (rollback_ret)
+				netdev_warn(dev->net, "USB wakeup rollback failed: %d\n",
+					    rollback_ret);
+		}
+		goto exit_pm_put;
+	}
+	phylink_ethtool_get_wol(dev->phylink, &actual);
+	pdata->wol = actual.wolopts;
 
 exit_pm_put:
 	usb_autopm_put_interface(dev->intf);
@@ -2617,12 +2629,24 @@ static int lan78xx_mac_enable_tx_lpi(struct phylink_config *config, u32 timer,
 	return lan78xx_mac_eee_enable(dev, true);
 }
 
+static int lan78xx_mac_wol_set(struct phylink_config *config,
+			       u32 wolopts, const u8 *sopass)
+{
+	struct lan78xx_net *dev = netdev_priv(to_net_dev(config->dev));
+	struct lan78xx_priv *pdata = (struct lan78xx_priv *)dev->data[0];
+
+	pdata->wol = wolopts;
+
+	return 0;
+}
+
 static const struct phylink_mac_ops lan78xx_phylink_mac_ops = {
 	.mac_config = lan78xx_mac_config,
 	.mac_link_down = lan78xx_mac_link_down,
 	.mac_link_up = lan78xx_mac_link_up,
 	.mac_disable_tx_lpi = lan78xx_mac_disable_tx_lpi,
 	.mac_enable_tx_lpi = lan78xx_mac_enable_tx_lpi,
+	.mac_wol_set = lan78xx_mac_wol_set,
 };
 
 /**
@@ -2847,6 +2871,10 @@ static int lan78xx_phylink_setup(struct lan78xx_net *dev)
 	memcpy(dev->phylink_config.lpi_interfaces,
 	       dev->phylink_config.supported_interfaces,
 	       sizeof(dev->phylink_config.lpi_interfaces));
+
+	pc->wol_mac_support = WAKE_MAGIC | WAKE_UCAST | WAKE_BCAST |
+		      WAKE_MCAST | WAKE_ARP;
+	pc->wol_phy_legacy = true;
 
 	phylink = phylink_create(pc, dev->net->dev.fwnode,
 				 dev->interface, &lan78xx_phylink_mac_ops);
@@ -4670,6 +4698,10 @@ static void lan78xx_stat_monitor(struct timer_list *t)
 static int lan78xx_probe(struct usb_interface *intf,
 			 const struct usb_device_id *id)
 {
+	struct ethtool_wolinfo wol = {
+		.cmd = ETHTOOL_SWOL,
+		.wolopts = WAKE_MAGIC,
+	};
 	struct usb_host_endpoint *ep_blkin, *ep_blkout, *ep_intr;
 	struct lan78xx_net *dev;
 	struct net_device *netdev;
@@ -4801,6 +4833,24 @@ static int lan78xx_probe(struct usb_interface *intf,
 	ret = lan78xx_phy_init(dev);
 	if (ret < 0)
 		goto free_urbs;
+
+	/* Preserve the default magic-packet wakeup configuration. */
+	rtnl_lock();
+
+	ret = phylink_ethtool_set_wol(dev->phylink, &wol);
+	if (!ret) {
+		struct lan78xx_priv *pdata = (struct lan78xx_priv *)dev->data[0];
+
+		wol.cmd = ETHTOOL_GWOL;
+		phylink_ethtool_get_wol(dev->phylink, &wol);
+		pdata->wol = wol.wolopts;
+		netdev->ethtool->wol_enabled = !!wol.wolopts;
+	}
+
+	rtnl_unlock();
+
+	if (ret)
+		netdev_warn(netdev, "failed to initialize WoL: %d\n", ret);
 
 	ret = register_netdev(netdev);
 	if (ret != 0) {
