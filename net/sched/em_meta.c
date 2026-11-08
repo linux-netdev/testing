@@ -936,6 +936,14 @@ static int em_meta_change(struct net *net, void *data, int len,
 	memcpy(&meta->lvalue.hdr, &hdr->left, sizeof(hdr->left));
 	memcpy(&meta->rvalue.hdr, &hdr->right, sizeof(hdr->right));
 
+	/* Keep the shift within the value width to avoid undefined
+	 * behaviour in meta_int_apply_extras(), like act_pedit does.
+	 */
+	if (meta->lvalue.hdr.shift > BITS_PER_LONG - 1)
+		meta->lvalue.hdr.shift = BITS_PER_LONG - 1;
+	if (meta->rvalue.hdr.shift > BITS_PER_LONG - 1)
+		meta->rvalue.hdr.shift = BITS_PER_LONG - 1;
+
 	if (!meta_is_supported(&meta->lvalue) ||
 	    !meta_is_supported(&meta->rvalue)) {
 		err = -EOPNOTSUPP;
