@@ -1988,7 +1988,8 @@ mlx5e_tc_add_fdb_flow(struct mlx5e_priv *priv,
 			goto err_out;
 	}
 
-	if (netif_is_ovs_master(parse_attr->filter_dev)) {
+	if (netif_is_ovs_master(parse_attr->filter_dev) &&
+	    !esw_attr->int_port) {
 		struct mlx5e_tc_int_port *int_port;
 
 		if (attr->chain) {
