@@ -1602,7 +1602,7 @@ cipso_rbm_strictvalid - BOOLEAN
 	- 0 (disabled)
 	- 1 (enabled)
 
-	Default: 0 (disabled)
+	Default: 1 (enabled)
 
 IP Variables
 ============
@@ -2433,7 +2433,7 @@ flowlabel_state_ranges - BOOLEAN
 	- 0 (disabled)
 	- 1 (enabled)
 
-	Default: 1 (enabled)
+	Default: 0 (disabled)
 
 
 flowlabel_reflect - INTEGER
@@ -2971,9 +2971,9 @@ router_solicitation_interval - INTEGER
 
 router_solicitations - INTEGER
 	Number of Router Solicitations to send until assuming no
-	routers are present.
+	routers are present. A value of -1 means no limit.
 
-	Default: 3
+	Default: -1
 
 use_oif_addrs_only - BOOLEAN
 	When enabled, the candidate source addresses for destinations
@@ -3049,7 +3049,7 @@ regen_max_retry - INTEGER
 	Number of attempts before give up attempting to generate
 	valid temporary addresses.
 
-	Default: 5
+	Default: 3
 
 max_addresses - INTEGER
 	Maximum number of autoconfigured addresses per interface.  Setting
