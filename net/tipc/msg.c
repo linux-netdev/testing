@@ -145,6 +145,13 @@ int tipc_buf_append(struct sk_buff **headbuf, struct sk_buff **buf)
 		if (skb_has_frag_list(frag) && __skb_linearize(frag))
 			goto err;
 		*buf = NULL;
+
+		/* Bound the reassembled message size: a peer that never sends
+		 * the last fragment could otherwise grow the head skb (and its
+		 * frag list) without any limit.
+		 */
+		if (head->len + frag->len > TIPC_MAX_USER_MSG_SIZE)
+			goto err;
 		frag = skb_unclone_full(frag, GFP_ATOMIC);
 		if (unlikely(!frag))
 			goto err;
