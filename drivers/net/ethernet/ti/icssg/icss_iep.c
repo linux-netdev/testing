@@ -534,6 +534,17 @@ static void icss_iep_cap_cmp_work(struct work_struct *work)
 
 	mutex_lock(&iep->ptp_clk_mutex);
 
+	/*
+	 * PPS/perout may have been disabled (and the compare hardware
+	 * cleared) while this work was queued or waiting for the mutex.
+	 * Bail out rather than re-arm CMP1 and emit a stale PPS event once
+	 * the event source is gone.
+	 */
+	if (!iep->pps_enabled && !iep->perout_enabled) {
+		mutex_unlock(&iep->ptp_clk_mutex);
+		return;
+	}
+
 	ns = readl(iep->base + reg_offs[ICSS_IEP_CMP1_REG0]);
 	if (iep->plat_data->flags & ICSS_IEP_64BIT_COUNTER_SUPPORT) {
 		val = readl(iep->base + reg_offs[ICSS_IEP_CMP1_REG1]);
@@ -579,6 +590,7 @@ static int icss_iep_pps_enable(struct icss_iep *iep, int on)
 {
 	struct ptp_clock_request rq;
 	struct timespec64 ts;
+	bool drain_work = false;
 	int ret = 0;
 	u64 ns;
 
@@ -607,7 +619,7 @@ static int icss_iep_pps_enable(struct icss_iep *iep, int on)
 	} else {
 		ret = icss_iep_perout_enable_hw(iep, &rq.perout, on);
 		if (iep->cap_cmp_irq)
-			cancel_work_sync(&iep->work);
+			drain_work = true;
 	}
 
 	if (!ret)
@@ -615,6 +627,15 @@ static int icss_iep_pps_enable(struct icss_iep *iep, int on)
 
 exit:
 	mutex_unlock(&iep->ptp_clk_mutex);
+
+	/*
+	 * Drain the capture-compare work only after dropping ptp_clk_mutex.
+	 * icss_iep_cap_cmp_work() takes ptp_clk_mutex itself, so cancelling it
+	 * under the mutex deadlocks against a handler instance already running
+	 * and waiting for that same mutex.
+	 */
+	if (drain_work)
+		cancel_work_sync(&iep->work);
 
 	return ret;
 }
