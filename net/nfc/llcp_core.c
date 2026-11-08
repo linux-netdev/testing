@@ -917,8 +917,14 @@ static void nfc_llcp_recv_ui(struct nfc_llcp_local *local,
 
 	/* We're looking for a bound socket, not a client one */
 	llcp_sock = nfc_llcp_sock_get(local, dsap, LLCP_SAP_SDP);
-	if (llcp_sock == NULL || llcp_sock->sk.sk_type != SOCK_DGRAM)
+	if (llcp_sock == NULL)
 		return;
+
+	/* Only connectionless sockets receive UI frames, but the
+	 * reference taken by nfc_llcp_sock_get() must be dropped on
+	 * every other path as well.
+	 */
+	if (llcp_sock->sk.sk_type == SOCK_DGRAM) {
 
 	/* There is no sequence with UI frames */
 	skb_pull(skb, LLCP_HEADER_SIZE);
@@ -932,6 +938,7 @@ static void nfc_llcp_recv_ui(struct nfc_llcp_local *local,
 		pr_err("Receive queue is full\n");
 	}
 
+	}
 	nfc_llcp_sock_put(llcp_sock);
 }
 
