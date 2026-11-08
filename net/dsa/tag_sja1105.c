@@ -537,6 +537,12 @@ static struct sk_buff *sja1110_rcv_meta(struct sk_buff *skb, u16 rx_header)
 	struct dsa_switch *ds;
 	int i;
 
+	if (!pskb_may_pull(skb,
+			   2 + (n_ts + 1) * SJA1110_META_TSTAMP_SIZE)) {
+		kfree_skb(skb);
+		return NULL;
+	}
+
 	cpu_dp = conduit->dsa_ptr;
 	ds = dsa_switch_find(cpu_dp->dst->index, switch_id);
 	if (!ds) {
