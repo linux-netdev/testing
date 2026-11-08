@@ -329,6 +329,17 @@ enum yt921x_app_selector {
 #define YT921X_LAG_MEMBERnm(n, m)	(0x1805b0 + 4 * (4 * (n) + (m)))
 #define  YT921X_LAG_MEMBER_PORT_M		GENMASK(3, 0)
 #define   YT921X_LAG_MEMBER_PORT(x)			FIELD_PREP(YT921X_LAG_MEMBER_PORT_M, (x))
+#define YT921X_RMA_CTRLn(n)		(0x1805d0 + 4 * (n))
+#define  YT921X_RMA_CTRL_BYPASS_STORM		BIT(12)
+#define  YT921X_RMA_CTRL_BYPASS_FLOW_METER	BIT(11)
+#define  YT921X_RMA_CTRL_BYPASS_PORT_METER	BIT(10)
+#define  YT921X_RMA_CTRL_DROP			BIT(9)
+#define  YT921X_RMA_CTRL_COPY_TO_CPU		BIT(8)
+#define  YT921X_RMA_CTRL_IGNORE_VLAN		BIT(7)
+#define  YT921X_RMA_CTRL_IGNORE_PORT_ISOLATE	BIT(6)
+#define  YT921X_RMA_CTRL_CPU_CODE_M		GENMASK(5, 0)
+#define   YT921X_RMA_CTRL_CPU_CODE(x)			FIELD_PREP(YT921X_RMA_CTRL_CPU_CODE_M, (x))
+#define   YT921X_RMA_CTRL_CPU_CODE_DEFAULT		0x3f
 #define YT921X_CPU_COPY			0x180690
 #define  YT921X_CPU_COPY_FORCE_INT_PORT		BIT(2)
 #define  YT921X_CPU_COPY_TO_INT_CPU		BIT(1)
@@ -461,6 +472,10 @@ struct yt921x_port {
 	bool hairpin:1;
 	/* BR_ISOLATED */
 	bool isolated:1;
+	/* BR_FLOOD */
+	bool flood:1;
+	/* BR_MCAST_FLOOD */
+	bool mcast_flood:1;
 
 	unsigned short acl_cnt;
 
