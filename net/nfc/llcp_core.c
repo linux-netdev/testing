@@ -1283,12 +1283,15 @@ static void nfc_llcp_recv_cc(struct nfc_llcp_local *local,
 }
 
 static void nfc_llcp_recv_dm(struct nfc_llcp_local *local,
-			     const struct sk_buff *skb)
+			     struct sk_buff *skb)
 {
 	struct nfc_llcp_sock *llcp_sock;
 	struct sock *sk;
 	u8 dsap, ssap, reason;
 	bool connecting = false;
+
+	if (!pskb_may_pull(skb, LLCP_HEADER_SIZE + 1))
+		return;
 
 	dsap = nfc_llcp_dsap(skb);
 	ssap = nfc_llcp_ssap(skb);
