@@ -1889,6 +1889,17 @@ static inline bool skb_frags_readable(const struct sk_buff *skb)
 	return !skb->unreadable;
 }
 
+/* Return true if frags in this skb are backed by net_iovs.
+ * Assumes skb->unreadable and net_iov-backed frags are equivalent for now;
+ * the two can be decoupled in the future if readable net_iovs in skbs are
+ * introduced. Also check nr_frags because not all frag-removal paths clear
+ * skb->unreadable when nr_frags drops to 0.
+ */
+static inline bool skb_has_net_iovs(const struct sk_buff *skb)
+{
+	return skb->unreadable && skb_shinfo(skb)->nr_frags;
+}
+
 static inline void skb_mark_not_on_list(struct sk_buff *skb)
 {
 	skb->next = NULL;
@@ -3768,6 +3779,60 @@ static inline void *skb_frag_address(const skb_frag_t *frag)
 		return NULL;
 
 	return page_address(skb_frag_page(frag)) + skb_frag_off(frag);
+}
+
+/* Return an opaque pointer identifying the memory provider instance of @skb's
+ * net_iov fragments:
+ * - For devmem (NET_IOV_DMABUF), net_iov_owner(niov) (&binding->area, 1:1 with
+ *   the binding across RX queues and TX).
+ * - For other net_iov providers (e.g., io_uring zcrx), niov->desc.pp (shared
+ *   across all areas of an io_zcrx_ifq).
+ */
+static inline void *skb_net_iov_provider(const struct sk_buff *skb)
+{
+	struct net_iov *niov;
+
+	if (!skb_has_net_iovs(skb))
+		return NULL;
+
+	niov = skb_frag_net_iov(&skb_shinfo(skb)->frags[0]);
+	if (!niov)
+		return NULL;
+
+	if (net_is_devmem_iov(niov))
+		return net_iov_owner(niov);
+
+	return niov->desc.pp;
+}
+
+/* Return true if the memory providers of @skb1 and @skb2 are compatible
+ * for coalescing. For any struct page-backed provider (the buddy allocator
+ * or a future provider handing out struct pages), coalescing is assumed
+ * feasible. For net_iov-backed providers, the provider instance pointer
+ * must match.
+ */
+static inline bool skb_mem_provider_compat(const struct sk_buff *skb1,
+					   const struct sk_buff *skb2)
+{
+	/* Check skb_has_net_iovs() first to avoid chasing frags[0] and
+	 * struct net_iov when only one skb is net_iov-backed.
+	 */
+	if (skb_has_net_iovs(skb1) != skb_has_net_iovs(skb2))
+		return false;
+
+	return skb_net_iov_provider(skb1) == skb_net_iov_provider(skb2);
+}
+
+static inline bool skb_frags_can_coalesce(struct sk_buff *to,
+					  struct sk_buff *from)
+{
+	if (to->pp_recycle != from->pp_recycle)
+		return false;
+
+	if (skb_zcopy(to) || skb_zcopy(from))
+		return false;
+
+	return skb_mem_provider_compat(to, from);
 }
 
 /**
