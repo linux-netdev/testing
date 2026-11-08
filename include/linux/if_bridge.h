@@ -201,6 +201,19 @@ static inline int br_mst_get_state(const struct net_device *dev, u16 msti,
 }
 #endif
 
+#if IS_ENABLED(CONFIG_BRIDGE) && IS_ENABLED(CONFIG_NET_SWITCHDEV)
+struct net_device *br_switchdev_fdb_find_port(const struct net_device *br_dev,
+					      const unsigned char *addr,
+					      u16 vid);
+#else
+static inline struct net_device *
+br_switchdev_fdb_find_port(const struct net_device *br_dev,
+			   const unsigned char *addr, u16 vid)
+{
+	return NULL;
+}
+#endif
+
 #if IS_ENABLED(CONFIG_BRIDGE)
 struct net_device *br_fdb_find_port(const struct net_device *br_dev,
 				    const unsigned char *addr,
