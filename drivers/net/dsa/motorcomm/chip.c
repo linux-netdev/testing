@@ -1479,6 +1479,11 @@ yt921x_dsa_port_bridge_join(struct dsa_switch *ds, int port,
 	res = yt921x_bridge_join(priv, port, ports_mask);
 	mutex_unlock(&priv->reg_lock);
 
+	/* DSA does not send bridge_leave when join fails */
+	if (res)
+		NL_SET_ERR_MSG_MOD(extack,
+				   "Fatal IO error; hardware no longer consistent");
+
 	return res;
 }
 
