@@ -20,6 +20,7 @@
 #include <linux/if_vlan.h>
 #include <linux/in.h>
 #include <linux/io.h>
+#include <linux/iopoll.h>
 #include <linux/ip.h>
 #include <linux/tcp.h>
 #include <linux/interrupt.h>
@@ -881,6 +882,7 @@ struct rtl8169_private {
 	} wk;
 
 	raw_spinlock_t mac_ocp_lock;
+	spinlock_t phy_ocp_lock;	/* serialize GPHY_OCP access */
 	struct mutex led_lock;	/* serialize LED ctrl RMW access */
 
 	unsigned supports_gmii:1;
@@ -1234,30 +1236,52 @@ static bool rtl_ocp_reg_failure(u32 reg)
 	return WARN_ONCE(reg & 0xffff0001, "Invalid ocp reg %x!\n", reg);
 }
 
-DECLARE_RTL_COND(rtl_ocp_gphy_cond)
+/* PHY OCP registers may also be accessed from atomic context (e.g. by the
+ * PTP code), therefore busy-wait for completion instead of sleeping.
+ */
+static int rtl_phy_ocp_wait(struct rtl8169_private *tp, bool high)
 {
-	return RTL_R32(tp, GPHY_OCP) & OCPAR_FLAG;
+	u32 val;
+	int ret;
+
+	ret = readl_poll_timeout_atomic(tp->mmio_addr + GPHY_OCP, val,
+					!!(val & OCPAR_FLAG) == high, 1, 250);
+	if (ret && net_ratelimit())
+		netdev_err(tp->dev, "PHY OCP access timeout\n");
+
+	return ret;
 }
 
 static void r8168_phy_ocp_write(struct rtl8169_private *tp, u32 reg, u32 data)
 {
+	unsigned long flags;
+
 	if (rtl_ocp_reg_failure(reg))
 		return;
 
+	spin_lock_irqsave(&tp->phy_ocp_lock, flags);
 	RTL_W32(tp, GPHY_OCP, OCPAR_FLAG | (reg << 15) | data);
-
-	rtl_loop_wait_low(tp, &rtl_ocp_gphy_cond, 25, 10);
+	rtl_phy_ocp_wait(tp, false);
+	spin_unlock_irqrestore(&tp->phy_ocp_lock, flags);
 }
 
 static int r8168_phy_ocp_read(struct rtl8169_private *tp, u32 reg)
 {
+	unsigned long flags;
+	int val;
+
 	if (rtl_ocp_reg_failure(reg))
 		return 0;
 
+	spin_lock_irqsave(&tp->phy_ocp_lock, flags);
 	RTL_W32(tp, GPHY_OCP, reg << 15);
+	if (rtl_phy_ocp_wait(tp, true))
+		val = -ETIMEDOUT;
+	else
+		val = RTL_R32(tp, GPHY_OCP) & 0xffff;
+	spin_unlock_irqrestore(&tp->phy_ocp_lock, flags);
 
-	return rtl_loop_wait_high(tp, &rtl_ocp_gphy_cond, 25, 10) ?
-		(RTL_R32(tp, GPHY_OCP) & 0xffff) : -ETIMEDOUT;
+	return val;
 }
 
 static void __r8168_mac_ocp_write(struct rtl8169_private *tp, u32 reg, u32 data)
@@ -6816,6 +6840,7 @@ static int rtl_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 	tp->ocp_base = OCP_STD_PHY_BASE;
 
 	raw_spin_lock_init(&tp->mac_ocp_lock);
+	spin_lock_init(&tp->phy_ocp_lock);
 	mutex_init(&tp->led_lock);
 
 	/* Get the *optional* external "ether_clk" used on some boards */
