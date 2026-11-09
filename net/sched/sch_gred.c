@@ -408,8 +408,9 @@ static inline void gred_destroy_vq(struct gred_sched_data *q)
 static int gred_change_table_def(struct Qdisc *sch, struct nlattr *dps,
 				 struct netlink_ext_ack *extack)
 {
-	struct gred_sched *table = qdisc_priv(sch);
 	struct tc_gred_sopt *sopt;
+	struct gred_sched *table = qdisc_priv(sch);
+	struct sk_buff *skb;
 	bool red_flags_changed;
 	int i;
 
@@ -437,6 +438,25 @@ static int gred_change_table_def(struct Qdisc *sch, struct nlattr *dps,
 	}
 
 	sch_tree_lock(sch);
+	skb_queue_walk(&sch->gso_skb, skb) {
+		if (tc_index_to_dp(skb) >= sopt->DPs) {
+			sch_tree_unlock(sch);
+			NL_SET_ERR_MSG_MOD(extack,
+					   "cannot remove a GRED VQ with queued packets");
+			return -EBUSY;
+		}
+	}
+
+	for (i = sopt->DPs; i < MAX_DPs; i++) {
+		struct gred_sched_data *q = table->tab[i];
+
+		if (q && q->backlog) {
+			sch_tree_unlock(sch);
+			NL_SET_ERR_MSG_MOD(extack,
+					   "cannot remove a GRED VQ with queued packets");
+			return -EBUSY;
+		}
+	}
 	table->DPs = sopt->DPs;
 	table->def = sopt->def_DP;
 	red_flags_changed = table->red_flags != sopt->flags;
