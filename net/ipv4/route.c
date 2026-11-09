@@ -1282,6 +1282,7 @@ EXPORT_INDIRECT_CALLABLE(ipv4_dst_check);
 
 static void ipv4_send_dest_unreach(struct sk_buff *skb)
 {
+	struct sk_buff *nskb = NULL;
 	struct inet_skb_parm parm;
 	struct net_device *dev;
 	int res;
@@ -1297,6 +1298,16 @@ static void ipv4_send_dest_unreach(struct sk_buff *skb)
 	if (ip_hdr(skb)->ihl > 5) {
 		if (!pskb_network_may_pull(skb, ip_hdr(skb)->ihl * 4))
 			return;
+
+		/* __ip_options_compile() writes into the options, and
+		 * callers of dst_link_failure() may cache pointers into
+		 * skb->head: work on a private copy.
+		 */
+		nskb = pskb_copy(skb, GFP_ATOMIC);
+		if (!nskb)
+			return;
+		skb = nskb;
+
 		parm.opt.optlen = ip_hdr(skb)->ihl * 4 - sizeof(struct iphdr);
 
 		rcu_read_lock();
@@ -1305,9 +1316,11 @@ static void ipv4_send_dest_unreach(struct sk_buff *skb)
 		rcu_read_unlock();
 
 		if (res)
-			return;
+			goto out;
 	}
 	__icmp_send(skb, ICMP_DEST_UNREACH, ICMP_HOST_UNREACH, 0, &parm);
+out:
+	consume_skb(nskb);
 }
 
 static void ipv4_link_failure(struct sk_buff *skb)
