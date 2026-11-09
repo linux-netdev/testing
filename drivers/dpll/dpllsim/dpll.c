@@ -104,10 +104,46 @@ static int dpllsim_pin_state_get(const struct dpll_pin *pin, void *pin_priv,
 	return 0;
 }
 
+/*
+ * The states a user may request depend on the device mode: connected and
+ * disconnected select and deselect the reference in manual mode, selectable
+ * and disconnected offer a pin to or withdraw it from the automatic
+ * selection. The core checks the state-can-change capability only.
+ */
+static bool dpllsim_pin_state_valid(const struct dpllsim_dev *sim,
+				    enum dpll_pin_state state)
+{
+	if (state == DPLL_PIN_STATE_DISCONNECTED)
+		return true;
+	if (sim->mode == DPLL_MODE_MANUAL)
+		return state == DPLL_PIN_STATE_CONNECTED;
+	return state == DPLL_PIN_STATE_SELECTABLE;
+}
+
+static int dpllsim_pin_state_set(const struct dpll_pin *pin, void *pin_priv,
+				 const struct dpll_device *dpll,
+				 void *dpll_priv, enum dpll_pin_state state,
+				 struct netlink_ext_ack *extack)
+{
+	struct dpllsim_pin *sim_pin = pin_priv;
+	struct dpllsim_dev *sim = sim_pin->dev;
+
+	guard(mutex)(&sim->lock);
+	if (!dpllsim_pin_state_valid(sim, state)) {
+		NL_SET_ERR_MSG_FMT(extack, "Pin state not valid in %s mode",
+				   sim->mode == DPLL_MODE_MANUAL ?
+				   "manual" : "automatic");
+		return -EINVAL;
+	}
+	sim_pin->state = state;
+	return 0;
+}
+
 static const struct dpll_pin_ops dpllsim_input_pin_ops = {
 	.frequency_get = dpllsim_pin_frequency_get,
 	.direction_get = dpllsim_pin_direction_get,
 	.state_on_dpll_get = dpllsim_pin_state_get,
+	.state_on_dpll_set = dpllsim_pin_state_set,
 };
 
 static const struct dpll_pin_ops dpllsim_output_pin_ops = {
@@ -149,6 +185,12 @@ static void dpllsim_pin_props(struct dpllsim_pin *pin,
 		prop->freq_supported_num = ARRAY_SIZE(dpllsim_freq_ext);
 		break;
 	}
+
+	/* Capabilities follow the ops the pin is served by */
+	if (dpllsim_pin_select_ops(pin) == &dpllsim_input_pin_ops)
+		prop->capabilities = DPLL_PIN_CAPABILITIES_STATE_CAN_CHANGE;
+	else
+		prop->capabilities = 0;
 }
 
 static bool dpllsim_pin_frequency_valid(struct dpllsim_pin *pin)
