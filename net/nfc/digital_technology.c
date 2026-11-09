@@ -510,10 +510,13 @@ static void digital_in_recv_sens_res(struct nfc_digital_dev *ddev, void *arg,
 		goto exit;
 	}
 
-	if (DIGITAL_SENS_RES_IS_T1T(target->sens_res))
+	if (DIGITAL_SENS_RES_IS_T1T(target->sens_res)) {
 		rc = digital_target_found(ddev, target, NFC_PROTO_JEWEL);
-	else
+		kfree(target);
+		target = NULL;
+	} else {
 		rc = digital_in_send_sdd_req(ddev, target);
+	}
 
 exit:
 	dev_kfree_skb(resp);
