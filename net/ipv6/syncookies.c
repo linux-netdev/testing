@@ -189,6 +189,12 @@ struct sock *cookie_v6_check(struct sock *sk, struct sk_buff *skb)
 	    !th->ack || th->rst)
 		goto out;
 
+	if (ipv6_addr_v4mapped(&ipv6_hdr(skb)->saddr)) {
+		__IP6_INC_STATS(net, NULL, IPSTATS_MIB_INHDRERRORS);
+		SKB_DR_SET(reason, IP_INHDR);
+		goto out_drop;
+	}
+
 	if (cookie_bpf_ok(skb)) {
 		req = cookie_bpf_check(sk, skb);
 	} else {
