@@ -461,8 +461,11 @@ virtio_net_hdr_tnl_from_skb(const struct sk_buff *skb,
 	if (skb_shinfo(skb)->gso_type & SKB_GSO_UDP_TUNNEL_CSUM)
 		hdr->flags |= VIRTIO_NET_HDR_F_UDP_TUNNEL_CSUM;
 
-	inner_nh = skb->inner_network_header - skb_headroom(skb);
-	outer_th = skb->transport_header - skb_headroom(skb);
+	/* Like csum_start, the offsets must account for a VLAN tag
+	 * the caller inserts in the frame.
+	 */
+	inner_nh = skb->inner_network_header - skb_headroom(skb) + vlan_hlen;
+	outer_th = skb->transport_header - skb_headroom(skb) + vlan_hlen;
 	vhdr->inner_nh_offset = cpu_to_le16(inner_nh);
 	vhdr->outer_th_offset = cpu_to_le16(outer_th);
 	return 0;
