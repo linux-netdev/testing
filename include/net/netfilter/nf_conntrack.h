@@ -210,6 +210,16 @@ bool nf_ct_get_tuplepr(const struct sk_buff *skb, unsigned int nhoff,
 void __nf_ct_refresh_acct(struct nf_conn *ct, enum ip_conntrack_info ctinfo,
 			  u32 extra_jiffies, unsigned int bytes);
 
+/* Convert a timeout in seconds to jiffies, saturating at INT_MAX instead of
+ * wrapping the "secs * HZ" product in u32.
+ */
+static inline u32 nf_ct_secs_to_jiffies(u32 secs)
+{
+	u64 delta = (u64)secs * HZ;
+
+	return delta > INT_MAX ? INT_MAX : (u32)delta;
+}
+
 /* Refresh conntrack for this many jiffies and do accounting */
 static inline void nf_ct_refresh_acct(struct nf_conn *ct,
 				      enum ip_conntrack_info ctinfo,
