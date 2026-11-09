@@ -370,19 +370,23 @@ static int intel_crosststamp(ktime_t *device,
 	u32 num_snapshot;
 	u32 gpio_value;
 	u32 acr_value;
-	int i;
+	int ret, i;
 
 	intel_priv = priv->plat->bsp_priv;
 
+	mutex_lock(&priv->aux_ts_lock);
 	/* Both internal crosstimestamping and external triggered event
-	 * timestamping cannot be run concurrently.
+	 * timestamping cannot be run concurrently: the PTP_ACR mask
+	 * programming below would disarm an external channel.
 	 */
-	if (priv->plat->flags & STMMAC_FLAG_EXT_SNAPSHOT_EN)
-		return -EBUSY;
+	if ((priv->plat->flags & STMMAC_FLAG_EXT_SNAPSHOT_EN) ||
+	    !priv->ptp_clock) {
+		mutex_unlock(&priv->aux_ts_lock);
+		return priv->ptp_clock ? -EBUSY : -ENODEV;
+	}
 
 	priv->plat->flags |= STMMAC_FLAG_INT_SNAPSHOT_EN;
 
-	mutex_lock(&priv->aux_ts_lock);
 	/* Enable Internal snapshot trigger */
 	acr_value = readl(ptpaddr + PTP_ACR);
 	acr_value &= ~PTP_ACR_MASK;
@@ -400,8 +404,8 @@ static int intel_crosststamp(ktime_t *device,
 		acr_value |= PTP_ACR_ATSEN3;
 		break;
 	default:
-		mutex_unlock(&priv->aux_ts_lock);
 		priv->plat->flags &= ~STMMAC_FLAG_INT_SNAPSHOT_EN;
+		mutex_unlock(&priv->aux_ts_lock);
 		return -EINVAL;
 	}
 	writel(acr_value, ptpaddr + PTP_ACR);
@@ -410,8 +414,6 @@ static int intel_crosststamp(ktime_t *device,
 	acr_value = readl(ptpaddr + PTP_ACR);
 	acr_value |= PTP_ACR_ATSFC;
 	writel(acr_value, ptpaddr + PTP_ACR);
-	/* Release the mutex */
-	mutex_unlock(&priv->aux_ts_lock);
 
 	/* Trigger Internal snapshot signal
 	 * Create a rising edge by just toggle the GPO1 to low
@@ -424,11 +426,22 @@ static int intel_crosststamp(ktime_t *device,
 	writel(gpio_value, ioaddr + GMAC_GPIO_STATUS);
 
 	/* Time sync done Indication - Interrupt method */
-	if (!wait_event_interruptible_timeout(priv->tstamp_busy_wait,
-					      stmmac_cross_ts_isr(priv),
-					      HZ / 100)) {
+	ret = wait_event_interruptible_timeout(priv->tstamp_busy_wait,
+					       stmmac_cross_ts_isr(priv),
+					       HZ / 100);
+	if (ret <= 0) {
+		/* Disarm the trigger on a timeout or an interrupted
+		 * wait, but do not touch the hardware once the clock has
+		 * been invalidated by an interface teardown.
+		 */
+		if (priv->ptp_clock) {
+			acr_value = readl(ptpaddr + PTP_ACR);
+			acr_value &= ~PTP_ACR_MASK;
+			writel(acr_value, ptpaddr + PTP_ACR);
+		}
 		priv->plat->flags &= ~STMMAC_FLAG_INT_SNAPSHOT_EN;
-		return -ETIMEDOUT;
+		mutex_unlock(&priv->aux_ts_lock);
+		return ret ? ret : -ETIMEDOUT;
 	}
 
 	*system = (struct system_counterval_t) {
@@ -453,7 +466,16 @@ static int intel_crosststamp(ktime_t *device,
 
 	system->cycles *= intel_priv->crossts_adj;
 
+	/* Disarm the internal snapshot trigger, so it does not stay armed
+	 * in PTP_ACR after the cross-timestamp.
+	 */
+	if (priv->ptp_clock) {
+		acr_value = readl(ptpaddr + PTP_ACR);
+		acr_value &= ~PTP_ACR_MASK;
+		writel(acr_value, ptpaddr + PTP_ACR);
+	}
 	priv->plat->flags &= ~STMMAC_FLAG_INT_SNAPSHOT_EN;
+	mutex_unlock(&priv->aux_ts_lock);
 
 	return 0;
 }
