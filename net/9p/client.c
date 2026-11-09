@@ -706,10 +706,11 @@ static struct p9_req_t *p9_client_zc_rpc(struct p9_client *c, int8_t type,
 
 		if (c->trans_mod->cancel(c, req))
 			p9_client_flush(c, req);
-
-		/* if we received the response anyway, don't signal error */
-		if (READ_ONCE(req->status) == REQ_STATUS_RCVD)
-			err = 0;
+		/*
+		 * err stays -ERESTARTSYS even if the reply has arrived, since
+		 * the transport moves the error string of a zero-copy reply
+		 * into rc only while it waits.
+		 */
 	}
 recalc_sigpending:
 	if (sigpending) {
