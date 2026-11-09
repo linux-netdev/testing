@@ -188,6 +188,7 @@ p9_tag_alloc(struct p9_client *c, int8_t type, uint t_size, uint r_size,
 	refcount_set(&req->refcount, 0);
 	init_waitqueue_head(&req->wq);
 	INIT_LIST_HEAD(&req->req_list);
+	req->zc_pages = NULL;
 
 	idr_preload(GFP_NOFS);
 	spin_lock_irq(&c->lock);
@@ -707,6 +708,8 @@ static struct p9_req_t *p9_client_zc_rpc(struct p9_client *c, int8_t type,
 		 * into rc only while it waits.
 		 */
 	}
+	/* The caller may reuse the payload once the transport releases it */
+	wait_event_idle(req->wq, !smp_load_acquire(&req->zc_pages));
 recalc_sigpending:
 	if (sigpending) {
 		spin_lock_irqsave(&current->sighand->siglock, flags);

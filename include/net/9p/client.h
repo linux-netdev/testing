@@ -71,6 +71,8 @@ enum p9_req_status_t {
 	REQ_STATUS_ERROR,
 };
 
+struct p9_zc_pages;
+
 /**
  * struct p9_req_t - request slots
  * @status: status of this request slot
@@ -79,6 +81,9 @@ enum p9_req_status_t {
  * @tc: the request fcall structure
  * @rc: the response fcall structure
  * @req_list: link for higher level objects to chain requests
+ * @zc_pages: the zero-copy payload pages, set by the transport while the
+ *            device may access them and cleared with a wakeup on @wq when
+ *            the device returns them
  */
 struct p9_req_t {
 	int status;
@@ -88,6 +93,7 @@ struct p9_req_t {
 	struct p9_fcall tc;
 	struct p9_fcall rc;
 	struct list_head req_list;
+	struct p9_zc_pages *zc_pages;
 };
 
 /**

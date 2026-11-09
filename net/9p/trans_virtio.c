@@ -43,6 +43,43 @@ static DECLARE_WAIT_QUEUE_HEAD(vp_wq);
 static atomic_t vp_pinned = ATOMIC_INIT(0);
 
 /**
+ * struct p9_zc_pages - the pages mapped for the device by a zero-copy request
+ * @in_pages: the pages of the reply payload
+ * @out_pages: the pages of the request payload
+ * @in_nr_pages: the number of reply pages
+ * @out_nr_pages: the number of request pages
+ * @need_drop: whether p9_zc_release() drops a reference to each page
+ * @held: whether req_done() releases this structure
+ */
+struct p9_zc_pages {
+	struct page **in_pages;
+	struct page **out_pages;
+	int in_nr_pages;
+	int out_nr_pages;
+	int need_drop;
+	bool held;
+};
+
+static void p9_zc_release(struct p9_zc_pages *zc)
+{
+	if (zc->need_drop) {
+		if (zc->in_pages) {
+			p9_release_pages(zc->in_pages, zc->in_nr_pages);
+			atomic_sub(zc->in_nr_pages, &vp_pinned);
+		}
+		if (zc->out_pages) {
+			p9_release_pages(zc->out_pages, zc->out_nr_pages);
+			atomic_sub(zc->out_nr_pages, &vp_pinned);
+		}
+		/* wakeup anybody waiting for slots to pin pages */
+		wake_up(&vp_wq);
+	}
+	kvfree(zc->in_pages);
+	kvfree(zc->out_pages);
+	kfree(zc);
+}
+
+/**
  * struct virtio_chan - per-instance transport information
  * @inuse: whether the channel is in use
  * @lock: protects multiple elements within this structure
@@ -140,6 +177,15 @@ static void req_done(struct virtqueue *vq)
 		if (!chan->ring_bufs_avail) {
 			chan->ring_bufs_avail = 1;
 			need_wakeup = true;
+		}
+
+		/* The device has returned the buffers of a zero-copy request */
+		if (req->zc_pages) {
+			if (req->zc_pages->held)
+				p9_zc_release(req->zc_pages);
+			/* pairs with smp_load_acquire() in p9_client_zc_rpc() */
+			smp_store_release(&req->zc_pages, NULL);
+			wake_up(&req->wq);
 		}
 
 		if (len) {
@@ -419,25 +465,30 @@ p9_virtio_zc_request(struct p9_client *client, struct p9_req_t *req,
 {
 	int in, out, err, out_sgs, in_sgs;
 	unsigned long flags;
-	int in_nr_pages = 0, out_nr_pages = 0;
-	struct page **in_pages = NULL, **out_pages = NULL;
+	struct p9_zc_pages *zc;
 	struct virtio_chan *chan = client->trans;
 	struct scatterlist *sgs[4];
 	size_t offs = 0;
-	int need_drop = 0;
 	int kicked = 0;
+	bool held;
 
 	p9_debug(P9_DEBUG_TRANS, "virtio request\n");
 
+	zc = kzalloc_obj(*zc, GFP_NOFS);
+	if (!zc) {
+		err = -ENOMEM;
+		goto out;
+	}
+
 	if (uodata) {
 		__le32 sz;
-		int n = p9_get_mapped_pages(chan, &out_pages, uodata,
-					    outlen, &offs, &need_drop);
+		int n = p9_get_mapped_pages(chan, &zc->out_pages, uodata,
+					    outlen, &offs, &zc->need_drop);
 		if (n < 0) {
 			err = n;
 			goto err_out;
 		}
-		out_nr_pages = DIV_ROUND_UP(n + offs, PAGE_SIZE);
+		zc->out_nr_pages = DIV_ROUND_UP(n + offs, PAGE_SIZE);
 		if (n != outlen) {
 			__le32 v = cpu_to_le32(n);
 			memcpy(&req->tc.sdata[req->tc.size - 4], &v, 4);
@@ -450,13 +501,13 @@ p9_virtio_zc_request(struct p9_client *client, struct p9_req_t *req,
 		sz = cpu_to_le32(req->tc.size + outlen);
 		memcpy(&req->tc.sdata[0], &sz, sizeof(sz));
 	} else if (uidata) {
-		int n = p9_get_mapped_pages(chan, &in_pages, uidata,
-					    inlen, &offs, &need_drop);
+		int n = p9_get_mapped_pages(chan, &zc->in_pages, uidata,
+					    inlen, &offs, &zc->need_drop);
 		if (n < 0) {
 			err = n;
 			goto err_out;
 		}
-		in_nr_pages = DIV_ROUND_UP(n + offs, PAGE_SIZE);
+		zc->in_nr_pages = DIV_ROUND_UP(n + offs, PAGE_SIZE);
 		if (n != inlen) {
 			__le32 v = cpu_to_le32(n);
 			memcpy(&req->tc.sdata[req->tc.size - 4], &v, 4);
@@ -476,10 +527,10 @@ req_retry_pinned:
 	if (out)
 		sgs[out_sgs++] = chan->sg;
 
-	if (out_pages) {
+	if (zc->out_pages) {
 		sgs[out_sgs++] = chan->sg + out;
 		out += pack_sg_list_p(chan->sg, out, VIRTQUEUE_NUM,
-				      out_pages, out_nr_pages, offs, outlen);
+				      zc->out_pages, zc->out_nr_pages, offs, outlen);
 	}
 
 	/*
@@ -494,10 +545,10 @@ req_retry_pinned:
 	if (in)
 		sgs[out_sgs + in_sgs++] = chan->sg + out;
 
-	if (in_pages) {
+	if (zc->in_pages) {
 		sgs[out_sgs + in_sgs++] = chan->sg + out + in;
 		pack_sg_list_p(chan->sg, out + in, VIRTQUEUE_NUM,
-			       in_pages, in_nr_pages, offs, inlen);
+			       zc->in_pages, zc->in_nr_pages, offs, inlen);
 	}
 
 	BUG_ON(out_sgs + in_sgs > ARRAY_SIZE(sgs));
@@ -522,6 +573,7 @@ req_retry_pinned:
 			goto err_out;
 		}
 	}
+	req->zc_pages = zc;
 	virtqueue_kick(chan->vq);
 	spin_unlock_irqrestore(&chan->lock, flags);
 	kicked = 1;
@@ -539,27 +591,28 @@ req_retry_pinned:
 
 		// RERROR needs reply (== error string) in static data
 		if (unlikely(req->rc.sdata[4] == P9_RERROR))
-			handle_rerror(req, in_hdr_len, offs, in_pages);
+			handle_rerror(req, in_hdr_len, offs, zc->in_pages);
+	} else {
+		/*
+		 * A fatal signal ended the wait, and the device may still hold
+		 * the request, so let req_done() release the pages unless the
+		 * device has already returned the request.
+		 */
+		spin_lock_irqsave(&chan->lock, flags);
+		held = req->zc_pages;
+		if (held)
+			zc->held = true;
+		spin_unlock_irqrestore(&chan->lock, flags);
+		if (held)
+			return err;
 	}
 
 	/*
 	 * Non kernel buffers are pinned, unpin them
 	 */
 err_out:
-	if (need_drop) {
-		if (in_pages) {
-			p9_release_pages(in_pages, in_nr_pages);
-			atomic_sub(in_nr_pages, &vp_pinned);
-		}
-		if (out_pages) {
-			p9_release_pages(out_pages, out_nr_pages);
-			atomic_sub(out_nr_pages, &vp_pinned);
-		}
-		/* wakeup anybody waiting for slots to pin pages */
-		wake_up(&vp_wq);
-	}
-	kvfree(in_pages);
-	kvfree(out_pages);
+	p9_zc_release(zc);
+out:
 	if (!kicked) {
 		/* reply won't come */
 		p9_req_put(client, req);
