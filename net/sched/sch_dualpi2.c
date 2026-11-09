@@ -909,14 +909,20 @@ static int dualpi2_change(struct Qdisc *sch, struct nlattr *opt,
 	while (qdisc_qlen(sch) > sch->limit ||
 	       q->memory_used > q->memory_limit) {
 		struct sk_buff *skb = NULL;
+		bool already_dequeued;
 
 		if (qdisc_qlen(sch) > qdisc_qlen(q->l_queue)) {
+			already_dequeued = skb_peek(&sch->gso_skb);
+
 			skb = qdisc_dequeue_internal(sch, true);
 			if (unlikely(!skb)) {
 				WARN_ON_ONCE(1);
 				break;
 			}
-			WRITE_ONCE(q->memory_used, q->memory_used - skb->truesize);
+			/* A peeked or requeued skb was already accounted. */
+			if (!already_dequeued)
+				WRITE_ONCE(q->memory_used,
+					   q->memory_used - skb->truesize);
 			rtnl_qdisc_drop(skb, sch);
 		} else if (qdisc_qlen(q->l_queue)) {
 			skb = qdisc_dequeue_internal(q->l_queue, true);
