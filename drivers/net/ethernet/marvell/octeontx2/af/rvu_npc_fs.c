@@ -1396,7 +1396,7 @@ static int npc_update_tx_entry(struct rvu *rvu, struct rvu_pfvf *pfvf,
 	/* If AF is installing then do not care about
 	 * PF_FUNC in Send Descriptor
 	 */
-	if (is_pffunc_af(req->hdr.pcifunc))
+	if (is_pffunc_af(req->hdr.pcifunc) && !rvu->rep_mode)
 		mask = 0;
 
 	npc_update_entry(rvu, NPC_PF_FUNC, mdata, (__force u16)htons(target),
