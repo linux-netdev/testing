@@ -298,10 +298,16 @@ tcp_friendliness:
 	if (tcp_friendliness) {
 		u32 scale = beta_scale;
 
-		delta = (cwnd * scale) >> 3;
-		while (ca->ack_cnt > delta) {		/* update tcp cwnd */
-			ca->ack_cnt -= delta;
-			ca->tcp_cwnd++;
+		/* BPF congestion controls can call us with any cwnd
+		 * and ack_cnt: cwnd * scale can wrap and give a zero delta,
+		 * and a loop could run up to 2^32 times.
+		 */
+		delta = max((cwnd * scale) >> 3, 1U);
+		if (ca->ack_cnt > delta) {		/* update tcp cwnd */
+			u32 n = (ca->ack_cnt - 1) / delta;
+
+			ca->ack_cnt -= n * delta;
+			ca->tcp_cwnd += n;
 		}
 
 		if (ca->tcp_cwnd > cwnd) {	/* if bic is slower than tcp */
