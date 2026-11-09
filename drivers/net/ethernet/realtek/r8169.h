@@ -95,3 +95,5 @@ int rtl8125_get_led_mode(struct rtl8169_private *tp, int index);
 int rtl8125_set_led_mode(struct rtl8169_private *tp, int index, u16 mode);
 struct r8169_led_classdev *rtl8125_init_leds(struct net_device *ndev);
 void r8169_remove_leds(struct r8169_led_classdev *leds);
+int r8168_phy_ocp_read(struct rtl8169_private *tp, u32 reg);
+void r8168_phy_ocp_write(struct rtl8169_private *tp, u32 reg, u32 data);
