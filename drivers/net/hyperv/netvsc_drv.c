@@ -2311,6 +2311,12 @@ static int netvsc_prepare_bonding(struct net_device *vf_netdev)
 	return NOTIFY_DONE;
 }
 
+static void netvsc_vfns_dev_put(struct net_device_context *ndev_ctx)
+{
+	netdev_put(ndev_ctx->vfns_dev, &ndev_ctx->vfns_dev_tracker);
+	ndev_ctx->vfns_dev = NULL;
+}
+
 static int netvsc_register_vf(struct net_device *vf_netdev, int context)
 {
 	struct net_device_context *net_device_ctx;
@@ -2340,19 +2346,17 @@ static int netvsc_register_vf(struct net_device *vf_netdev, int context)
 
 	/* if synthetic interface is a different namespace,
 	 * then move the VF to that namespace; join will be
-	 * done again in that context.
+	 * done again in that context. The VF's lock is held
+	 * for its registration, so leave the move to vfns_work.
 	 */
 	if (!net_eq(dev_net(ndev), dev_net(vf_netdev))) {
-		ret = dev_change_net_namespace(vf_netdev,
-					       dev_net(ndev), "eth%d");
-		if (ret)
-			netdev_err(vf_netdev,
-				   "could not move to same namespace as %s: %d\n",
-				   ndev->name, ret);
-		else
-			netdev_info(vf_netdev,
-				    "VF moved to namespace with: %s\n",
-				    ndev->name);
+		if (net_device_ctx->vfns_dev != vf_netdev) {
+			netvsc_vfns_dev_put(net_device_ctx);
+			netdev_hold(vf_netdev, &net_device_ctx->vfns_dev_tracker,
+				    GFP_KERNEL);
+			net_device_ctx->vfns_dev = vf_netdev;
+		}
+		schedule_delayed_work(&net_device_ctx->vfns_work, 0);
 		return NOTIFY_DONE;
 	}
 
@@ -2703,6 +2707,7 @@ static void netvsc_remove(struct hv_device *dev)
 
 	rtnl_lock();
 	cancel_delayed_work_sync(&ndev_ctx->vfns_work);
+	netvsc_vfns_dev_put(ndev_ctx);
 
 	nvdev = rtnl_dereference(ndev_ctx->nvdev);
 	if (nvdev)
@@ -2745,6 +2750,7 @@ static int netvsc_suspend(struct hv_device *dev)
 	cancel_delayed_work_sync(&ndev_ctx->dwork);
 
 	rtnl_lock();
+	/* keep vfns_dev, netvsc_resume() queues the work again */
 	cancel_delayed_work_sync(&ndev_ctx->vfns_work);
 
 	nvdev = rtnl_dereference(ndev_ctx->nvdev);
@@ -2761,6 +2767,9 @@ static int netvsc_suspend(struct hv_device *dev)
 	}
 	ret = netvsc_detach(net, nvdev);
 out:
+	/* netvsc_resume() won't run if we fail */
+	if (ret)
+		schedule_delayed_work(&ndev_ctx->vfns_work, 0);
 	rtnl_unlock();
 
 	return ret;
@@ -2788,6 +2797,9 @@ static int netvsc_resume(struct hv_device *dev)
 
 	netvsc_devinfo_put(device_info);
 	net_device_ctx->saved_netvsc_dev_info = NULL;
+
+	/* pick up whatever netvsc_suspend() stopped vfns_work from doing */
+	schedule_delayed_work(&net_device_ctx->vfns_work, 0);
 
 	rtnl_unlock();
 
@@ -2823,7 +2835,9 @@ static void netvsc_event_set_vf_ns(struct net_device *ndev)
 
 	vf_netdev = rtnl_dereference(ndev_ctx->vf_netdev);
 	if (!vf_netdev)
-		return;
+		vf_netdev = ndev_ctx->vfns_dev;
+	if (!vf_netdev || vf_netdev->reg_state != NETREG_REGISTERED)
+		goto out;
 
 	if (!net_eq(dev_net(ndev), dev_net(vf_netdev))) {
 		ret = dev_change_net_namespace(vf_netdev, dev_net(ndev),
@@ -2836,7 +2850,20 @@ static void netvsc_event_set_vf_ns(struct net_device *ndev)
 			netdev_info(vf_netdev,
 				    "Moved VF to namespace with: %s\n",
 				    ndev->name);
+	} else if (!rtnl_dereference(ndev_ctx->vf_netdev)) {
+		/* netvsc got to the VF's netns first, so no move will
+		 * register the VF again, take it over from here. Close
+		 * it first, as the move would have: a VF which is up
+		 * already may never send the event which switches the
+		 * data path over.
+		 */
+		netdev_lock_ops(vf_netdev);
+		netif_close(vf_netdev);
+		netvsc_register_vf(vf_netdev, VF_REG_IN_NOTIFIER);
+		netdev_unlock_ops(vf_netdev);
 	}
+out:
+	netvsc_vfns_dev_put(ndev_ctx);
 }
 
 void netvsc_vfns_work(struct work_struct *w)
