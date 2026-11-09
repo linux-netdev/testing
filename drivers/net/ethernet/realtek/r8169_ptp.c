@@ -1,15 +1,18 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* r8169_ptp.c: RealTek 8169/8168/8101/8125 ethernet driver.
  *
- * PTP hardware clock support for RTL8127A.
+ * PTP hardware clock and timestamping support for RTL8127A.
  */
 
 #include <linux/bitfield.h>
 #include <linux/bits.h>
+#include <linux/ethtool.h>
 #include <linux/iopoll.h>
 #include <linux/math64.h>
 #include <linux/module.h>
 #include <linux/netdevice.h>
+#include <linux/ptp_classify.h>
+#include <linux/skbuff.h>
 #include <linux/timekeeping.h>
 
 #include "r8169.h"
@@ -30,6 +33,16 @@
 #define PTP_CLK_CFG			0xe410
 #define PTP_CLK_CFG_EXEC		BIT(0)
 #define PTP_CLK_CFG_MODE		GENMASK(3, 1)
+#define PTP_TRX_TS_STA			0xe430
+#define PTP_TRX_TS_RD			BIT(0)
+#define PTP_TRX_TS_SEL_RX		BIT(1)
+#define PTP_TRX_TS_MSGTYPE		GENMASK(3, 2)
+#define PTP_TRX_TS_EXEC			BIT(4)
+#define PTP_TRX_TS_TX_PDLYRSP_RDY	BIT(12)
+#define PTP_TRX_TS_TX_PDLYREQ_RDY	BIT(13)
+#define PTP_TRX_TS_TX_DLYREQ_RDY	BIT(14)
+#define PTP_TRX_TS_TX_SYNC_RDY		BIT(15)
+#define PTP_TRX_TS_TX_RDY		GENMASK(15, 12)
 /* Time registers, PTP_CFG_TIME for the clock, PTP_TRX_TS_TIME for packets */
 #define PTP_CFG_TIME			0xe412
 #define PTP_TRX_TS_TIME			0xe446
@@ -44,6 +57,12 @@
 #define PTP_RATE_HI_MASK		GENMASK(21, 16)
 
 #define PTP_MAX_ADJ			488281
+#define RTL8169_PTP_TX_TIMEOUT		(15 * HZ)
+
+/* ptp->state bits */
+enum rtl8169_ptp_state {
+	RTL8169_PTP_TX_IN_PROGRESS,
+};
 
 /* PTP_CLK_CFG clock adjust modes */
 enum rtl8169_ptp_clkadj_mode {
@@ -134,6 +153,48 @@ static void rtl8169_ptp_write_time(struct rtl8169_ptp *ptp,
 	rtl8169_ptp_write(ptp, PTP_CFG_TIME + PTP_TIME_S_LO, sec);
 	rtl8169_ptp_write(ptp, PTP_CFG_TIME + PTP_TIME_S_MI, sec >> 16);
 	rtl8169_ptp_write(ptp, PTP_CFG_TIME + PTP_TIME_S_HI, sec >> 32);
+}
+
+/* Latch the RX or TX timestamp of the given message type into the
+ * PTP_TRX_TS_TIME registers.
+ */
+static void rtl8169_ptp_trx_ts_cmd(struct rtl8169_ptp *ptp, u16 cmd)
+{
+	rtl8169_ptp_modify(ptp, PTP_TRX_TS_STA,
+			   PTP_TRX_TS_SEL_RX | PTP_TRX_TS_MSGTYPE,
+			   PTP_TRX_TS_RD | cmd);
+	rtl8169_ptp_poll(ptp, PTP_TRX_TS_STA, PTP_TRX_TS_RD, false);
+}
+
+static void rtl8169_ptp_egress_time(struct rtl8169_ptp *ptp,
+				    struct timespec64 *ts)
+{
+	u8 msgtype;
+	int val;
+
+	val = rtl8169_ptp_poll(ptp, PTP_TRX_TS_STA, PTP_TRX_TS_TX_RDY, true);
+	if (val < 0)
+		val = 0;
+
+	switch (val & PTP_TRX_TS_TX_RDY) {
+	case PTP_TRX_TS_TX_PDLYRSP_RDY:
+		msgtype = PTP_MSGTYPE_PDELAY_RESP;
+		break;
+	case PTP_TRX_TS_TX_PDLYREQ_RDY:
+		msgtype = PTP_MSGTYPE_PDELAY_REQ;
+		break;
+	case PTP_TRX_TS_TX_DLYREQ_RDY:
+		msgtype = PTP_MSGTYPE_DELAY_REQ;
+		break;
+	case PTP_TRX_TS_TX_SYNC_RDY:
+	default:
+		msgtype = PTP_MSGTYPE_SYNC;
+		break;
+	}
+
+	rtl8169_ptp_trx_ts_cmd(ptp, FIELD_PREP(PTP_TRX_TS_MSGTYPE, msgtype) |
+				    PTP_TRX_TS_EXEC);
+	rtl8169_ptp_read_time(ptp, PTP_TRX_TS_TIME, ts);
 }
 
 static void rtl8169_ptp_hwtstamp_enable(struct rtl8169_ptp *ptp, bool enable)
@@ -243,6 +304,201 @@ static const struct ptp_clock_info rtl8169_ptp_info = {
 	.settime64	= rtl8169_ptp_settime64,
 };
 
+static void rtl8169_ptp_tx_complete(struct rtl8169_ptp *ptp,
+				    struct skb_shared_hwtstamps *hwts)
+{
+	struct sk_buff *skb = ptp->tx_skb;
+
+	ptp->tx_skb = NULL;
+	clear_bit_unlock(RTL8169_PTP_TX_IN_PROGRESS, &ptp->state);
+
+	if (hwts)
+		skb_tstamp_tx(skb, hwts);
+	dev_kfree_skb_any(skb);
+}
+
+static void rtl8169_ptp_tx_work(struct work_struct *work)
+{
+	struct rtl8169_ptp *ptp = container_of(work, struct rtl8169_ptp,
+					       tx_work);
+	struct skb_shared_hwtstamps hwts = {};
+	struct timespec64 ts;
+	unsigned long flags;
+	bool ready;
+
+	if (!ptp->tx_skb)
+		return;
+
+	if (time_is_before_jiffies(ptp->tx_start + RTL8169_PTP_TX_TIMEOUT)) {
+		spin_lock_irqsave(&ptp->lock, flags);
+		rtl8169_ptp_write(ptp, PTP_INSR, PTP_INT_TX_TS);
+		spin_unlock_irqrestore(&ptp->lock, flags);
+
+		ptp->tx_timeouts++;
+		rtl8169_ptp_tx_complete(ptp, NULL);
+		return;
+	}
+
+	spin_lock_irqsave(&ptp->lock, flags);
+	ready = rtl8169_ptp_read(ptp, PTP_INSR) & PTP_INT_TX_TS;
+	if (ready) {
+		rtl8169_ptp_write(ptp, PTP_INSR, PTP_INT_TX_TS);
+		rtl8169_ptp_egress_time(ptp, &ts);
+	}
+	spin_unlock_irqrestore(&ptp->lock, flags);
+
+	if (!ready) {
+		schedule_work(&ptp->tx_work);
+		return;
+	}
+
+	hwts.hwtstamp = timespec64_to_ktime(ts);
+	ptp->tx_pkts++;
+	rtl8169_ptp_tx_complete(ptp, &hwts);
+}
+
+void rtl8169_ptp_tx_tstamp(struct rtl8169_ptp *ptp, struct sk_buff *skb)
+{
+	if (ptp->config.tx_type != HWTSTAMP_TX_ON ||
+	    test_and_set_bit_lock(RTL8169_PTP_TX_IN_PROGRESS, &ptp->state)) {
+		ptp->tx_skipped++;
+		return;
+	}
+
+	skb_shinfo(skb)->tx_flags |= SKBTX_IN_PROGRESS;
+	ptp->tx_skb = skb_get(skb);
+	ptp->tx_start = jiffies;
+	schedule_work(&ptp->tx_work);
+}
+
+void rtl8169_ptp_rx_tstamp(struct rtl8169_ptp *ptp, struct sk_buff *skb)
+{
+	unsigned int ptp_class;
+	struct ptp_header *hdr;
+	struct timespec64 ts;
+	unsigned long flags;
+	u8 msgtype;
+
+	if (!READ_ONCE(ptp->rx_enabled))
+		return;
+
+	ptp_class = ptp_classify_raw(skb);
+	if (ptp_class == PTP_CLASS_NONE)
+		return;
+
+	skb_reset_mac_header(skb);
+	hdr = ptp_parse_header(skb, ptp_class);
+	if (unlikely(!hdr))
+		return;
+
+	/* Only event messages are timestamped by the hardware */
+	msgtype = ptp_get_msgtype(hdr, ptp_class);
+	if (msgtype > PTP_MSGTYPE_PDELAY_RESP)
+		return;
+
+	spin_lock_irqsave(&ptp->lock, flags);
+	rtl8169_ptp_trx_ts_cmd(ptp, PTP_TRX_TS_SEL_RX |
+				    FIELD_PREP(PTP_TRX_TS_MSGTYPE, msgtype) |
+				    PTP_TRX_TS_EXEC);
+	rtl8169_ptp_read_time(ptp, PTP_TRX_TS_TIME, &ts);
+	spin_unlock_irqrestore(&ptp->lock, flags);
+
+	skb_hwtstamps(skb)->hwtstamp = timespec64_to_ktime(ts);
+}
+
+int rtl8169_ptp_hwtstamp_get(struct rtl8169_ptp *ptp,
+			     struct kernel_hwtstamp_config *config)
+{
+	hwtstamp_config_to_kernel(config, &ptp->config);
+
+	return 0;
+}
+
+int rtl8169_ptp_hwtstamp_set(struct rtl8169_ptp *ptp,
+			     struct kernel_hwtstamp_config *config,
+			     struct netlink_ext_ack *extack)
+{
+	bool enable = false;
+	bool rx_enabled;
+
+	if (!ptp->clock)
+		return -ENETDOWN;
+
+	if (config->flags)
+		return -EINVAL;
+
+	switch (config->tx_type) {
+	case HWTSTAMP_TX_ON:
+		enable = true;
+		break;
+	case HWTSTAMP_TX_OFF:
+		break;
+	default:
+		return -ERANGE;
+	}
+
+	switch (config->rx_filter) {
+	case HWTSTAMP_FILTER_NONE:
+		rx_enabled = false;
+		break;
+	case HWTSTAMP_FILTER_PTP_V2_EVENT:
+	case HWTSTAMP_FILTER_PTP_V2_L2_EVENT:
+	case HWTSTAMP_FILTER_PTP_V2_L4_EVENT:
+	case HWTSTAMP_FILTER_PTP_V2_SYNC:
+	case HWTSTAMP_FILTER_PTP_V2_L2_SYNC:
+	case HWTSTAMP_FILTER_PTP_V2_L4_SYNC:
+	case HWTSTAMP_FILTER_PTP_V2_DELAY_REQ:
+	case HWTSTAMP_FILTER_PTP_V2_L2_DELAY_REQ:
+	case HWTSTAMP_FILTER_PTP_V2_L4_DELAY_REQ:
+		config->rx_filter = HWTSTAMP_FILTER_PTP_V2_EVENT;
+		rx_enabled = true;
+		enable = true;
+		break;
+	default:
+		return -ERANGE;
+	}
+
+	if (ptp->config.tx_type != config->tx_type ||
+	    ptp->config.rx_filter != config->rx_filter) {
+		hwtstamp_config_from_kernel(&ptp->config, config);
+		rtl8169_ptp_hwtstamp_enable(ptp, enable);
+	}
+	WRITE_ONCE(ptp->rx_enabled, rx_enabled);
+
+	return 0;
+}
+
+int rtl8169_ptp_get_ts_info(struct rtl8169_ptp *ptp,
+			    struct kernel_ethtool_ts_info *info)
+{
+	info->so_timestamping = SOF_TIMESTAMPING_TX_SOFTWARE |
+				SOF_TIMESTAMPING_TX_HARDWARE |
+				SOF_TIMESTAMPING_RX_HARDWARE |
+				SOF_TIMESTAMPING_RAW_HARDWARE;
+
+	if (ptp->clock)
+		info->phc_index = ptp_clock_index(ptp->clock);
+
+	info->tx_types = BIT(HWTSTAMP_TX_OFF) | BIT(HWTSTAMP_TX_ON);
+	info->rx_filters = BIT(HWTSTAMP_FILTER_NONE) |
+			   BIT(HWTSTAMP_FILTER_PTP_V2_EVENT) |
+			   BIT(HWTSTAMP_FILTER_PTP_V2_L4_EVENT) |
+			   BIT(HWTSTAMP_FILTER_PTP_V2_SYNC) |
+			   BIT(HWTSTAMP_FILTER_PTP_V2_L4_SYNC) |
+			   BIT(HWTSTAMP_FILTER_PTP_V2_DELAY_REQ) |
+			   BIT(HWTSTAMP_FILTER_PTP_V2_L4_DELAY_REQ);
+
+	return 0;
+}
+
+void rtl8169_ptp_get_ts_stats(struct rtl8169_ptp *ptp,
+			      struct ethtool_ts_stats *stats)
+{
+	stats->pkts = ptp->tx_pkts;
+	stats->lost = ptp->tx_timeouts;
+	stats->err = ptp->tx_skipped;
+}
+
 void rtl8169_ptp_set_local_time(struct rtl8169_ptp *ptp)
 {
 	struct timespec64 ts;
@@ -267,6 +523,8 @@ void rtl8169_ptp_init(struct rtl8169_ptp *ptp)
 	}
 	ptp->clock = clock;
 
+	ptp->config.tx_type = HWTSTAMP_TX_OFF;
+	ptp->config.rx_filter = HWTSTAMP_FILTER_NONE;
 	rtl8169_ptp_hwtstamp_enable(ptp, false);
 }
 
@@ -275,7 +533,13 @@ void rtl8169_ptp_stop(struct rtl8169_ptp *ptp)
 	if (!ptp->clock)
 		return;
 
+	ptp->config.tx_type = HWTSTAMP_TX_OFF;
+	ptp->config.rx_filter = HWTSTAMP_FILTER_NONE;
+	WRITE_ONCE(ptp->rx_enabled, false);
 	rtl8169_ptp_hwtstamp_enable(ptp, false);
+	cancel_work_sync(&ptp->tx_work);
+	if (ptp->tx_skb)
+		rtl8169_ptp_tx_complete(ptp, NULL);
 
 	ptp_clock_unregister(ptp->clock);
 	ptp->clock = NULL;
@@ -288,4 +552,5 @@ void rtl8169_ptp_setup(struct rtl8169_ptp *ptp, struct rtl8169_private *tp,
 	ptp->dev = dev;
 	ptp->parent = parent;
 	spin_lock_init(&ptp->lock);
+	INIT_WORK(&ptp->tx_work, rtl8169_ptp_tx_work);
 }

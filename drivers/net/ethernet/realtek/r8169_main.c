@@ -5146,6 +5146,10 @@ static netdev_tx_t rtl8169_start_xmit(struct sk_buff *skb,
 
 	skb_tx_timestamp(skb);
 
+	if (tp->ptp_support &&
+	    unlikely(skb_shinfo(skb)->tx_flags & SKBTX_HW_TSTAMP))
+		rtl8169_ptp_tx_tstamp(&tp->ptp, skb);
+
 	/* Force memory writes to complete before releasing descriptor */
 	dma_wmb();
 
@@ -5483,6 +5487,10 @@ static int rtl_rx(struct net_device *dev, struct rtl8169_private *tp,
 			rtl8169_rx_hash(tp, desc, skb);
 			skb_record_rx_queue(skb, ring - tp->rx_ring);
 		}
+
+		if (tp->ptp_support)
+			rtl8169_ptp_rx_tstamp(&tp->ptp, skb);
+
 		rtl8169_rx_csum(tp, skb, status);
 		skb->protocol = eth_type_trans(skb, dev);
 
@@ -6091,6 +6099,29 @@ static void rtl_remove_one(struct pci_dev *pdev)
 	rtl_rar_set(tp, tp->dev->perm_addr);
 }
 
+static int rtl8169_hwtstamp_get(struct net_device *dev,
+				struct kernel_hwtstamp_config *config)
+{
+	struct rtl8169_private *tp = netdev_priv(dev);
+
+	if (!tp->ptp_support)
+		return -EOPNOTSUPP;
+
+	return rtl8169_ptp_hwtstamp_get(&tp->ptp, config);
+}
+
+static int rtl8169_hwtstamp_set(struct net_device *dev,
+				struct kernel_hwtstamp_config *config,
+				struct netlink_ext_ack *extack)
+{
+	struct rtl8169_private *tp = netdev_priv(dev);
+
+	if (!tp->ptp_support)
+		return -EOPNOTSUPP;
+
+	return rtl8169_ptp_hwtstamp_set(&tp->ptp, config, extack);
+}
+
 static const struct net_device_ops rtl_netdev_ops = {
 	.ndo_open		= rtl_open,
 	.ndo_stop		= rtl8169_close,
@@ -6105,6 +6136,8 @@ static const struct net_device_ops rtl_netdev_ops = {
 	.ndo_set_mac_address	= rtl_set_mac_address,
 	.ndo_eth_ioctl		= rtl8169_ioctl,
 	.ndo_set_rx_mode	= rtl_set_rx_mode,
+	.ndo_hwtstamp_get	= rtl8169_hwtstamp_get,
+	.ndo_hwtstamp_set	= rtl8169_hwtstamp_set,
 #ifdef CONFIG_NET_POLL_CONTROLLER
 	.ndo_poll_controller	= rtl8169_netpoll,
 #endif
@@ -6796,6 +6829,26 @@ static void rtl8169_get_channels(struct net_device *dev,
 	}
 }
 
+static int rtl8169_get_ts_info(struct net_device *dev,
+			       struct kernel_ethtool_ts_info *info)
+{
+	struct rtl8169_private *tp = netdev_priv(dev);
+
+	if (!tp->ptp_support)
+		return ethtool_op_get_ts_info(dev, info);
+
+	return rtl8169_ptp_get_ts_info(&tp->ptp, info);
+}
+
+static void rtl8169_get_ts_stats(struct net_device *dev,
+				 struct ethtool_ts_stats *ts_stats)
+{
+	struct rtl8169_private *tp = netdev_priv(dev);
+
+	if (tp->ptp_support)
+		rtl8169_ptp_get_ts_stats(&tp->ptp, ts_stats);
+}
+
 static const struct ethtool_ops rtl8169_ethtool_ops = {
 	.supported_coalesce_params = ETHTOOL_COALESCE_USECS |
 				     ETHTOOL_COALESCE_MAX_FRAMES,
@@ -6810,7 +6863,8 @@ static const struct ethtool_ops rtl8169_ethtool_ops = {
 	.get_strings		= rtl8169_get_strings,
 	.get_sset_count		= rtl8169_get_sset_count,
 	.get_ethtool_stats	= rtl8169_get_ethtool_stats,
-	.get_ts_info		= ethtool_op_get_ts_info,
+	.get_ts_info		= rtl8169_get_ts_info,
+	.get_ts_stats		= rtl8169_get_ts_stats,
 	.nway_reset		= rtl8169_nway_reset,
 	.get_eee		= rtl8169_get_eee,
 	.set_eee		= rtl8169_set_eee,
