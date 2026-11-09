@@ -660,10 +660,13 @@ static int bcm4908_enet_poll_rx(struct napi_struct *napi, int weight)
 
 		len = (ctl & DMA_CTL_LEN_DESC_BUFLENGTH) >> DMA_CTL_LEN_DESC_BUFLENGTH_SHIFT;
 
-		if (len < ETH_ZLEN ||
+		/* A length past the buffer would make skb_put() panic the kernel */
+		if (len < ETH_ZLEN || len > ENET_RX_BUF_DMA_SIZE ||
 		    (ctl & (DMA_CTL_STATUS_SOP | DMA_CTL_STATUS_EOP)) != (DMA_CTL_STATUS_SOP | DMA_CTL_STATUS_EOP)) {
 			dma_unmap_single(dev, slot.dma_addr, ENET_RX_BUF_DMA_SIZE, DMA_FROM_DEVICE);
 			skb_free_frag(slot.buf);
+			if (len > ENET_RX_BUF_DMA_SIZE)
+				enet->netdev->stats.rx_length_errors++;
 			enet->netdev->stats.rx_dropped++;
 			break;
 		}
