@@ -1319,6 +1319,17 @@ static int pn533_poll_dep_complete(struct pn533 *dev, void *arg,
 		return 0;
 	}
 
+	/*
+	 * A successful ATR_RES carries the full fixed header (nfcid3t[] and
+	 * the rest); the general bytes start at offset sizeof(*rsp). Reject a
+	 * short success reply before reading nfcid3t and computing the
+	 * general-bytes length, to avoid an out-of-bounds read.
+	 */
+	if (resp->len < sizeof(*rsp)) {
+		rc = -EINVAL;
+		goto error;
+	}
+
 	dev_dbg(dev->dev, "Creating new target");
 
 	nfc_target.supported_protocols = NFC_PROTO_NFC_DEP_MASK;
@@ -1799,6 +1810,11 @@ static int pn533_activate_target_nfcdep(struct pn533 *dev)
 		return -EIO;
 	}
 
+	if (resp->len < sizeof(*rsp)) {
+		dev_kfree_skb(resp);
+		return -EIO;
+	}
+
 	/* ATR_RES general bytes are located at offset 16 */
 	gt_len = resp->len - 16;
 	rc = nfc_set_remote_general_bytes(dev->nfc_dev, rsp->gt, gt_len);
@@ -1934,6 +1950,11 @@ static int pn533_in_dep_link_up_complete(struct pn533 *dev, void *arg,
 	if (rc != PN533_CMD_RET_SUCCESS) {
 		nfc_err(dev->dev,
 			"Bringing DEP link up failed (error 0x%x)\n", rc);
+		goto error;
+	}
+
+	if (resp->len < sizeof(*rsp)) {
+		rc = -EINVAL;
 		goto error;
 	}
 
