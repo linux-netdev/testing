@@ -3060,6 +3060,9 @@ static int virtnet_poll(struct napi_struct *napi, int budget)
 
 	virtnet_poll_cleantx(rq, budget);
 
+	if (unlikely(!budget))
+		return 0;
+
 	received = virtnet_receive(rq, budget, &xdp_xmit);
 	rq->packets_in_napi += received;
 
