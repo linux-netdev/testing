@@ -305,14 +305,21 @@ static int smtg_crosststamp(ktime_t *device, struct system_counterval_t *system,
 	u32 v;
 
 	mutex_lock(&priv->aux_ts_lock);
-	/* Both internal crosstimestamping and external triggered event
-	 * timestamping cannot be run concurrently: the PTP_ACR mask
-	 * programming below would disarm an external channel.
+	/* Internal crosstimestamping and external triggered event
+	 * timestamping cannot run concurrently: the PTP_ACR mask
+	 * programming below would disarm an external channel.  Refuse to
+	 * arm once the clock has been invalidated by unregister.
 	 */
-	if (priv->plat->flags & STMMAC_FLAG_EXT_SNAPSHOT_EN) {
+	if ((priv->plat->flags & STMMAC_FLAG_EXT_SNAPSHOT_EN) ||
+	    !priv->ptp_clock) {
 		mutex_unlock(&priv->aux_ts_lock);
-		return -EBUSY;
+		return priv->ptp_clock ? -EBUSY : -ENODEV;
 	}
+	priv->plat->flags |= STMMAC_FLAG_INT_SNAPSHOT_EN;
+	/* Wait for a handler that is already past the flag check before
+	 * taking over the snapshot FIFO.
+	 */
+	stmmac_sync_timestamp_irq(priv);
 	/* Enable Internal snapshot trigger */
 	acr_value = readl(ptpaddr + PTP_ACR);
 	acr_value &= ~PTP_ACR_MASK;
@@ -330,6 +337,7 @@ static int smtg_crosststamp(ktime_t *device, struct system_counterval_t *system,
 		acr_value |= PTP_ACR_ATSEN3;
 		break;
 	default:
+		priv->plat->flags &= ~STMMAC_FLAG_INT_SNAPSHOT_EN;
 		mutex_unlock(&priv->aux_ts_lock);
 		return -EINVAL;
 	}
@@ -349,6 +357,7 @@ static int smtg_crosststamp(ktime_t *device, struct system_counterval_t *system,
 		acr_value = readl(ptpaddr + PTP_ACR);
 		acr_value &= ~PTP_ACR_MASK;
 		writel(acr_value, ptpaddr + PTP_ACR);
+		priv->plat->flags &= ~STMMAC_FLAG_INT_SNAPSHOT_EN;
 		mutex_unlock(&priv->aux_ts_lock);
 		netdev_err(priv->dev, "%s: Failed to clear snapshot FIFO\n",
 			   __func__);
@@ -374,6 +383,7 @@ static int smtg_crosststamp(ktime_t *device, struct system_counterval_t *system,
 		acr_value = readl(ptpaddr + PTP_ACR);
 		acr_value &= ~PTP_ACR_MASK;
 		writel(acr_value, ptpaddr + PTP_ACR);
+		priv->plat->flags &= ~STMMAC_FLAG_INT_SNAPSHOT_EN;
 		mutex_unlock(&priv->aux_ts_lock);
 		netdev_err(priv->dev, "%s: Wait for time sync operation timeout\n",
 			   __func__);
@@ -402,6 +412,8 @@ static int smtg_crosststamp(ktime_t *device, struct system_counterval_t *system,
 	acr_value = readl(ptpaddr + PTP_ACR);
 	acr_value &= ~PTP_ACR_MASK;
 	writel(acr_value, ptpaddr + PTP_ACR);
+
+	priv->plat->flags &= ~STMMAC_FLAG_INT_SNAPSHOT_EN;
 
 	get_smtgtime(priv->mii, SMTG_MDIO_ADDR, &smtg_time);
 	system->cycles = smtg_time;
