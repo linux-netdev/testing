@@ -18,6 +18,7 @@
 #include <linux/clk.h>
 #include <linux/kernel.h>
 #include <linux/interrupt.h>
+#include <linux/iopoll.h>
 #include <linux/ip.h>
 #include <linux/tcp.h>
 #include <linux/skbuff.h>
@@ -896,6 +897,117 @@ static int stmmac_init_ptp_clk_freq(struct stmmac_priv *priv)
 }
 
 /**
+ * stmmac_sync_timestamp_irq - wait for an in-flight timestamp handler
+ * @priv: driver private structure
+ * Description: called after the timestamp interrupt has been disarmed or
+ * handed over, to make sure a handler that is already past its checks has
+ * finished before the caller takes over the auxiliary snapshot FIFO.
+ */
+void stmmac_sync_timestamp_irq(struct stmmac_priv *priv)
+{
+	synchronize_irq(priv->dev->irq);
+	if (priv->wol_irq > 0 && priv->wol_irq != priv->dev->irq)
+		synchronize_irq(priv->wol_irq);
+}
+EXPORT_SYMBOL_GPL(stmmac_sync_timestamp_irq);
+
+/**
+ * stmmac_drop_hw_extts - disarm the recorded EXTTS channel in hardware
+ * @priv: driver private structure
+ * Description: clears the auxiliary snapshot trigger, in PTP_ACR for
+ * the cores whose EXTTS requests go through stmmac_enable() and in
+ * PTP_TCR for MAC100/GMAC, whose requests go through
+ * dwmac1000_ptp_enable().
+ */
+void stmmac_drop_hw_extts(struct stmmac_priv *priv)
+{
+	u32 value;
+
+	if (priv->plat->core_type == DWMAC_CORE_MAC100 ||
+	    priv->plat->core_type == DWMAC_CORE_GMAC) {
+		value = readl(priv->ptpaddr + PTP_TCR);
+		value &= ~GMAC_PTP_TCR_ATSEN0;
+		writel(value, priv->ptpaddr + PTP_TCR);
+		return;
+	}
+
+	value = readl(priv->ptpaddr + PTP_ACR);
+	value &= ~PTP_ACR_MASK;
+	writel(value, priv->ptpaddr + PTP_ACR);
+}
+
+/**
+ * stmmac_drop_extts_state - drop the recorded EXTTS channel
+ * @priv: driver private structure
+ * Description: clears the recorded EXTTS channel and disarms its
+ * trigger, so no event is reported for it and a later enable starts
+ * from a clean state.
+ */
+static void stmmac_drop_extts_state(struct stmmac_priv *priv)
+{
+	mutex_lock(&priv->aux_ts_lock);
+	stmmac_drop_hw_extts(priv);
+	priv->plat->flags &= ~STMMAC_FLAG_EXT_SNAPSHOT_EN;
+	priv->plat->ext_snapshot_num = -1;
+	mutex_unlock(&priv->aux_ts_lock);
+	netdev_err(priv->dev,
+		   "Dropped the enabled auxiliary snapshot channel\n");
+}
+
+/**
+ * stmmac_rearm_timestamp_irq - re-arm the timestamp interrupt
+ * @priv: driver private structure
+ * Description: this re-arms the on-demand timestamp interrupt if an
+ * auxiliary snapshot channel was left enabled.
+ */
+static void stmmac_rearm_timestamp_irq(struct stmmac_priv *priv)
+{
+	u32 acr_value;
+	int ret, num;
+
+	if (!(priv->plat->flags & STMMAC_FLAG_EXT_SNAPSHOT_EN) ||
+	    !priv->ptp_clock)
+		return;
+
+	/* Flush the FIFO, re-program the enabled auxiliary snapshot
+	 * trigger and re-arm the interrupt only if the flush completed.
+	 */
+	if (priv->plat->core_type != DWMAC_CORE_XGMAC)
+		return;
+
+	mutex_lock(&priv->aux_ts_lock);
+	/* Snapshot the channel under the lock: a concurrent disable may
+	 * have cleared it.
+	 */
+	num = priv->plat->ext_snapshot_num;
+	if (num < 0) {
+		mutex_unlock(&priv->aux_ts_lock);
+		return;
+	}
+	acr_value = readl(priv->ptpaddr + PTP_ACR);
+	acr_value &= ~PTP_ACR_MASK;
+	acr_value |= PTP_ACR_ATSFC;
+	writel(acr_value, priv->ptpaddr + PTP_ACR);
+	ret = readl_poll_timeout(priv->ptpaddr + PTP_ACR, acr_value,
+				 !(acr_value & PTP_ACR_ATSFC), 10, 10000);
+	if (!ret) {
+		acr_value |= PTP_ACR_ATSEN(num);
+		writel(acr_value, priv->ptpaddr + PTP_ACR);
+		stmmac_mac_timestamp_interrupt_cfg(priv, true);
+	} else {
+		/* The trigger could not be restored, so drop the software
+		 * state rather than advertise a dead channel.
+		 */
+		priv->plat->flags &= ~STMMAC_FLAG_EXT_SNAPSHOT_EN;
+		priv->plat->ext_snapshot_num = -1;
+		netdev_err(priv->dev,
+			   "%s: Failed to restore auxiliary snapshot channel\n",
+			   __func__);
+	}
+	mutex_unlock(&priv->aux_ts_lock);
+}
+
+/**
  * stmmac_init_timestamping - initialise timestamping
  * @priv: driver private structure
  *
@@ -953,6 +1065,9 @@ static int stmmac_setup_ptp(struct stmmac_priv *priv)
 		netdev_info(priv->dev, "PTP not supported\n");
 		return 0;
 	}
+
+	/* No EXTTS channel is recorded until one is enabled. */
+	priv->plat->ext_snapshot_num = -1;
 
 	ret = clk_prepare_enable(priv->plat->clk_ptp_ref);
 	if (ret < 0) {
@@ -8323,6 +8438,7 @@ static int __stmmac_dvr_probe(struct device *device,
 
 	mutex_init(&priv->lock);
 	mutex_init(&priv->est_lock);
+	mutex_init(&priv->aux_ts_lock);
 	rwlock_init(&priv->ptp_lock);
 
 	stmmac_fpe_init(priv);
@@ -8457,6 +8573,7 @@ void stmmac_dvr_remove(struct device *dev)
 	destroy_workqueue(priv->wq);
 	mutex_destroy(&priv->lock);
 	mutex_destroy(&priv->est_lock);
+	mutex_destroy(&priv->aux_ts_lock);
 	bitmap_free(priv->af_xdp_zc_qps);
 
 	pm_runtime_disable(dev);
@@ -8510,6 +8627,17 @@ int stmmac_suspend(struct device *dev)
 		stmmac_mac_set(priv, priv->ioaddr, false);
 		pinctrl_pm_select_sleep_state(priv->device);
 	}
+
+	/* Disarm the timestamp interrupt while suspended and drain an
+	 * in-flight handler before the clocks are gated;
+	 * stmmac_rearm_timestamp_irq() restores it on resume.
+	 */
+	mutex_lock(&priv->aux_ts_lock);
+	if (priv->plat->flags & STMMAC_FLAG_EXT_SNAPSHOT_EN) {
+		stmmac_mac_timestamp_interrupt_cfg(priv, false);
+		stmmac_sync_timestamp_irq(priv);
+	}
+	mutex_unlock(&priv->aux_ts_lock);
 
 	mutex_unlock(&priv->lock);
 
@@ -8633,16 +8761,22 @@ int stmmac_resume(struct device *dev)
 	}
 
 	if (priv->ptp_enabled) {
-		if (stmmac_init_ptp_clk_freq(priv))
+		if (stmmac_init_ptp_clk_freq(priv)) {
+			stmmac_drop_extts_state(priv);
 			goto init_coalesce;
+		}
 
 		ret = stmmac_init_timestamping(priv);
-		if (ret)
+		if (ret) {
+			stmmac_drop_extts_state(priv);
 			goto error_stop_dma;
+		}
 
 		ret = stmmac_setup_est(priv);
 		if (ret)
 			goto error_stop_dma;
+
+		stmmac_rearm_timestamp_irq(priv);
 	}
 
 init_coalesce:
