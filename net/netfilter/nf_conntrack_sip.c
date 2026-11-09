@@ -891,7 +891,8 @@ static int refresh_signalling_expectation(struct nf_conn *ct,
 		    exp->tuple.dst.protonum != proto ||
 		    exp->tuple.dst.u.udp.port != port)
 			continue;
-		WRITE_ONCE(exp->timeout, nfct_time_stamp + (expires * HZ));
+		WRITE_ONCE(exp->timeout,
+			   nfct_time_stamp + nf_ct_secs_to_jiffies(expires));
 		WRITE_ONCE(exp->flags, exp->flags & ~NF_CT_EXPECT_INACTIVE);
 		found = 1;
 		break;
