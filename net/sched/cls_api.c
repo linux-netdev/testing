@@ -3143,6 +3143,8 @@ static int tc_chain_tmplt_add(struct tcf_chain *chain, struct net *net,
 		module_put(ops->owner);
 		return PTR_ERR(tmplt_priv);
 	}
+	/* An action-held chain can retain a template after RTM_DELCHAIN. */
+	tc_chain_tmplt_del(chain->tmplt_ops, chain->tmplt_priv);
 	chain->tmplt_ops = ops;
 	chain->tmplt_priv = tmplt_priv;
 	return 0;
