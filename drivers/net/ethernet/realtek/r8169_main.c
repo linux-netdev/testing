@@ -37,6 +37,7 @@
 
 #include "r8169.h"
 #include "r8169_firmware.h"
+#include "r8169_ptp.h"
 
 #define FIRMWARE_8168D_1	"rtl_nic/rtl8168d-1.fw"
 #define FIRMWARE_8168D_2	"rtl_nic/rtl8168d-2.fw"
@@ -888,6 +889,7 @@ struct rtl8169_private {
 	unsigned supports_gmii:1;
 	unsigned aspm_manageable:1;
 	unsigned dash_enabled:1;
+	unsigned ptp_support:1;
 	dma_addr_t counters_phys_addr;
 	struct rtl8169_counters *counters;
 	struct rtl8169_tc_offsets tc_offset;
@@ -902,6 +904,8 @@ struct rtl8169_private {
 	struct phylink *phylink;
 	struct phylink_config phylink_config;
 	struct phylink_pcs pcs;
+
+	struct rtl8169_ptp ptp;
 };
 
 typedef void (*rtl_generic_fct)(struct rtl8169_private *tp);
@@ -1252,7 +1256,7 @@ static int rtl_phy_ocp_wait(struct rtl8169_private *tp, bool high)
 	return ret;
 }
 
-static void r8168_phy_ocp_write(struct rtl8169_private *tp, u32 reg, u32 data)
+void r8168_phy_ocp_write(struct rtl8169_private *tp, u32 reg, u32 data)
 {
 	unsigned long flags;
 
@@ -1265,7 +1269,7 @@ static void r8168_phy_ocp_write(struct rtl8169_private *tp, u32 reg, u32 data)
 	spin_unlock_irqrestore(&tp->phy_ocp_lock, flags);
 }
 
-static int r8168_phy_ocp_read(struct rtl8169_private *tp, u32 reg)
+int r8168_phy_ocp_read(struct rtl8169_private *tp, u32 reg)
 {
 	unsigned long flags;
 	int val;
@@ -5780,6 +5784,9 @@ static void rtl8169_up(struct rtl8169_private *tp)
 	rtl8169_napi_enable(tp);
 	enable_work(&tp->wk.work);
 	rtl_reset_work(tp);
+
+	if (tp->ptp_support)
+		rtl8169_ptp_set_local_time(&tp->ptp);
 }
 
 static int rtl8169_close(struct net_device *dev)
@@ -5791,6 +5798,8 @@ static int rtl8169_close(struct net_device *dev)
 
 	phylink_stop(tp->phylink);
 	netif_stop_queue(dev);
+	if (tp->ptp_support)
+		rtl8169_ptp_stop(&tp->ptp);
 	rtl8169_down(tp);
 	for (int i = 0; i < tp->num_rx_rings; i++)
 		rtl8169_rx_clear(tp, &tp->rx_ring[i]);
@@ -5861,6 +5870,8 @@ static int rtl_open(struct net_device *dev)
 	}
 	rtl8169_up(tp);
 	phylink_start(tp->phylink);
+	if (tp->ptp_support)
+		rtl8169_ptp_init(&tp->ptp);
 	rtl8169_init_counter_offsets(tp);
 	netif_start_queue(dev);
 out:
@@ -6903,6 +6914,11 @@ static int rtl_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	tp->dash_type = rtl_get_dash_type(tp);
 	tp->dash_enabled = rtl_dash_is_enabled(tp);
+
+	tp->ptp_support = IS_ENABLED(CONFIG_PTP_1588_CLOCK) &&
+			  tp->mac_version == RTL_GIGA_MAC_VER_80;
+	if (tp->ptp_support)
+		rtl8169_ptp_setup(&tp->ptp, tp, dev, &pdev->dev);
 
 	if (rtl_hw_support_rss(tp)) {
 		tp->rss_data = devm_kzalloc(&pdev->dev, sizeof(*tp->rss_data),
