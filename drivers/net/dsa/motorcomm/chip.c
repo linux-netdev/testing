@@ -26,6 +26,7 @@
 #include <net/ieee8021q.h>
 
 #include "chip.h"
+#include "devlink.h"
 #include "leds.h"
 #include "mdio_bus.h"
 #include "mib.h"
@@ -731,6 +732,7 @@ yt921x_fdb_add(struct yt921x_priv *priv, const unsigned char *addr, u16 vid,
 	if (val & YT921X_FDB_RESULT_NOTFOUND)
 		return -ENOSPC;
 
+	priv->fdb_static_cnt++;
 	return 0;
 }
 
@@ -761,18 +763,27 @@ yt921x_fdb_leave(struct yt921x_priv *priv, const unsigned char *addr,
 	ctrl2 = val2 & ~YT921X_FDB_IO2_EGR_PORTS(ports_mask);
 	if (ctrl2 == val2)
 		return 0;
+
+	res = yt921x_reg_read(priv, YT921X_FDB_OUT1, &ctrl1);
+	if (res)
+		return res;
+
 	if (!(ctrl2 & YT921X_FDB_IO2_EGR_PORTS_M)) {
 		ctrl = YT921X_FDB_OP_OP_DEL | YT921X_FDB_OP_START;
 		res = yt921x_reg_write(priv, YT921X_FDB_OP, ctrl);
 		if (res)
 			return res;
 
-		return yt921x_fdb_wait(priv, &val);
-	}
+		res = yt921x_fdb_wait(priv, &val);
+		if (res)
+			return res;
 
-	res = yt921x_reg_read(priv, YT921X_FDB_OUT1, &ctrl1);
-	if (res)
-		return res;
+		if ((ctrl1 & YT921X_FDB_IO1_STATUS_M) ==
+		    YT921X_FDB_IO1_STATUS_STATIC &&
+		    !WARN_ON(!priv->fdb_static_cnt))
+			priv->fdb_static_cnt--;
+		return 0;
+	}
 
 	return yt921x_fdb_add_index_in12(priv, index, ctrl1, ctrl2);
 }
@@ -812,7 +823,13 @@ yt921x_fdb_join(struct yt921x_priv *priv, const unsigned char *addr, u16 vid,
 	if (ctrl1 == val1 && ctrl2 == val2)
 		return 0;
 
-	return yt921x_fdb_add_index_in12(priv, index, ctrl1, ctrl2);
+	res = yt921x_fdb_add_index_in12(priv, index, ctrl1, ctrl2);
+	if (res)
+		return res;
+
+	if (ctrl1 != val1)
+		priv->fdb_static_cnt++;
+	return 0;
 }
 
 static int
@@ -2204,6 +2221,8 @@ static void yt921x_dsa_teardown(struct dsa_switch *ds)
 
 	yt921x_leds_remove(priv);
 #endif
+
+	dsa_devlink_resources_unregister(ds);
 }
 
 static int yt921x_chip_detect(struct yt921x_priv *priv)
@@ -2531,10 +2550,16 @@ static int yt921x_dsa_setup(struct dsa_switch *ds)
 			  pp->pcs.supported_interfaces);
 	}
 
+	priv->fdb_static_cnt = 0;
+
 	mutex_lock(&priv->reg_lock);
 	res = yt921x_chip_setup(priv);
 	mutex_unlock(&priv->reg_lock);
 
+	if (res)
+		return res;
+
+	res = yt921x_devlink_setup(priv);
 	if (res)
 		return res;
 
@@ -2628,6 +2653,7 @@ static const struct dsa_switch_ops yt921x_dsa_switch_ops = {
 	.port_add_dscp_prio	= yt921x_dsa_port_add_dscp_prio,
 #endif
 	/* chip */
+	.devlink_info_get	= yt921x_dsa_devlink_info_get,
 	.teardown		= yt921x_dsa_teardown,
 	.setup			= yt921x_dsa_setup,
 };
