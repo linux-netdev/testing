@@ -145,6 +145,9 @@ static void req_done(struct virtqueue *vq)
 		if (len) {
 			req->rc.size = len;
 			p9_client_cb(chan->client, req, REQ_STATUS_RCVD);
+		} else {
+			/* No reply, so put the ref that p9_client_cb() puts */
+			p9_req_put(chan->client, req);
 		}
 	}
 	spin_unlock_irqrestore(&chan->lock, flags);
@@ -193,13 +196,6 @@ static int pack_sg_list(struct scatterlist *sg, int start,
 static int p9_virtio_cancel(struct p9_client *client, struct p9_req_t *req)
 {
 	return 1;
-}
-
-/* Reply won't come, so drop req ref */
-static int p9_virtio_cancelled(struct p9_client *client, struct p9_req_t *req)
-{
-	p9_req_put(client, req);
-	return 0;
 }
 
 /**
@@ -806,7 +802,6 @@ static struct p9_trans_module p9_virtio_trans = {
 	.request = p9_virtio_request,
 	.zc_request = p9_virtio_zc_request,
 	.cancel = p9_virtio_cancel,
-	.cancelled = p9_virtio_cancelled,
 	/*
 	 * We leave one entry for input and one entry for response
 	 * headers. We also skip one more entry to accommodate, address
