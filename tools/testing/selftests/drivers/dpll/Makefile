@@ -9,6 +9,7 @@ TEST_FILES := dpll_lib.sh
 
 TEST_PROGS := \
 	dpll_basic.sh \
+	dpll_features.sh \
 	dpll_stress.sh \
 # end of TEST_PROGS
 
