@@ -67,21 +67,23 @@ nf_socket_get_sock_v4(struct net *net, struct sk_buff *skb, const int doff,
 		      const u8 protocol,
 		      const __be32 saddr, const __be32 daddr,
 		      const __be16 sport, const __be16 dport,
-		      const struct net_device *in)
+		      const struct net_device *in, bool *refcounted)
 {
 	switch (protocol) {
 	case IPPROTO_TCP:
+		*refcounted = true;
 		return inet_lookup(net, skb, doff, saddr, sport, daddr, dport,
 				   in->ifindex);
 	case IPPROTO_UDP:
-		return udp4_lib_lookup(net, saddr, sport, daddr, dport,
-				       in->ifindex);
+		return __udp4_lib_lookup(net, saddr, sport, daddr, dport,
+					 in->ifindex, 0, NULL);
 	}
 	return NULL;
 }
 
 struct sock *nf_sk_lookup_slow_v4(struct net *net, const struct sk_buff *skb,
-				  const struct net_device *indev)
+				  const struct net_device *indev,
+				  bool *refcounted)
 {
 	__be32 daddr, saddr;
 	__be16 dport, sport;
@@ -93,6 +95,8 @@ struct sock *nf_sk_lookup_slow_v4(struct net *net, const struct sk_buff *skb,
 	struct nf_conn const *ct;
 #endif
 	int doff = 0;
+
+	*refcounted = false;
 
 	if (ntohs(iph->frag_off) & IP_OFFSET)
 		return NULL;
@@ -146,7 +150,7 @@ struct sock *nf_sk_lookup_slow_v4(struct net *net, const struct sk_buff *skb,
 #endif
 
 	return nf_socket_get_sock_v4(net, data_skb, doff, protocol, saddr,
-				     daddr, sport, dport, indev);
+				     daddr, sport, dport, indev, refcounted);
 }
 EXPORT_SYMBOL_GPL(nf_sk_lookup_slow_v4);
 

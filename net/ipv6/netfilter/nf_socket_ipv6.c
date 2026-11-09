@@ -79,22 +79,24 @@ nf_socket_get_sock_v6(struct net *net, struct sk_buff *skb, int doff,
 		      const u8 protocol,
 		      const struct in6_addr *saddr, const struct in6_addr *daddr,
 		      const __be16 sport, const __be16 dport,
-		      const struct net_device *in)
+		      const struct net_device *in, bool *refcounted)
 {
 	switch (protocol) {
 	case IPPROTO_TCP:
+		*refcounted = true;
 		return inet6_lookup(net, skb, doff, saddr, sport, daddr, dport,
 				    in->ifindex);
 	case IPPROTO_UDP:
-		return udp6_lib_lookup(net, saddr, sport, daddr, dport,
-				       in->ifindex);
+		return __udp6_lib_lookup(net, saddr, sport, daddr, dport,
+					 in->ifindex, 0, NULL);
 	}
 
 	return NULL;
 }
 
 struct sock *nf_sk_lookup_slow_v6(struct net *net, const struct sk_buff *skb,
-				  const struct net_device *indev)
+				  const struct net_device *indev,
+				  bool *refcounted)
 {
 	__be16 dport, sport;
 	const struct in6_addr *daddr = NULL, *saddr = NULL;
@@ -107,6 +109,8 @@ struct sock *nf_sk_lookup_slow_v6(struct net *net, const struct sk_buff *skb,
 	enum ip_conntrack_info ctinfo;
 	struct nf_conn const *ct;
 #endif
+
+	*refcounted = false;
 
 	tproto = ipv6_find_hdr(skb, &thoff, -1, &fragoff, NULL);
 	if (tproto < 0 || fragoff) {
@@ -160,7 +164,7 @@ struct sock *nf_sk_lookup_slow_v6(struct net *net, const struct sk_buff *skb,
 #endif
 
 	return nf_socket_get_sock_v6(net, data_skb, doff, tproto, saddr, daddr,
-				     sport, dport, indev);
+				     sport, dport, indev, refcounted);
 }
 EXPORT_SYMBOL_GPL(nf_sk_lookup_slow_v6);
 

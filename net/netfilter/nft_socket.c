@@ -80,7 +80,8 @@ static noinline int nft_socket_cgroup_subtree_level(void)
 }
 #endif
 
-static struct sock *nft_socket_do_lookup(const struct nft_pktinfo *pkt)
+static struct sock *nft_socket_do_lookup(const struct nft_pktinfo *pkt,
+					 bool *refcounted)
 {
 	const struct net_device *indev = nft_in(pkt);
 	const struct sk_buff *skb = pkt->skb;
@@ -91,11 +92,11 @@ static struct sock *nft_socket_do_lookup(const struct nft_pktinfo *pkt)
 
 	switch (nft_pf(pkt)) {
 	case NFPROTO_IPV4:
-		sk = nf_sk_lookup_slow_v4(nft_net(pkt), skb, indev);
+		sk = nf_sk_lookup_slow_v4(nft_net(pkt), skb, indev, refcounted);
 		break;
 #if IS_ENABLED(CONFIG_NF_TABLES_IPV6)
 	case NFPROTO_IPV6:
-		sk = nf_sk_lookup_slow_v6(nft_net(pkt), skb, indev);
+		sk = nf_sk_lookup_slow_v6(nft_net(pkt), skb, indev, refcounted);
 		break;
 #endif
 	default:
@@ -114,12 +115,13 @@ static void nft_socket_eval(const struct nft_expr *expr,
 	struct sk_buff *skb = pkt->skb;
 	struct sock *sk = skb->sk;
 	u32 *dest = &regs->data[priv->dreg];
+	bool refcounted = false;
 
 	if (sk && !net_eq(nft_net(pkt), sock_net(sk)))
 		sk = NULL;
 
 	if (!sk)
-		sk = nft_socket_do_lookup(pkt);
+		sk = nft_socket_do_lookup(pkt, &refcounted);
 
 	if (!sk) {
 		regs->verdict.code = NFT_BREAK;
@@ -159,7 +161,7 @@ static void nft_socket_eval(const struct nft_expr *expr,
 	}
 
 out_put_sk:
-	if (sk != skb->sk)
+	if (refcounted)
 		sock_gen_put(sk);
 }
 

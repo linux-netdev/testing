@@ -5,9 +5,11 @@
 #include <net/sock.h>
 
 struct sock *nf_sk_lookup_slow_v4(struct net *net, const struct sk_buff *skb,
-				  const struct net_device *indev);
+				  const struct net_device *indev,
+				  bool *refcounted);
 
 struct sock *nf_sk_lookup_slow_v6(struct net *net, const struct sk_buff *skb,
-				  const struct net_device *indev);
+				  const struct net_device *indev,
+				  bool *refcounted);
 
 #endif

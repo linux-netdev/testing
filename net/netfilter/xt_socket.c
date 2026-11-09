@@ -51,12 +51,14 @@ socket_match(const struct sk_buff *skb, struct xt_action_param *par,
 {
 	struct sk_buff *pskb = (struct sk_buff *)skb;
 	struct sock *sk = skb->sk;
+	bool refcounted = false;
 
 	if (sk && !net_eq(xt_net(par), sock_net(sk)))
 		sk = NULL;
 
 	if (!sk)
-		sk = nf_sk_lookup_slow_v4(xt_net(par), skb, xt_in(par));
+		sk = nf_sk_lookup_slow_v4(xt_net(par), skb, xt_in(par),
+					  &refcounted);
 
 	if (sk) {
 		bool wildcard;
@@ -79,7 +81,7 @@ socket_match(const struct sk_buff *skb, struct xt_action_param *par,
 		    transparent && sk_fullsock(sk))
 			pskb->mark = READ_ONCE(sk->sk_mark);
 
-		if (sk != skb->sk)
+		if (refcounted)
 			sock_gen_put(sk);
 
 		if (wildcard || !transparent)
@@ -112,12 +114,14 @@ socket_mt6_v1_v2_v3(const struct sk_buff *skb, struct xt_action_param *par)
 	const struct xt_socket_mtinfo1 *info = (struct xt_socket_mtinfo1 *) par->matchinfo;
 	struct sk_buff *pskb = (struct sk_buff *)skb;
 	struct sock *sk = skb->sk;
+	bool refcounted = false;
 
 	if (sk && !net_eq(xt_net(par), sock_net(sk)))
 		sk = NULL;
 
 	if (!sk)
-		sk = nf_sk_lookup_slow_v6(xt_net(par), skb, xt_in(par));
+		sk = nf_sk_lookup_slow_v6(xt_net(par), skb, xt_in(par),
+					  &refcounted);
 
 	if (sk) {
 		bool wildcard;
@@ -140,7 +144,7 @@ socket_mt6_v1_v2_v3(const struct sk_buff *skb, struct xt_action_param *par)
 		    transparent && sk_fullsock(sk))
 			pskb->mark = READ_ONCE(sk->sk_mark);
 
-		if (sk != skb->sk)
+		if (refcounted)
 			sock_gen_put(sk);
 
 		if (wildcard || !transparent)
