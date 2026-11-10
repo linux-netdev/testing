@@ -238,6 +238,8 @@ static inline struct sk_buff *dequeue_head(struct fq_pie_flow *flow)
 static struct sk_buff *fq_pie_qdisc_dequeue(struct Qdisc *sch)
 {
 	struct fq_pie_sched_data *q = qdisc_priv(sch);
+	struct fq_pie_flow *first = NULL;
+	bool scanned = false;
 	struct sk_buff *skb = NULL;
 	struct fq_pie_flow *flow;
 	struct list_head *head;
@@ -254,6 +256,67 @@ begin:
 	flow = list_first_entry(head, struct fq_pie_flow, flowchain);
 	/* Flow has exhausted all its credits */
 	if (flow->deficit <= 0) {
+		/* No flow could dequeue in the last full round. Add the
+		 * quanta for the rounds still needed in one pass.
+		 */
+		if (!scanned && flow == first) {
+			unsigned int rounds = UINT_MAX;
+			struct fq_pie_flow *iter;
+			bool skip = true;
+
+			scanned = true;
+			/* new_flows is empty after a full round. */
+			list_for_each_entry(iter, &q->old_flows, flowchain) {
+				unsigned int r;
+
+				/* Empty flows don't limit the rounds. */
+				if (!iter->head)
+					continue;
+				if (iter->deficit > 0) {
+					skip = false;
+					break;
+				}
+				r = DIV_ROUND_UP(1 - iter->deficit, q->quantum);
+				rounds = min(rounds, r);
+			}
+			if (skip) {
+				struct fq_pie_flow *tmp;
+
+				list_for_each_entry_safe(iter, tmp, &q->old_flows,
+							 flowchain) {
+					unsigned int k = 0;
+
+					/* An empty flow leaves the list after
+					 * k more refills. If that falls within
+					 * the skipped rounds, remove it now.
+					 */
+					if (iter->head) {
+						iter->deficit += rounds * q->quantum;
+						continue;
+					}
+					if (iter->deficit <= 0)
+						k = DIV_ROUND_UP(1 - iter->deficit,
+								 q->quantum);
+					if (k < rounds) {
+						iter->deficit += k * q->quantum;
+						list_del_init(&iter->flowchain);
+						continue;
+					}
+					iter->deficit += rounds * q->quantum;
+				}
+				/* A flow may show a non-empty queue or a
+				 * dropped packet now; scan again if the loop
+				 * still cannot dequeue.
+				 */
+				first = NULL;
+				scanned = false;
+				goto begin;
+			}
+		}
+
+		/* Remember which flow started this round. */
+		if (!first)
+			first = flow;
 		flow->deficit += q->quantum;
 		list_move_tail(&flow->flowchain, &q->old_flows);
 		goto begin;
@@ -269,10 +332,17 @@ begin:
 
 	if (!skb) {
 		/* force a pass through old_flows to prevent starvation */
-		if (head == &q->new_flows && !list_empty(&q->old_flows))
+		if (head == &q->new_flows && !list_empty(&q->old_flows)) {
 			list_move_tail(&flow->flowchain, &q->old_flows);
-		else
+		} else {
 			list_del_init(&flow->flowchain);
+			/* The round's first flow left; the next one takes over. */
+			if (flow == first)
+				first = scanned ? NULL :
+					list_first_entry_or_null(&q->old_flows,
+								 struct fq_pie_flow,
+								 flowchain);
+		}
 		goto begin;
 	}
 
