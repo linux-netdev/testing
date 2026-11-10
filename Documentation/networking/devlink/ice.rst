@@ -507,11 +507,14 @@ PF LUT.
     * - ``rss/lut_2048``
       - The number of PF LUTs owned.
 
-The resources are registered on two kinds of devlink instances:
+The resources are registered on three kinds of devlink instances:
 
 - The devlink instance of each PF, where ``lut_512`` and ``lut_2048`` are
   either 0 or 1. They are changed with ``devlink resource set``, and the
   change applies immediately.
+- The devlink instance of each VF (``pci/<VF BDF>``), nested in the devlink
+  instance of its PF, with the same two resources. A VF can take a global
+  LUT, or the PF LUT of its PF.
 - The whole device devlink instance, shared by all PFs of the device, which
   reports the total usage. Its resources are read-only, setting them fails
   with ``EPERM``.
@@ -520,6 +523,14 @@ A PF must own at least one of the two LUTs at all times, so switching a PF
 to a global LUT takes two steps: take a global LUT, then release the PF LUT.
 A PF that owns both uses its PF LUT.
 
+A VF uses its VSI LUT by default, which spreads traffic over up to 16
+queues. With a global LUT the VF can use up to 64 queues, and up to 256 with
+a PF LUT (preferred when the VF owns both). Changing the LUT of a VF resets
+the VF, and lowers its queue count if the new LUT can't spread traffic over
+all of them. The VF driver picks the queue count as usual, more queues are
+requested with ``ethtool -L``. More than 16 queues need a VF driver that
+supports ``VIRTCHNL_VF_LARGE_NUM_QPAIRS``, like ``iavf``.
+
 Changing the LUT of a PF resets its RSS indirection table to the default
 spread, a table set with ``ethtool -X`` is lost.
 
@@ -527,7 +538,8 @@ RSS LUTs can't be changed while ADQ is configured, and ADQ can't be
 configured while the RSS LUTs of the PF are reassigned.
 
 Firmware drops the LUT assignments on reset (PFR, CORER or GLOBR). The
-driver then restores the default assignment, and logs that it did so.
+driver then restores the default assignment, and logs that it did so. VFs
+that used a bigger LUT get at most 16 queues after that.
 Changes are rejected with ``EBUSY`` while a reset is in progress.
 
 .. code:: shell
@@ -543,3 +555,7 @@ Changes are rejected with ``EBUSY`` while a reset is in progress.
     # switch a PF to a global LUT
     $ devlink resource set pci/0000:18:00.0 path rss/lut_512 size 1
     $ devlink resource set pci/0000:18:00.0 path rss/lut_2048 size 0
+
+    # give the freed PF LUT to a VF of that PF, and use 256 queues there
+    $ devlink resource set pci/0000:18:01.0 path rss/lut_2048 size 1
+    $ ethtool -L $VF_NETDEV combined 256
