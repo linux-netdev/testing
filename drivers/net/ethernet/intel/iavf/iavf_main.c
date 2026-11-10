@@ -419,6 +419,15 @@ static irqreturn_t iavf_msix_clean_rings(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
+/* VFINT_ITRN1 fits 16 vectors only, VFINT_ITRN_64 aliases it for up to 64 */
+static u32 iavf_itrn_reg(enum iavf_dyn_idx_t itr_idx, u16 reg_idx)
+{
+	if (reg_idx < 16)
+		return IAVF_VFINT_ITRN1(itr_idx, reg_idx);
+
+	return IAVF_VFINT_ITRN_64(itr_idx, reg_idx);
+}
+
 /**
  * iavf_map_vector_to_rxq - associate irqs with rx queues
  * @adapter: board private structure
@@ -439,8 +448,8 @@ iavf_map_vector_to_rxq(struct iavf_adapter *adapter, int v_idx, int r_idx)
 	q_vector->rx.count++;
 	q_vector->rx.next_update = jiffies + 1;
 	q_vector->rx.target_itr = ITR_TO_REG(rx_ring->itr_setting);
-	q_vector->ring_mask |= BIT(r_idx);
-	wr32(hw, IAVF_VFINT_ITRN1(IAVF_RX_ITR, q_vector->reg_idx),
+	set_bit(r_idx, q_vector->ring_mask);
+	wr32(hw, iavf_itrn_reg(IAVF_RX_ITR, q_vector->reg_idx),
 	     q_vector->rx.current_itr >> 1);
 	q_vector->rx.current_itr = q_vector->rx.target_itr;
 }
@@ -466,7 +475,7 @@ iavf_map_vector_to_txq(struct iavf_adapter *adapter, int v_idx, int t_idx)
 	q_vector->tx.next_update = jiffies + 1;
 	q_vector->tx.target_itr = ITR_TO_REG(tx_ring->itr_setting);
 	q_vector->num_ringpairs++;
-	wr32(hw, IAVF_VFINT_ITRN1(IAVF_TX_ITR, q_vector->reg_idx),
+	wr32(hw, iavf_itrn_reg(IAVF_TX_ITR, q_vector->reg_idx),
 	     q_vector->tx.target_itr >> 1);
 	q_vector->tx.current_itr = q_vector->tx.target_itr;
 }
@@ -1661,9 +1670,9 @@ static int iavf_set_interrupt_capability(struct iavf_adapter *adapter)
 	/* It's easy to be greedy for MSI-X vectors, but it really doesn't do
 	 * us much good if we have more vectors than CPUs. However, we already
 	 * limit the total number of queues by the number of CPUs so we do not
-	 * need any further limiting here.
+	 * need any further limiting here, except for the VF registers.
 	 */
-	v_budget = min_t(int, pairs + NONQ_VECS,
+	v_budget = min_t(int, min(pairs, MAX_MSIX_Q_VECTORS) + NONQ_VECS,
 			 (int)adapter->vf_res->max_vectors);
 
 	adapter->msix_entries = kzalloc_objs(struct msix_entry, v_budget);
@@ -3734,9 +3743,10 @@ static int __iavf_setup_tc(struct net_device *netdev, void *type_data)
 	struct tc_mqprio_qopt_offload *mqprio_qopt = type_data;
 	struct iavf_adapter *adapter = netdev_priv(netdev);
 	struct virtchnl_vf_resource *vfres = adapter->vf_res;
-	u8 num_tc = 0, total_qps = 0;
 	int ret = 0, netdev_tc = 0;
+	u16 total_qps = 0;
 	u64 max_tx_rate;
+	u8 num_tc = 0;
 	u16 mode;
 	int i;
 
@@ -5371,7 +5381,7 @@ static int iavf_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	pci_set_master(pdev);
 
 	netdev = alloc_etherdev_mq(sizeof(struct iavf_adapter),
-				   IAVF_MAX_REQ_QUEUES_VCV1);
+				   IAVF_MAX_REQ_QUEUES);
 	if (!netdev) {
 		err = -ENOMEM;
 		goto err_alloc_etherdev;
