@@ -291,6 +291,16 @@ config DMA_API_DEBUG
 
 	  If unsure, say N.
 
+config DMA_API_DEBUG_KUNIT_TEST
+	bool "Tests for DMA debug bucket bounds" if !KUNIT_ALL_TESTS
+	depends on KUNIT=y && DMA_API_DEBUG
+	default KUNIT_ALL_TESTS
+	help
+	  Enable KUnit (kernel unit test) coverage for DMA debug bucket bounds.
+	  Check that insertion and removal keep the bound conservative and
+	  reset it when a bucket becomes empty. Exercise reuse and equal-sized
+	  mappings on a local bucket. No physical DMA device is required.
+
 config DMA_MAP_BENCHMARK
 	bool "Enable benchmarking of streaming DMA mapping"
 	depends on DEBUG_FS
