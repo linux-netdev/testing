@@ -650,7 +650,7 @@ static void mhi_mbim_remove(struct mhi_device *mhi_dev)
 	struct mhi_controller *cntrl = mhi_dev->mhi_cntrl;
 
 	mhi_unprepare_from_transfer(mhi_dev);
-	cancel_delayed_work_sync(&mbim->rx_refill);
+	disable_delayed_work_sync(&mbim->rx_refill);
 	wwan_unregister_ops(&cntrl->mhi_dev->dev);
 	kfree_skb(mbim->skbagg_head);
 	dev_set_drvdata(&mhi_dev->dev, NULL);
