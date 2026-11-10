@@ -281,6 +281,7 @@ struct mlx4_en_tx_ring {
 	unsigned long		tso_packets;
 	unsigned long		xmit_more;
 	struct mlx4_bf		bf;
+	bool			doorbell_pending;
 
 	/* Following part should be mostly read */
 	void __iomem		*doorbell_address;
