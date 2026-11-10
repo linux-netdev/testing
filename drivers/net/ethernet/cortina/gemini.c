@@ -2478,6 +2478,7 @@ static void gmac_get_ethtool_stats(struct net_device *netdev,
 {
 	struct gemini_ethernet_port *port = netdev_priv(netdev);
 	unsigned int start;
+	u64 tx_hw_csummed;
 	u64 *p;
 	int i;
 
@@ -2490,6 +2491,7 @@ static void gmac_get_ethtool_stats(struct net_device *netdev,
 
 		for (i = 0; i < RX_STATS_NUM; i++)
 			*p++ = port->hw_stats[i];
+		tx_hw_csummed = port->tx_hw_csummed;
 
 	} while (u64_stats_fetch_retry(&port->ir_stats_syncp, start));
 	values = p;
@@ -2513,12 +2515,10 @@ static void gmac_get_ethtool_stats(struct net_device *netdev,
 		p = values;
 		start = u64_stats_fetch_begin(&port->tx_stats_syncp);
 
-		for (i = 0; i < TX_MAX_FRAGS; i++) {
-			*values++ = port->tx_frag_stats[i];
-			port->tx_frag_stats[i] = 0;
-		}
-		*values++ = port->tx_frags_linearized;
-		*values++ = port->tx_hw_csummed;
+		for (i = 0; i < TX_MAX_FRAGS; i++)
+			*p++ = port->tx_frag_stats[i];
+		*p++ = port->tx_frags_linearized;
+		*p++ = tx_hw_csummed;
 
 	} while (u64_stats_fetch_retry(&port->tx_stats_syncp, start));
 }
