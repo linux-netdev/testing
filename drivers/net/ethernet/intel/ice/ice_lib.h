@@ -47,6 +47,9 @@ int ice_vsi_cfg_tc(struct ice_vsi *vsi, u8 ena_tc);
 
 int ice_vsi_cfg_rss_lut_key(struct ice_vsi *vsi);
 
+int ice_vsi_update_rss_lut(struct ice_vsi *vsi, enum ice_lut_type lut_type,
+			   u8 global_lut_id);
+
 void ice_vsi_cfg_netdev_tc(struct ice_vsi *vsi, u8 ena_tc);
 
 struct ice_vsi *
