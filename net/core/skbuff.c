@@ -2182,6 +2182,22 @@ struct sk_buff *skb_clone(struct sk_buff *skb, gfp_t gfp_mask)
 }
 EXPORT_SYMBOL(skb_clone);
 
+static bool skb_header_offsets_fit(const struct sk_buff *skb,
+				   unsigned int nhead)
+{
+	if (!nhead)
+		return true;
+	if (nhead > U16_MAX - skb->network_header)
+		return false;
+	if (skb_transport_header_was_set(skb) &&
+	    nhead >= U16_MAX - skb->transport_header)
+		return false;
+	if (skb->ip_summed == CHECKSUM_PARTIAL &&
+	    nhead > U16_MAX - skb->csum_start)
+		return false;
+	return true;
+}
+
 void skb_headers_offset_update(struct sk_buff *skb, int off)
 {
 	/* Only adjust this if it actually is csum_start rather than csum */
@@ -2368,6 +2384,9 @@ int pskb_expand_head(struct sk_buff *skb, int nhead, int ntail,
 		DEBUG_NET_WARN_ON_ONCE(1);
 		return -EINVAL;
 	}
+
+	if (unlikely(!skb_header_offsets_fit(skb, nhead)))
+		return -EINVAL;
 
 	if (unlikely(skb_shared(skb))) {
 		DEBUG_NET_WARN_ON_ONCE(1);
@@ -2587,6 +2606,11 @@ struct sk_buff *skb_copy_expand(const struct sk_buff *skb,
 		return NULL;
 
 	oldheadroom = skb_headroom(skb);
+	if (unlikely(newheadroom > oldheadroom &&
+		     !skb_header_offsets_fit(skb, (unsigned int)newheadroom -
+						  oldheadroom)))
+		return NULL;
+
 	n = __alloc_skb(newheadroom + skb->len + newtailroom,
 			gfp_mask, skb_alloc_rx_flag(skb),
 			NUMA_NO_NODE);
@@ -7098,6 +7122,9 @@ int skb_mpls_pop(struct sk_buff *skb, __be16 next_proto, int mac_len,
 
 	if (unlikely(!eth_p_mpls(skb->protocol)))
 		return 0;
+
+	if (unlikely(skb->network_header > U16_MAX - MPLS_HLEN))
+		return -EINVAL;
 
 	err = skb_ensure_writable(skb, mac_len + MPLS_HLEN);
 	if (unlikely(err))
