@@ -309,7 +309,7 @@ void nf_send_reset(struct net *net, struct sock *sk, struct sk_buff *oldskb,
 	if (nskb->len > dst4_mtu(skb_dst(nskb)))
 		goto free_nskb;
 
-	nf_ct_attach(nskb, oldskb);
+	nf_ct_attach(nskb, oldskb, IPPROTO_TCP);
 	nf_ct_set_closing(skb_nfct(oldskb));
 
 #if IS_ENABLED(CONFIG_BRIDGE_NETFILTER)

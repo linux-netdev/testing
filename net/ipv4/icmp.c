@@ -376,7 +376,7 @@ static int icmp_glue_bits(void *from, char *to, int offset, int len, int odd,
 	if (icmp_param->data.icmph.type <= NR_ICMP_TYPES &&
 	    icmp_pointers[array_index_nospec(icmp_param->data.icmph.type,
 					     NR_ICMP_TYPES + 1)].error)
-		nf_ct_attach(skb, icmp_param->skb);
+		nf_ct_attach(skb, icmp_param->skb, IPPROTO_ICMP);
 	return 0;
 }
 
