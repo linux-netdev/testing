@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 #include <assert.h>
+#include <ctype.h>
 #include <errno.h>
 #include <error.h>
 #include <fcntl.h>
@@ -59,7 +60,7 @@ struct t_io_uring_zcrx_ifq_reg {
 };
 
 static long page_size;
-#define AREA_SIZE (8192 * page_size)
+#define AREA_SIZE (cfg_area_pages * page_size)
 #define SEND_SIZE (512 * 4096)
 #define min(a, b) \
 	({ \
@@ -88,6 +89,7 @@ static int cfg_send_size = SEND_SIZE;
 static struct sockaddr_in6 cfg_addr;
 static unsigned int cfg_rx_buf_len;
 static bool cfg_dry_run;
+static size_t cfg_area_pages = 8192;
 static int cfg_num_threads = 1;
 
 static char *payload;
@@ -328,6 +330,7 @@ static void *server_worker(void *arg)
 	struct thread_ctx *ctx = arg;
 	uint64_t tstop;
 	int nr_conns;
+	int ret;
 	int i;
 
 	params.flags |= IORING_SETUP_COOP_TASKRUN;
@@ -336,9 +339,12 @@ static void *server_worker(void *arg)
 	params.flags |= IORING_SETUP_SUBMIT_ALL;
 	params.flags |= IORING_SETUP_CQE32;
 	params.flags |= IORING_SETUP_CQSIZE;
+	params.flags |= IORING_SETUP_CLAMP;
 	params.cq_entries = AREA_SIZE / page_size;
 
-	io_uring_queue_init_params(512, &ctx->ring, &params);
+	ret = io_uring_queue_init_params(512, &ctx->ring, &params);
+	if (ret)
+		error(1, -ret, "io_uring_queue_init_params()");
 	setup_zcrx(ctx);
 
 	if (cfg_dry_run)
@@ -574,9 +580,10 @@ static void run_client(void)
 
 static void usage(const char *filepath)
 {
-	error(1, 0, "Usage: %s (-4|-6) (-s|-c) -h<server_ip> -p<port> "
-		    "-l<payload_size> -i<ifname> -q<rxq_id> -t<num_threads>",
-		    filepath);
+	error(1, 0, "Usage: %s %s %s %s", filepath,
+	      "(-s|-c) -h<server_ip> -p<port>",
+	      "-l<payload_size> -i<ifname> -q<rxq_id>",
+	      "-t<num_threads> [-a<pages>] [-d]");
 }
 
 static void parse_opts(int argc, char **argv)
@@ -594,7 +601,7 @@ static void parse_opts(int argc, char **argv)
 		usage(argv[0]);
 	cfg_payload_len = max_payload_len;
 
-	while ((c = getopt(argc, argv, "sch:p:l:i:q:o:z:x:dt:")) != -1) {
+	while ((c = getopt(argc, argv, "sch:p:l:i:q:o:z:x:a:dt:")) != -1) {
 		switch (c) {
 		case 's':
 			if (cfg_client)
@@ -632,6 +639,20 @@ static void parse_opts(int argc, char **argv)
 		case 'x':
 			cfg_rx_buf_len = page_size * strtoul(optarg, NULL, 0);
 			break;
+		case 'a': {
+			char *end;
+			unsigned long long area_pages;
+
+			errno = 0;
+			area_pages = strtoull(optarg, &end, 0);
+			if (!isdigit((unsigned char)optarg[0]) || errno ||
+			    end == optarg || *end || !area_pages ||
+			    area_pages > UINT_MAX ||
+			    area_pages > SIZE_MAX / page_size)
+				error(1, 0, "invalid area page count: %s", optarg);
+			cfg_area_pages = area_pages;
+			break;
+		}
 		case 'd':
 			cfg_dry_run = true;
 			break;
