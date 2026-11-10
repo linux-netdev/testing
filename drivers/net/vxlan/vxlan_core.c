@@ -215,6 +215,8 @@ static int vxlan_fdb_info(struct sk_buff *skb, struct vxlan_dev *vxlan,
 		if (nla_put_u32(skb, NDA_NH_ID, nh_id))
 			goto nla_put_failure;
 	} else if (rdst) {
+		u32 remote_ifindex;
+
 		if (send_ip && vxlan_nla_put_addr(skb, NDA_DST,
 						  &rdst->remote_ip))
 			goto nla_put_failure;
@@ -226,8 +228,9 @@ static int vxlan_fdb_info(struct sk_buff *skb, struct vxlan_dev *vxlan,
 		if (rdst->remote_vni != cfg->vni &&
 		    nla_put_u32(skb, NDA_VNI, be32_to_cpu(rdst->remote_vni)))
 			goto nla_put_failure;
-		if (rdst->remote_ifindex &&
-		    nla_put_u32(skb, NDA_IFINDEX, rdst->remote_ifindex))
+		remote_ifindex = READ_ONCE(rdst->remote_ifindex);
+		if (remote_ifindex &&
+		    nla_put_u32(skb, NDA_IFINDEX, remote_ifindex))
 			goto nla_put_failure;
 	}
 
@@ -300,7 +303,7 @@ static void vxlan_fdb_switchdev_notifier_info(const struct vxlan_dev *vxlan,
 	fdb_info->remote_ip = rd->remote_ip;
 	fdb_info->remote_port = rd->remote_port;
 	fdb_info->remote_vni = rd->remote_vni;
-	fdb_info->remote_ifindex = rd->remote_ifindex;
+	fdb_info->remote_ifindex = READ_ONCE(rd->remote_ifindex);
 	memcpy(fdb_info->eth_addr, fdb->key.eth_addr, ETH_ALEN);
 	fdb_info->vni = fdb->key.vni;
 	fdb_info->offloaded = rd->offloaded;
@@ -569,7 +572,7 @@ static int vxlan_fdb_replace(struct vxlan_fdb *f,
 	rd->remote_ip = *ip;
 	rd->remote_port = port;
 	rd->remote_vni = vni;
-	rd->remote_ifindex = ifindex;
+	WRITE_ONCE(rd->remote_ifindex, ifindex);
 	rd->offloaded = false;
 	return 1;
 }
@@ -1470,7 +1473,7 @@ static enum skb_drop_reason vxlan_snoop(struct net_device *dev,
 			return SKB_DROP_REASON_VXLAN_ENTRY_EXISTS;
 
 		if (likely(vxlan_addr_equal(&rdst->remote_ip, src_ip) &&
-			   rdst->remote_ifindex == ifindex))
+			   READ_ONCE(rdst->remote_ifindex) == ifindex))
 			return SKB_NOT_DROPPED_YET;
 
 		/* Don't migrate static entries, drop packets */
@@ -2442,7 +2445,7 @@ void vxlan_xmit_one(struct sk_buff *skb, struct net_device *dev,
 		addr_family = cfg->saddr.sa.sa_family;
 		dst_port = rdst->remote_port ? rdst->remote_port : cfg->dst_port;
 		vni = (rdst->remote_vni) ? : default_vni;
-		ifindex = rdst->remote_ifindex;
+		ifindex = READ_ONCE(rdst->remote_ifindex);
 
 		if (addr_family == AF_INET) {
 			key.u.ipv4.src = cfg->saddr.sin.sin_addr.s_addr;
