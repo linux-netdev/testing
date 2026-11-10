@@ -98,8 +98,15 @@ static int drr_change_class(struct Qdisc *sch, u32 classid, u32 parentid,
 			}
 		}
 
-		if (tb[TCA_DRR_QUANTUM])
+		if (tb[TCA_DRR_QUANTUM]) {
+			/* The dequeue path reads the quantum while it holds
+			 * the tree lock; take it here as well so that the
+			 * rounds and the refill come from one snapshot.
+			 */
+			sch_tree_lock(sch);
 			WRITE_ONCE(cl->quantum, quantum);
+			sch_tree_unlock(sch);
+		}
 
 		return 0;
 	}
@@ -372,7 +379,8 @@ static int drr_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 static struct sk_buff *drr_dequeue(struct Qdisc *sch)
 {
 	struct drr_sched *q = qdisc_priv(sch);
-	struct drr_class *cl;
+	struct drr_class *cl, *first = NULL;
+	bool scanned = false;
 	struct sk_buff *skb;
 	unsigned int len;
 
@@ -402,6 +410,51 @@ static struct sk_buff *drr_dequeue(struct Qdisc *sch)
 			return skb;
 		}
 
+		/* No class could dequeue in the last full round. Add the
+		 * quanta for the rounds still needed in one pass.
+		 */
+		if (!scanned && cl == first) {
+			unsigned int rounds = UINT_MAX;
+			struct drr_class *iter, *tmp;
+			bool skip = true;
+
+			scanned = true;
+			list_for_each_entry_safe(iter, tmp, &q->active, alist) {
+				unsigned int pkt_len;
+				struct sk_buff *peek;
+
+				/* A child that emptied itself while peeking
+				 * is no longer in the list and needs no rounds.
+				 */
+				peek = iter->qdisc->ops->peek(iter->qdisc);
+				if (!peek)
+					continue;
+				pkt_len = qdisc_pkt_len(peek);
+				if (pkt_len <= iter->deficit) {
+					skip = false;
+					break;
+				}
+				rounds = min(rounds,
+					     DIV_ROUND_UP(pkt_len - iter->deficit,
+							  READ_ONCE(iter->quantum)));
+			}
+			if (skip && rounds != UINT_MAX) {
+				list_for_each_entry(iter, &q->active, alist)
+					WRITE_ONCE(iter->deficit,
+						   iter->deficit + rounds *
+						   READ_ONCE(iter->quantum));
+				/* A child may show a longer head now that its
+				 * deficit is positive; scan again if it still
+				 * cannot send.
+				 */
+				first = NULL;
+				scanned = false;
+				continue;
+			}
+		}
+
+		if (!first)
+			first = cl;
 		WRITE_ONCE(cl->deficit, cl->deficit + READ_ONCE(cl->quantum));
 		list_move_tail(&cl->alist, &q->active);
 	}
