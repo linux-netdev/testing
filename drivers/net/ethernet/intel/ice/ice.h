@@ -596,6 +596,7 @@ struct ice_pf {
 	struct mutex tc_mutex;		/* lock to protect TC changes */
 	struct mutex adev_mutex;	/* lock to protect aux device access */
 	struct mutex lag_mutex;		/* protect ice_lag struct in PF */
+	struct mutex rss_lut_lock;	/* protect VSI RSS LUT config */
 	u32 msg_enable;
 	struct ice_ptp ptp;
 	struct gnss_serial *gnss_serial;
@@ -1113,7 +1114,7 @@ extern const struct xdp_metadata_ops ice_xdp_md_ops;
  * Acceleration Complex) configuration variant, false otherwise
  * (always false for non-E825 devices).
  */
-static inline bool ice_is_dual(struct ice_hw *hw)
+static inline bool ice_is_dual(const struct ice_hw *hw)
 {
 	return hw->mac_type == ICE_MAC_GENERIC_3K_E825 &&
 	       (hw->dev_caps.nac_topo.mode & ICE_NAC_TOPO_DUAL_M);
