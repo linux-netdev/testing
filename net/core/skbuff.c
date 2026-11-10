@@ -7269,15 +7269,41 @@ struct sk_buff *alloc_skb_with_frags(unsigned long header_len,
 	while (data_len) {
 		if (nr_frags == MAX_SKB_FRAGS)
 			goto failure;
-		while (order && PAGE_ALIGN(data_len) < (PAGE_SIZE << order))
-			order--;
+		if (order && PAGE_ALIGN(data_len) < (PAGE_SIZE << order)) {
+			unsigned long pages = DIV_ROUND_UP(data_len, PAGE_SIZE);
+
+			/* If splitting the rest into smaller pages would need
+			 * more frags than we have left, use one larger page.
+			 */
+			if (hweight_long(pages) > MAX_SKB_FRAGS - nr_frags)
+				order = order_base_2(pages);
+			else
+				order = ilog2(pages);
+		}
 
 		if (order) {
+			unsigned long smaller = PAGE_SIZE << (order - 1);
+			bool can_shrink;
+
+			/* Only fall back to smaller pages if the frags left
+			 * can still hold the rest. If not, try this order
+			 * once more with the caller's direct reclaim.
+			 */
+			can_shrink = DIV_ROUND_UP(data_len, smaller) <=
+				     MAX_SKB_FRAGS - nr_frags;
+
 			page = alloc_pages((gfp_mask & ~__GFP_DIRECT_RECLAIM) |
 					   __GFP_COMP |
 					   __GFP_NOWARN,
 					   order);
+			if (!page && !can_shrink &&
+			    gfpflags_allow_blocking(gfp_mask))
+				page = alloc_pages(gfp_mask | __GFP_COMP |
+						   __GFP_NOWARN | __GFP_NORETRY,
+						   order);
 			if (!page) {
+				if (!can_shrink)
+					goto failure;
 				order--;
 				continue;
 			}
