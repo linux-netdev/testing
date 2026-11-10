@@ -90,6 +90,8 @@ typedef bool (*match_fn)(struct dma_debug_entry *, struct dma_debug_entry *);
 struct hash_bucket {
 	struct list_head list;
 	spinlock_t lock;
+	/* Upper bound on live mapping sizes; reset when the bucket empties. */
+	unsigned long max_entry_size;
 };
 
 /* Hash list to save the allocated dma addresses */
@@ -354,27 +356,49 @@ static struct dma_debug_entry *bucket_find_contain(struct hash_bucket **bucket,
 						   struct dma_debug_entry *ref,
 						   unsigned long *flags)
 {
-
 	struct dma_debug_entry *entry, index = *ref;
+	u64 min_offset = (index.dev_addr & ((1ULL << HASH_FN_SHIFT) - 1)) + 1;
 	int limit = min(HASH_SIZE, (index.dev_addr >> HASH_FN_SHIFT) + 1);
 
-	for (int i = 0; i < limit; i++) {
+	entry = __hash_bucket_find(*bucket, ref, containing_match);
+	if (entry)
+		return entry;
+	put_hash_bucket(*bucket, *flags);
+
+	for (int i = 1; i < limit; i++) {
+		unsigned long max_entry_size;
+
+		index.dev_addr -= (1 << HASH_FN_SHIFT);
+		*bucket = &dma_entry_hash[hash_fn(&index)];
+		/*
+		 * Writers serialize updates with the bucket lock. For any entry
+		 * that can validly match this sync, publishing the mapping is
+		 * ordered before the sync, including a cross-CPU handoff, and
+		 * unmapping is ordered after it. The bound only grows while the
+		 * bucket is nonempty, so it cannot become smaller than a live
+		 * entry. Removing an unrelated mapping may leave a larger bound,
+		 * which only causes an unnecessary search.
+		 */
+		max_entry_size = READ_ONCE((*bucket)->max_entry_size);
+		/* The mapping must span the distance back to this bucket. */
+		if (max_entry_size < ref->size ||
+		    max_entry_size - ref->size < min_offset)
+			goto next;
+
+		*bucket = get_hash_bucket(&index, flags);
 		entry = __hash_bucket_find(*bucket, ref, containing_match);
 
 		if (entry)
 			return entry;
 
-		/*
-		 * Nothing found, go back a hash bucket
-		 */
 		put_hash_bucket(*bucket, *flags);
-		index.dev_addr -= (1 << HASH_FN_SHIFT);
-		*bucket = get_hash_bucket(&index, flags);
+next:
+		min_offset += 1ULL << HASH_FN_SHIFT;
 	}
 
+	*bucket = get_hash_bucket(ref, flags);
 	return NULL;
 }
-
 /*
  * Add an entry to a hash bucket
  */
@@ -382,14 +406,19 @@ static void hash_bucket_add(struct hash_bucket *bucket,
 			    struct dma_debug_entry *entry)
 {
 	list_add_tail(&entry->list, &bucket->list);
+	if (entry->size > bucket->max_entry_size)
+		WRITE_ONCE(bucket->max_entry_size, entry->size);
 }
 
 /*
  * Remove entry from a hash bucket list
  */
-static void hash_bucket_del(struct dma_debug_entry *entry)
+static void hash_bucket_del(struct hash_bucket *bucket,
+			    struct dma_debug_entry *entry)
 {
 	list_del(&entry->list);
+	if (list_empty(&bucket->list))
+		WRITE_ONCE(bucket->max_entry_size, 0);
 }
 
 /*
@@ -1100,7 +1129,7 @@ static void check_unmap(struct dma_debug_entry *ref)
 	}
 #undef DMA_ATTR_UNMAP_VALID
 
-	hash_bucket_del(entry);
+	hash_bucket_del(bucket, entry);
 	put_hash_bucket(bucket, flags);
 
 	/*
