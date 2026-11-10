@@ -301,7 +301,7 @@ class NlAttr:
         return format_.unpack(self.raw)[0]
 
     def as_strz(self):
-        return self.raw.decode('ascii')[:-1]
+        return self.raw.decode('utf-8', 'surrogateescape')[:-1]
 
     def as_bin(self):
         return self.raw
@@ -852,7 +852,7 @@ class YnlFamily(SpecFamily):
                 return b''
             attr_payload = b''
         elif attr["type"] == 'string':
-            attr_payload = str(value).encode('ascii') + b'\x00'
+            attr_payload = str(value).encode('utf-8', 'surrogateescape') + b'\x00'
         elif attr["type"] == 'binary':
             if value is None:
                 attr_payload = b''
