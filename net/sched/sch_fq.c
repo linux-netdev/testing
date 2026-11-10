@@ -737,8 +737,10 @@ static struct sk_buff *fq_dequeue(struct Qdisc *sch)
 	struct fq_sched_data *q = qdisc_priv(sch);
 	u64 offload_horizon = fq_offload_horizon(sch, q);
 	struct fq_perband_flows *pband;
+	struct fq_flow *first = NULL;
 	struct fq_flow_head *head;
 	u64 time_next_packet = 0;
+	bool scanned = false;
 	struct sk_buff *skb;
 	struct fq_flow *f;
 	unsigned long rate;
@@ -769,8 +771,12 @@ begin:
 			pband = &q->band_flows[q->band_nr];
 			pband->credit = min(pband->credit + pband->quantum,
 					    pband->quantum);
-			if (pband->credit > 0)
+			if (pband->credit > 0) {
+				/* New band: start a new round. */
+				first = NULL;
+				scanned = false;
 				goto begin;
+			}
 			retry = 0;
 		}
 		if (q->time_next_delayed_flow != ~0ULL)
@@ -782,9 +788,82 @@ begin:
 	f = head->first;
 	retry = 0;
 	if (f->credit <= 0) {
+		/* No flow could dequeue in the last full round. Add the
+		 * quanta for the rounds still needed in one pass.
+		 */
+		if (!scanned && f == first) {
+			unsigned int rounds = UINT_MAX;
+			struct fq_flow *iter, *prev;
+			bool skip = true;
+
+			scanned = true;
+			/* new_flows is empty after a full round. */
+			for (iter = pband->old_flows.first; iter;
+			     iter = iter->next) {
+				/* Empty flows don't limit the rounds. */
+				if (!fq_peek(iter))
+					continue;
+				if (iter->credit > 0) {
+					skip = false;
+					break;
+				}
+				rounds = min(rounds,
+					     DIV_ROUND_UP(1 - iter->credit,
+							  q->quantum));
+			}
+			if (skip) {
+				prev = NULL;
+				for (iter = pband->old_flows.first; iter;
+				     iter = iter->next) {
+					unsigned int k = 0;
+
+					/* An empty flow leaves the list after
+					 * k more refills. If that falls within
+					 * the skipped rounds, remove it now.
+					 * fq keeps the credit if the flow comes
+					 * back, so give it exactly k quanta.
+					 */
+					if (fq_peek(iter)) {
+						iter->credit += rounds * q->quantum;
+						prev = iter;
+						continue;
+					}
+					if (iter->credit <= 0)
+						k = DIV_ROUND_UP(1 - iter->credit,
+								 q->quantum);
+					if (k >= rounds) {
+						iter->credit += rounds * q->quantum;
+						prev = iter;
+						continue;
+					}
+					iter->credit += k * q->quantum;
+					if (prev)
+						prev->next = iter->next;
+					else
+						pband->old_flows.first = iter->next;
+					if (pband->old_flows.last == iter)
+						pband->old_flows.last = prev;
+					fq_flow_set_detached(iter);
+				}
+				/* A flow may show a non-empty queue, a new
+				 * packet or a throttled one now; scan again if
+				 * the loop still cannot dequeue.
+				 */
+				first = NULL;
+				scanned = false;
+				goto begin;
+			}
+		}
+
+		/* Remember which flow started this round. */
+		if (!first)
+			first = f;
 		f->credit += q->quantum;
 		head->first = f->next;
 		fq_flow_add_tail(q, f, OLD_FLOW);
+		/* f may have moved to another band's list. */
+		if (f == first && f->band != q->band_nr)
+			first = NULL;
 		goto begin;
 	}
 
@@ -796,6 +875,9 @@ begin:
 		if (now + offload_horizon < time_next_packet) {
 			head->first = f->next;
 			f->time_next_packet = time_next_packet;
+			/* The round's first flow left; the next one takes over. */
+			if (f == first)
+				first = scanned ? NULL : head->first;
 			fq_flow_set_throttled(q, f);
 			goto begin;
 		}
@@ -814,6 +896,9 @@ begin:
 		if (head == &pband->new_flows) {
 			fq_flow_add_tail(q, f, OLD_FLOW);
 		} else {
+			/* The round's first flow left; the next one takes over. */
+			if (f == first)
+				first = scanned ? NULL : head->first;
 			fq_flow_set_detached(f);
 		}
 		goto begin;
