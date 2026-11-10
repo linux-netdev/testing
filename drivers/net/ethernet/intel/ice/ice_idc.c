@@ -207,15 +207,22 @@ int ice_rdma_update_vsi_filter(struct iidc_rdma_core_dev_info *cdev,
 	if (!vsi)
 		return -EINVAL;
 
-	status = ice_cfg_rdma_fltr(&pf->hw, vsi->idx, enable);
-	if (status) {
-		dev_err(ice_pf_to_dev(pf), "Failed to  %sable RDMA filtering\n",
-			enable ? "en" : "dis");
-	} else {
-		if (enable)
-			vsi->info.q_opt_flags |= ICE_AQ_VSI_Q_OPT_PE_FLTR_EN;
-		else
-			vsi->info.q_opt_flags &= ~ICE_AQ_VSI_Q_OPT_PE_FLTR_EN;
+	/* q_opt_rss also carries the RSS LUT type, that devlink may change */
+	scoped_guard(mutex, &pf->rss_lut_lock) {
+		status = ice_cfg_rdma_fltr(&pf->hw, vsi->idx, &vsi->info,
+					   enable);
+		if (status) {
+			dev_err(ice_pf_to_dev(pf),
+				"Failed to  %sable RDMA filtering\n",
+				enable ? "en" : "dis");
+		} else {
+			if (enable)
+				vsi->info.q_opt_flags |=
+					ICE_AQ_VSI_Q_OPT_PE_FLTR_EN;
+			else
+				vsi->info.q_opt_flags &=
+					~ICE_AQ_VSI_Q_OPT_PE_FLTR_EN;
+		}
 	}
 
 	return status;

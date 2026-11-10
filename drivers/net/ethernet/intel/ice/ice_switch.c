@@ -1876,10 +1876,12 @@ ice_update_vsi(struct ice_hw *hw, u16 vsi_handle, struct ice_vsi_ctx *vsi_ctx,
  * ice_cfg_rdma_fltr - enable/disable RDMA filtering on VSI
  * @hw: pointer to HW struct
  * @vsi_handle: VSI SW index
+ * @info: current VSI properties, the rest of the Q_OPT section is kept
  * @enable: boolean for enable/disable
  */
 int
-ice_cfg_rdma_fltr(struct ice_hw *hw, u16 vsi_handle, bool enable)
+ice_cfg_rdma_fltr(struct ice_hw *hw, u16 vsi_handle,
+		  const struct ice_aqc_vsi_props *info, bool enable)
 {
 	struct ice_vsi_ctx *ctx, *cached_ctx;
 	int status;
@@ -1892,9 +1894,10 @@ ice_cfg_rdma_fltr(struct ice_hw *hw, u16 vsi_handle, bool enable)
 	if (!ctx)
 		return -ENOMEM;
 
-	ctx->info.q_opt_rss = cached_ctx->info.q_opt_rss;
-	ctx->info.q_opt_tc = cached_ctx->info.q_opt_tc;
-	ctx->info.q_opt_flags = cached_ctx->info.q_opt_flags;
+	/* not from the cached ctx, that misses RSS LUT changes */
+	ctx->info.q_opt_rss = info->q_opt_rss;
+	ctx->info.q_opt_tc = info->q_opt_tc;
+	ctx->info.q_opt_flags = info->q_opt_flags;
 
 	ctx->info.valid_sections = cpu_to_le16(ICE_AQ_VSI_PROP_Q_OPT_VALID);
 
