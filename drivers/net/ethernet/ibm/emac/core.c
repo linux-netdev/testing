@@ -24,6 +24,7 @@
 #include <linux/string.h>
 #include <linux/errno.h>
 #include <linux/delay.h>
+#include <linux/iopoll.h>
 #include <linux/types.h>
 #include <linux/pci.h>
 #include <linux/etherdevice.h>
@@ -248,12 +249,10 @@ static void emac_rx_enable(struct emac_instance *dev)
 	if (!(r & EMAC_MR0_RXE)) {
 		if (unlikely(!(r & EMAC_MR0_RXI))) {
 			/* Wait if previous async disable is still in progress */
-			int n = dev->stop_timeout;
-			while (!(r = in_be32(&p->mr0) & EMAC_MR0_RXI) && n) {
-				udelay(1);
-				--n;
-			}
-			if (unlikely(!n))
+			if (read_poll_timeout_atomic(in_be32, r,
+						     r & EMAC_MR0_RXI, 1,
+						     dev->stop_timeout, false,
+						     &p->mr0))
 				emac_report_timeout_error(dev,
 							  "RX disable timeout");
 		}
