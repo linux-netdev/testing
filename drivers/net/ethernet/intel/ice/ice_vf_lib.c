@@ -6,6 +6,7 @@
 #include "ice_lib.h"
 #include "ice_fltr.h"
 #include "virt/allowlist.h"
+#include "devlink/resource.h"
 
 /* Public functions which may be accessed by all driver files */
 
@@ -794,6 +795,8 @@ void ice_reset_all_vfs(struct ice_pf *pf)
 		ice_eswitch_detach_vf(pf, vf);
 		vf->driver_caps = 0;
 		ice_vc_set_default_allowlist(vf);
+		/* the VSI rebuild applies what a deferred reset was for */
+		clear_bit(ICE_VF_STATE_NEEDS_RESET, vf->vf_states);
 
 		ice_vf_fdir_exit(vf);
 		ice_vf_fdir_init(vf);
@@ -933,6 +936,8 @@ int ice_reset_vf(struct ice_vf *vf, u32 flags)
 
 	/* Set VF disable bit state here, before triggering reset */
 	set_bit(ICE_VF_STATE_DIS, vf->vf_states);
+	/* this reset applies what a deferred reset was requested for */
+	clear_bit(ICE_VF_STATE_NEEDS_RESET, vf->vf_states);
 	ice_trigger_vf_reset(vf, flags & ICE_VF_RESET_VFLR, false);
 
 	vsi = ice_get_vf_vsi(vf);
@@ -1011,6 +1016,19 @@ out_unlock:
 }
 
 /**
+ * ice_schedule_vf_reset - reset VF, deferred to next service_task context
+ * @vf: VF to reset
+ */
+void ice_schedule_vf_reset(struct ice_vf *vf)
+{
+	set_bit(ICE_VF_STATE_NEEDS_RESET, vf->vf_states);
+	/* pairs with test_and_clear_bit() in ice_handle_deferred_vf_reset() */
+	smp_mb__after_atomic();
+	set_bit(ICE_VF_RESET_PENDING, vf->pf->state);
+	ice_service_task_schedule(vf->pf);
+}
+
+/**
  * ice_set_vf_state_dis - Set VF state to disabled
  * @vf: pointer to the VF structure
  */
@@ -1018,6 +1036,8 @@ void ice_set_vf_state_dis(struct ice_vf *vf)
 {
 	ice_set_vf_state_qs_dis(vf);
 	vf->vf_ops->clear_reset_state(vf);
+	/* until ice_reset_all_vfs() rebuilds the VF */
+	set_bit(ICE_VF_STATE_DIS, vf->vf_states);
 }
 
 /* Private functions only accessed from other virtualization files */
@@ -1063,6 +1083,9 @@ void ice_initialize_vf_entry(struct ice_vf *vf)
 void ice_deinitialize_vf_entry(struct ice_vf *vf)
 {
 	struct ice_pf *pf = vf->pf;
+
+	ice_free_rss_lut_vf(vf);
+	ice_deinit_vf_devlink(vf);
 
 	if (!ice_is_feature_supported(pf, ICE_F_MBX_LIMIT))
 		list_del(&vf->mbx_info.list_entry);
@@ -1449,4 +1472,53 @@ void ice_vf_update_mac_lldp_num(struct ice_vf *vf, struct ice_vsi *vsi,
 
 	if (was_ena != is_ena)
 		ice_vsi_cfg_sw_lldp(vsi, false, is_ena);
+}
+
+void ice_init_vf_devlink(struct ice_vf *vf)
+{
+	struct devlink *pf_devlink = priv_to_devlink(vf->pf);
+	static const struct devlink_ops noop = {};
+	struct devlink *devlink;
+	int err;
+
+	lockdep_assert_held(&vf->pf->vfs.table_lock);
+
+	/* no VF pci_dev when the VFs were not scanned, e.g. on s390 */
+	if (!vf->vfdev)
+		return;
+
+	devlink = devlink_alloc_drv(&noop, 0, &vf->vfdev->dev,
+				    ice_pf_to_dev(vf->pf)->driver);
+	if (!devlink)
+		return;
+
+	scoped_guard(devl, pf_devlink)
+		err = devl_nested_devlink_set(pf_devlink, devlink);
+	if (err) {
+		devlink_free(devlink);
+		return;
+	}
+
+	vf->devlink = devlink;
+	scoped_guard(devl, devlink) {
+		ice_devlink_vf_resources_register(vf);
+		devl_register(devlink);
+	}
+}
+
+void ice_deinit_vf_devlink(struct ice_vf *vf)
+{
+	struct devlink *devlink = vf->devlink;
+
+	lockdep_assert_held(&vf->pf->vfs.table_lock);
+
+	if (!devlink)
+		return;
+
+	vf->devlink = NULL;
+	scoped_guard(devl, devlink) {
+		devl_unregister(devlink);
+		devl_resources_unregister(devlink);
+	}
+	devlink_free(devlink);
 }
