@@ -195,21 +195,26 @@ static void atusb_tx_done(struct atusb *atusb, u8 seq, int reason)
 {
 	struct usb_device *usb_dev = atusb->usb_dev;
 	u8 expect = atusb->tx_ack_seq;
+	struct sk_buff *skb;
 
 	dev_dbg(&usb_dev->dev, "%s (0x%02x/0x%02x)\n", __func__, seq, expect);
+
+	/* The device may report a tx completion when no frame is pending,
+	 * or more than once for the same frame.  Complete each frame only
+	 * once.
+	 */
+	skb = xchg(&atusb->tx_skb, NULL);
+	if (!skb)
+		return;
+
 	if (seq == expect) {
 		/* TODO check for ifs handling in firmware */
 		if (reason == IEEE802154_SUCCESS)
-			ieee802154_xmit_complete(atusb->hw, atusb->tx_skb, false);
+			ieee802154_xmit_complete(atusb->hw, skb, false);
 		else
-			ieee802154_xmit_error(atusb->hw, atusb->tx_skb, reason);
+			ieee802154_xmit_error(atusb->hw, skb, reason);
 	} else {
-		/* TODO I experience this case when atusb has a tx complete
-		 * irq before probing, we should fix the firmware it's an
-		 * unlikely case now that seq == expect is then true, but can
-		 * happen and fail with a tx_skb = NULL;
-		 */
-		ieee802154_xmit_hw_error(atusb->hw, atusb->tx_skb);
+		ieee802154_xmit_hw_error(atusb->hw, skb);
 	}
 }
 
@@ -351,6 +356,8 @@ static int atusb_xmit(struct ieee802154_hw *hw, struct sk_buff *skb)
 			     (unsigned char *)&atusb->tx_dr, skb->data,
 			     skb->len, atusb_xmit_complete, NULL);
 	ret = usb_submit_urb(atusb->tx_urb, GFP_ATOMIC);
+	if (ret)
+		atusb->tx_skb = NULL;
 	dev_dbg(&usb_dev->dev, "%s done (%d)\n", __func__, ret);
 	return ret;
 }
