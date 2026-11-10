@@ -706,6 +706,14 @@ static void update_or_create_fnhe(struct fib_nh_common *nhc, __be32 daddr,
 	}
 
 	if (fnhe) {
+		/* __ip_rt_update_pmtu() caches a pmtu on every path of a
+		 * multipath route, don't let a Packet Too Big from one path
+		 * raise the pmtu another path already learned.
+		 */
+		if (pmtu && fnhe->fnhe_genid == genid && fnhe->fnhe_pmtu &&
+		    pmtu > fnhe->fnhe_pmtu &&
+		    time_before(jiffies, fnhe->fnhe_expires))
+			goto out_unlock;
 		if (fnhe->fnhe_genid != genid)
 			fnhe->fnhe_genid = genid;
 		if (gw)
