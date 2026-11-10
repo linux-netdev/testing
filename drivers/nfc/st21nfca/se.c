@@ -227,11 +227,13 @@ int st21nfca_hci_se_io(struct nfc_hci_dev *hdev, u32 se_idx,
 
 	switch (se_idx) {
 	case ST21NFCA_ESE_HOST_ID:
+		spin_lock(&info->se_info.se_lock);
 		info->se_info.cb = cb;
 		info->se_info.cb_context = cb_context;
+		info->se_info.bwi_active = true;
+		spin_unlock(&info->se_info.se_lock);
 		mod_timer(&info->se_info.bwi_timer, jiffies +
 			  msecs_to_jiffies(info->se_info.wt_timeout));
-		info->se_info.bwi_active = true;
 		return nfc_hci_send_event(hdev, ST21NFCA_APDU_READER_GATE,
 					ST21NFCA_EVT_TRANSMIT_DATA,
 					apdu, apdu_length);
@@ -260,11 +262,17 @@ static void st21nfca_se_wt_work(struct work_struct *work)
 	 */
 	/* hardware reset managed through VCC_UICC_OUT power supply */
 	u8 param = 0x01;
+	se_io_cb_t cb;
+	void *cb_context;
 	struct st21nfca_hci_info *info = container_of(work,
 						struct st21nfca_hci_info,
 						se_info.timeout_work);
 
+	spin_lock(&info->se_info.se_lock);
 	info->se_info.bwi_active = false;
+	cb = info->se_info.cb;
+	cb_context = info->se_info.cb_context;
+	spin_unlock(&info->se_info.se_lock);
 
 	if (!info->se_info.xch_error) {
 		info->se_info.xch_error = true;
@@ -275,7 +283,7 @@ static void st21nfca_se_wt_work(struct work_struct *work)
 		nfc_hci_send_event(info->hdev, ST21NFCA_DEVICE_MGNT_GATE,
 				ST21NFCA_EVT_SE_HARD_RESET, &param, 1);
 	}
-	info->se_info.cb(info->se_info.cb_context, NULL, 0, -ETIME);
+	cb(cb_context, NULL, 0, -ETIME);
 }
 
 static void st21nfca_se_wt_timeout(struct timer_list *t)
@@ -375,6 +383,8 @@ int st21nfca_apdu_reader_event_received(struct nfc_hci_dev *hdev,
 					u8 event, struct sk_buff *skb)
 {
 	int r = 0;
+	se_io_cb_t cb;
+	void *cb_context;
 	struct st21nfca_hci_info *info = nfc_hci_get_clientdata(hdev);
 
 	pr_debug("apdu reader gate event: %x\n", event);
@@ -383,14 +393,19 @@ int st21nfca_apdu_reader_event_received(struct nfc_hci_dev *hdev,
 	case ST21NFCA_EVT_TRANSMIT_DATA:
 		timer_delete_sync(&info->se_info.bwi_timer);
 		cancel_work_sync(&info->se_info.timeout_work);
+
+		spin_lock(&info->se_info.se_lock);
 		info->se_info.bwi_active = false;
+		cb = info->se_info.cb;
+		cb_context = info->se_info.cb_context;
+		spin_unlock(&info->se_info.se_lock);
+
 		r = nfc_hci_send_event(hdev, ST21NFCA_DEVICE_MGNT_GATE,
 				ST21NFCA_EVT_SE_END_OF_APDU_TRANSFER, NULL, 0);
 		if (r < 0)
 			goto exit;
 
-		info->se_info.cb(info->se_info.cb_context,
-			skb->data, skb->len, 0);
+		cb(cb_context, skb->data, skb->len, 0);
 		break;
 	case ST21NFCA_EVT_WTX_REQUEST:
 		mod_timer(&info->se_info.bwi_timer, jiffies +
@@ -416,6 +431,7 @@ void st21nfca_se_init(struct nfc_hci_dev *hdev)
 	/* initialize timers */
 	timer_setup(&info->se_info.bwi_timer, st21nfca_se_wt_timeout, 0);
 	info->se_info.bwi_active = false;
+	spin_lock_init(&info->se_info.se_lock);
 
 	timer_setup(&info->se_info.se_active_timer,
 		    st21nfca_se_activation_timeout, 0);
