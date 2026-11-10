@@ -992,8 +992,7 @@ static void qfq_update_eligible(struct qfq_sched *q)
 }
 
 /* Dequeue head packet of the head class in the DRR queue of the aggregate. */
-static struct sk_buff *agg_dequeue(struct qfq_aggregate *agg,
-				   struct qfq_class *cl, unsigned int len)
+static struct sk_buff *agg_dequeue(struct qfq_class *cl, unsigned int len)
 {
 	struct sk_buff *skb = qdisc_dequeue_peeked(cl->qdisc);
 
@@ -1001,13 +1000,6 @@ static struct sk_buff *agg_dequeue(struct qfq_aggregate *agg,
 		return NULL;
 
 	cl->deficit -= (int) len;
-
-	if (cl->qdisc->q.qlen == 0) /* no more packets, remove from list */
-		list_del_init(&cl->alist);
-	else if (cl->deficit < qdisc_peek_len(cl->qdisc)) {
-		cl->deficit += agg->lmax;
-		list_move_tail(&cl->alist, &agg->active);
-	}
 
 	return skb;
 }
@@ -1103,6 +1095,7 @@ static void qfq_schedule_agg(struct qfq_sched *q, struct qfq_aggregate *agg);
 static struct sk_buff *qfq_dequeue(struct Qdisc *sch)
 {
 	struct qfq_sched *q = qdisc_priv(sch);
+restart:;
 	struct qfq_aggregate *in_serv_agg = q->in_serv_agg;
 	struct qfq_class *cl;
 	struct sk_buff *skb = NULL;
@@ -1112,8 +1105,11 @@ static struct sk_buff *qfq_dequeue(struct Qdisc *sch)
 	if (in_serv_agg == NULL)
 		return NULL;
 
-	if (!list_empty(&in_serv_agg->active))
+	if (!list_empty(&in_serv_agg->active)) {
 		skb = qfq_peek_skb(in_serv_agg, &cl, &len);
+		if (unlikely(in_serv_agg != q->in_serv_agg || cl->agg != in_serv_agg))
+			goto restart;
+	}
 
 	/*
 	 * If there are no active classes in the in-service aggregate,
@@ -1151,13 +1147,15 @@ static struct sk_buff *qfq_dequeue(struct Qdisc *sch)
 		 */
 		in_serv_agg = q->in_serv_agg = qfq_choose_next_agg(q);
 		skb = qfq_peek_skb(in_serv_agg, &cl, &len);
+		if (unlikely(in_serv_agg != q->in_serv_agg || cl->agg != in_serv_agg))
+			goto restart;
 	}
 	if (!skb)
 		return NULL;
 
 	qdisc_qlen_dec(sch);
 
-	skb = agg_dequeue(in_serv_agg, cl, len);
+	skb = agg_dequeue(cl, len);
 
 	if (!skb) {
 		qdisc_qlen_inc(sch);
@@ -1180,6 +1178,13 @@ static struct sk_buff *qfq_dequeue(struct Qdisc *sch)
 	pr_debug("qfq dequeue: len %u F %lld now %lld\n",
 		 len, (unsigned long long) in_serv_agg->F,
 		 (unsigned long long) q->V);
+
+	if (cl->qdisc->q.qlen == 0) /* no more packets, remove from list */
+		list_del_init(&cl->alist);
+	else if (cl->deficit < qdisc_peek_len(cl->qdisc) && cl_is_active(cl)) {
+		cl->deficit += cl->agg->lmax;
+		list_move_tail(&cl->alist, &cl->agg->active);
+	}
 
 	return skb;
 }
@@ -1274,9 +1279,10 @@ static int qfq_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 	/* if the class is active, then done here */
 	if (cl_is_active(cl)) {
 		if (unlikely(skb == cl->qdisc->ops->peek(cl->qdisc)) &&
-		    list_first_entry(&agg->active, struct qfq_class, alist)
+		    cl_is_active(cl) &&
+		    list_first_entry(&cl->agg->active, struct qfq_class, alist)
 		    == cl && cl->deficit < len)
-			list_move_tail(&cl->alist, &agg->active);
+			list_move_tail(&cl->alist, &cl->agg->active);
 
 		return err;
 	}
