@@ -474,8 +474,8 @@ struct ice_q_vector {
 
 	u16 v_idx;			/* index in the vsi->q_vector array. */
 	u16 reg_idx;			/* PF relative register index */
-	u8 num_ring_rx;			/* total number of Rx rings in vector */
-	u8 num_ring_tx;			/* total number of Tx rings in vector */
+	u16 num_ring_rx;		/* total number of Rx rings in vector */
+	u16 num_ring_tx;		/* total number of Tx rings in vector */
 	u8 wb_on_itr:1;			/* if true, WB on ITR is enabled */
 	/* in usecs, need to use ice_intrl_to_usecs_reg() before writing this
 	 * value to the device
