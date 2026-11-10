@@ -987,6 +987,48 @@ error_param:
 }
 
 /**
+ * ice_vf_max_contig_qs - get the most queues VF could get in one range
+ * @vf: pointer to the VF info
+ * @vsi: VSI of the VF
+ *
+ * Scattered queue mapping is not implemented for VFs. Queues of the VF count
+ * as free, as VF reset releases them before it takes the new range.
+ *
+ * Return: length of the longest range of free Tx queues and Rx queues.
+ */
+static int ice_vf_max_contig_qs(struct ice_vf *vf, struct ice_vsi *vsi)
+{
+	struct ice_pf *pf = vf->pf;
+	unsigned long *txqs, *rxqs;
+	int max_tx = 0, max_rx = 0;
+	int b, e;
+
+	txqs = bitmap_alloc(pf->max_pf_txqs, GFP_KERNEL);
+	rxqs = bitmap_alloc(pf->max_pf_rxqs, GFP_KERNEL);
+	if (!txqs || !rxqs)
+		goto out;
+
+	scoped_guard(mutex, &pf->avail_q_mutex) {
+		bitmap_copy(txqs, pf->avail_txqs, pf->max_pf_txqs);
+		bitmap_copy(rxqs, pf->avail_rxqs, pf->max_pf_rxqs);
+	}
+	for (int i = 0; i < vsi->alloc_txq; i++)
+		clear_bit(vsi->txq_map[i], txqs);
+	for (int i = 0; i < vsi->alloc_rxq; i++)
+		clear_bit(vsi->rxq_map[i], rxqs);
+
+	for_each_clear_bitrange(b, e, txqs, pf->max_pf_txqs)
+		max_tx = max(max_tx, e - b);
+	for_each_clear_bitrange(b, e, rxqs, pf->max_pf_rxqs)
+		max_rx = max(max_rx, e - b);
+out:
+	bitmap_free(txqs);
+	bitmap_free(rxqs);
+
+	return min(max_tx, max_rx);
+}
+
+/**
  * ice_vc_request_qs_msg
  * @vf: pointer to the VF info
  * @msg: pointer to the msg buffer
@@ -1004,9 +1046,9 @@ int ice_vc_request_qs_msg(struct ice_vf *vf, u8 *msg)
 	u16 req_queues = vfres->num_queue_pairs;
 	struct ice_pf *pf = vf->pf;
 	u16 max_allowed_vf_queues;
-	u16 tx_rx_queue_left;
+	struct ice_vsi *vsi;
 	struct device *dev;
-	u16 cur_queues;
+	u16 max_lut_queues;
 
 	dev = ice_pf_to_dev(pf);
 	if (!test_bit(ICE_VF_STATE_ACTIVE, vf->vf_states)) {
@@ -1014,23 +1056,31 @@ int ice_vc_request_qs_msg(struct ice_vf *vf, u8 *msg)
 		goto error_param;
 	}
 
-	cur_queues = vf->num_vf_qs;
-	tx_rx_queue_left = min_t(u16, ice_get_avail_txq_count(pf),
-				 ice_get_avail_rxq_count(pf));
-	max_allowed_vf_queues = tx_rx_queue_left + cur_queues;
+	vsi = ice_get_vf_vsi(vf);
+	if (!vsi) {
+		v_ret = VIRTCHNL_STATUS_ERR_PARAM;
+		goto error_param;
+	}
+
+	/* without LARGE_NUM_QPAIRS, VF can only use the v1 queue opcodes */
+	if (vf->driver_caps & VIRTCHNL_VF_LARGE_NUM_QPAIRS)
+		max_lut_queues = ice_lut_type_to_qs_num(vsi->rss_lut_type);
+	else
+		max_lut_queues = ICE_MAX_QS_PER_VF_VCV1;
+	max_allowed_vf_queues = min(ice_vf_max_contig_qs(vf, vsi),
+				    max_lut_queues);
+	if (req_queues > max_lut_queues) {
+		vfres->num_queue_pairs = max_allowed_vf_queues;
+		goto error_param;
+	}
+
 	if (!req_queues) {
 		dev_err(dev, "VF %d tried to request 0 queues. Ignoring.\n",
 			vf->vf_id);
-	} else if (req_queues > ICE_MAX_QS_PER_VF) {
-		dev_err(dev, "VF %d tried to request more than %d queues.\n",
-			vf->vf_id, ICE_MAX_QS_PER_VF);
-		vfres->num_queue_pairs = ICE_MAX_QS_PER_VF;
-	} else if (req_queues > cur_queues &&
-		   req_queues - cur_queues > tx_rx_queue_left) {
-		dev_warn(dev, "VF %d requested %u more queues, but only %u left.\n",
-			 vf->vf_id, req_queues - cur_queues, tx_rx_queue_left);
-		vfres->num_queue_pairs = min_t(u16, max_allowed_vf_queues,
-					       ICE_MAX_QS_PER_VF);
+	} else if (req_queues > max_allowed_vf_queues) {
+		dev_warn(dev, "VF %d requested %u queues, but only %u are free in one range.\n",
+			 vf->vf_id, req_queues, max_allowed_vf_queues);
+		vfres->num_queue_pairs = max_allowed_vf_queues;
 	} else {
 		/* request is successful, then reset VF */
 		vf->num_req_qs = req_queues;

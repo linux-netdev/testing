@@ -12,6 +12,23 @@
 
 #include "devlink/resource.h"
 
+#define ICE_LUT_VSI_MAX_QS	16
+#define ICE_LUT_GLOBAL_MAX_QS	64
+#define ICE_LUT_PF_MAX_QS	256
+
+u16 ice_lut_type_to_qs_num(enum ice_lut_type lut_type)
+{
+	switch (lut_type) {
+	case ICE_LUT_PF:
+		return ICE_LUT_PF_MAX_QS;
+	case ICE_LUT_GLOBAL:
+		return ICE_LUT_GLOBAL_MAX_QS;
+	case ICE_LUT_VSI:
+	default:
+		return ICE_LUT_VSI_MAX_QS;
+	}
+}
+
 /**
  * ice_vsi_type_str - maps VSI type enum to string equivalents
  * @vsi_type: VSI type enum
@@ -1700,6 +1717,9 @@ int ice_vsi_cfg_rss_lut_key(struct ice_vsi *vsi)
 	}
 
 	scoped_guard(mutex, &pf->rss_lut_lock) {
+		/* devlink changes the LUT type under this lock */
+		vsi->rss_size = min(vsi->rss_size,
+				    ice_lut_type_to_qs_num(vsi->rss_lut_type));
 		lut = kzalloc(vsi->rss_table_size, GFP_KERNEL);
 		if (!lut)
 			return -ENOMEM;
