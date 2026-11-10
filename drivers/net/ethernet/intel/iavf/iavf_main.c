@@ -509,6 +509,7 @@ static void iavf_map_rings_to_vectors(struct iavf_adapter *adapter)
 			vidx = 0;
 	}
 
+	adapter->map_qps_sent = 0;
 	adapter->aq_required |= IAVF_FLAG_AQ_MAP_VECTORS;
 }
 
@@ -1783,12 +1784,17 @@ int iavf_config_rss(struct iavf_adapter *adapter)
  * iavf_fill_rss_lut - Fill the lut with default values
  * @adapter: board private structure
  **/
-static void iavf_fill_rss_lut(struct iavf_adapter *adapter)
+void iavf_fill_rss_lut(struct iavf_adapter *adapter)
 {
-	u16 i;
+	struct virtchnl_max_rss_qregion *qregion = &adapter->max_rss_qregion;
+	int max = adapter->num_active_queues;
 
-	for (i = 0; i < adapter->rss_lut_size; i++)
-		adapter->rss_lut[i] = i % adapter->num_active_queues;
+	/* width == 0: PF has not told us the region yet */
+	if (LARGE_NUM_QPAIRS_SUPPORT(adapter) && qregion->qregion_width)
+		max = min(max, (int)BIT(qregion->qregion_width));
+
+	for (int i = 0; i < adapter->rss_lut_size; i++)
+		adapter->rss_lut[i] = i % max;
 }
 
 /**
@@ -2099,6 +2105,8 @@ static int iavf_process_aq_command(struct iavf_adapter *adapter)
 {
 	if (adapter->aq_required & IAVF_FLAG_AQ_GET_CONFIG)
 		return iavf_send_vf_config_msg(adapter);
+	if (adapter->aq_required & IAVF_FLAG_AQ_GET_MAX_RSS_QREGION)
+		return iavf_send_max_rss_qregion(adapter);
 	if (adapter->aq_required & IAVF_FLAG_AQ_GET_OFFLOAD_VLAN_V2_CAPS)
 		return iavf_send_vf_offload_vlan_v2_msg(adapter);
 	if (adapter->aq_required & IAVF_FLAG_AQ_GET_SUPPORTED_RXDIDS)
@@ -2272,6 +2280,12 @@ static int iavf_process_aq_command(struct iavf_adapter *adapter)
 	if (adapter->aq_required & IAVF_FLAG_AQ_SEND_PTP_CMD) {
 		iavf_virtchnl_send_ptp_cmd(adapter);
 		return IAVF_SUCCESS;
+	}
+	if (adapter->aq_required & IAVF_FLAG_AQ_REQUEST_QUEUES) {
+		/* ethtool -L has already reported success, retry until sent */
+		if (!iavf_request_queues(adapter, adapter->num_req_queues_next))
+			adapter->aq_required &= ~IAVF_FLAG_AQ_REQUEST_QUEUES;
+		return 0;
 	}
 	if (adapter->aq_required & IAVF_FLAG_AQ_REQUEST_STATS) {
 		iavf_request_stats(adapter);
@@ -2468,8 +2482,10 @@ err:
  */
 int iavf_parse_vf_resource_msg(struct iavf_adapter *adapter)
 {
-	int i, num_req_queues = adapter->num_req_queues;
+	int i, qnum, num_req_queues = adapter->num_req_queues;
 	struct iavf_vsi *vsi = &adapter->vsi;
+	bool reconfig_rss = false;
+	bool init_req = false;
 
 	for (i = 0; i < adapter->vf_res->num_vsis; i++) {
 		if (adapter->vf_res->vsi_res[i].vsi_type == VIRTCHNL_VSI_SRIOV)
@@ -2479,6 +2495,18 @@ int iavf_parse_vf_resource_msg(struct iavf_adapter *adapter)
 		dev_err(&adapter->pdev->dev, "No LAN VSI found\n");
 		return -ENODEV;
 	}
+
+	/* in LARGE mode we ask PF at init for more queues, up to one per CPU */
+	if (adapter->state == __IAVF_INIT_GET_RESOURCES &&
+	    LARGE_NUM_QPAIRS_SUPPORT(adapter) &&
+	    adapter->vf_res->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_REQ_QUEUES)
+		init_req = true;
+
+	/* PF resets us to grant the request, but other resets could come
+	 * first, then we have a different count and need to ask again
+	 */
+	if (init_req && num_req_queues != adapter->vsi_res->num_queue_pairs)
+		num_req_queues = 0;
 
 	if (num_req_queues &&
 	    num_req_queues > adapter->vsi_res->num_queue_pairs) {
@@ -2496,6 +2524,14 @@ int iavf_parse_vf_resource_msg(struct iavf_adapter *adapter)
 
 		return -EAGAIN;
 	}
+	/* PF could cut our queues on reset, e.g. when RSS LUT got smaller */
+	if (adapter->num_active_queues > adapter->vsi_res->num_queue_pairs) {
+		adapter->flags |= IAVF_FLAG_REINIT_MSIX_NEEDED;
+		adapter->num_req_queues = adapter->vsi_res->num_queue_pairs;
+		iavf_schedule_reset(adapter, IAVF_FLAG_RESET_NEEDED);
+
+		return -EAGAIN;
+	}
 	adapter->num_req_queues = 0;
 	adapter->vsi.id = adapter->vsi_res->vsi_id;
 
@@ -2504,11 +2540,52 @@ int iavf_parse_vf_resource_msg(struct iavf_adapter *adapter)
 	vsi->netdev = adapter->netdev;
 	vsi->qs_handle = adapter->vsi_res->qset_handle;
 	if (adapter->vf_res->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_RSS_PF) {
-		adapter->rss_key_size = adapter->vf_res->rss_key_size;
-		adapter->rss_lut_size = adapter->vf_res->rss_lut_size;
+		if ((adapter->rss_key &&
+		     adapter->rss_key_size != adapter->vf_res->rss_key_size) ||
+		    (adapter->rss_lut &&
+		     adapter->rss_lut_size != adapter->vf_res->rss_lut_size)) {
+			reconfig_rss = true;
+		} else {
+			adapter->rss_key_size = adapter->vf_res->rss_key_size;
+			adapter->rss_lut_size = adapter->vf_res->rss_lut_size;
+		}
 	} else {
 		adapter->rss_key_size = IAVF_HKEY_ARRAY_SIZE;
 		adapter->rss_lut_size = IAVF_HLUT_ARRAY_SIZE;
+	}
+
+	if (reconfig_rss) {
+		u8 *rss_key, *rss_lut;
+
+		rss_key = kzalloc(adapter->vf_res->rss_key_size, GFP_KERNEL);
+		rss_lut = kzalloc(adapter->vf_res->rss_lut_size, GFP_KERNEL);
+		if (!rss_lut || !rss_key) {
+			kfree(rss_key);
+			kfree(rss_lut);
+			/* old buffers and sizes are kept, retry via reset */
+			iavf_schedule_reset(adapter, IAVF_FLAG_RESET_NEEDED);
+			return -ENOMEM;
+		}
+
+		kfree(adapter->rss_key);
+		kfree(adapter->rss_lut);
+		adapter->rss_key = rss_key;
+		adapter->rss_lut = rss_lut;
+		adapter->rss_key_size = adapter->vf_res->rss_key_size;
+		adapter->rss_lut_size = adapter->vf_res->rss_lut_size;
+		iavf_init_rss(adapter);
+	}
+
+	if (init_req) {
+		qnum = min_t(int, num_online_cpus(), IAVF_MAX_REQ_QUEUES);
+		/* granted, or we have enough */
+		if (num_req_queues || qnum <= adapter->vsi_res->num_queue_pairs)
+			return 0;
+
+		adapter->current_op = VIRTCHNL_OP_UNKNOWN;
+		adapter->extended_caps |= IAVF_EXTENDED_CAP_RECV_REQ_QUEUES;
+
+		return iavf_request_queues(adapter, qnum);
 	}
 
 	return 0;
@@ -2557,17 +2634,18 @@ static void iavf_init_get_resources(struct iavf_adapter *adapter)
 		goto err_alloc;
 	}
 
+	/* Some features require additional messages to negotiate extended
+	 * capabilities. These are processed in sequence by the
+	 * __IAVF_INIT_EXTENDED_CAPS driver state.
+	 */
+	adapter->extended_caps = IAVF_EXTENDED_CAPS;
+
 	err = iavf_parse_vf_resource_msg(adapter);
 	if (err) {
 		dev_err(&pdev->dev, "Failed to parse VF resource message from PF (%d)\n",
 			err);
 		goto err_alloc;
 	}
-	/* Some features require additional messages to negotiate extended
-	 * capabilities. These are processed in sequence by the
-	 * __IAVF_INIT_EXTENDED_CAPS driver state.
-	 */
-	adapter->extended_caps = IAVF_EXTENDED_CAPS;
 
 	iavf_change_state(adapter, __IAVF_INIT_EXTENDED_CAPS);
 	return;
@@ -2575,8 +2653,50 @@ static void iavf_init_get_resources(struct iavf_adapter *adapter)
 err_alloc:
 	kfree(adapter->vf_res);
 	adapter->vf_res = NULL;
+	adapter->vsi_res = NULL;
 err:
 	iavf_change_state(adapter, __IAVF_INIT_FAILED);
+}
+
+/**
+ * iavf_init_recv_req_queues - part of requesting queues in LARGE mode
+ * @adapter: board private structure
+ *
+ * Function waits for the outcome of the queue request sent by
+ * iavf_parse_vf_resource_msg(). PF resets us when it grants the request and
+ * replies only to deny it, then we ask for as many queues as PF can give,
+ * unless we have that many already.
+ */
+static void iavf_init_recv_req_queues(struct iavf_adapter *adapter)
+{
+	int num = -EALREADY;
+
+	/* PF grants by resetting us, the event may be lost with the ARQ */
+	if (rd32(&adapter->hw, IAVF_VF_ARQLEN1) &
+	    IAVF_VF_ARQLEN1_ARQENABLE_MASK)
+		num = iavf_get_req_queues_reply(adapter);
+	else
+		iavf_schedule_reset(adapter, IAVF_FLAG_RESET_PENDING);
+
+	if (num == -EALREADY || adapter->flags & IAVF_FLAG_RESET_PENDING) {
+		/* no reply yet, or PF reset us after granting */
+		iavf_change_state(adapter, __IAVF_INIT_FAILED);
+		return;
+	}
+
+	adapter->current_op = VIRTCHNL_OP_UNKNOWN;
+	if (num > 0) {
+		dev_info(&adapter->pdev->dev,
+			 "Requested %d queues, PF can support %d\n",
+			 adapter->num_req_queues, num);
+		if (num > adapter->vsi_res->num_queue_pairs &&
+		    !iavf_request_queues(adapter, num))
+			return;
+	}
+
+	/* go on with the queues PF has given us */
+	adapter->num_req_queues = 0;
+	adapter->extended_caps &= ~IAVF_EXTENDED_CAP_RECV_REQ_QUEUES;
 }
 
 /**
@@ -2633,6 +2753,65 @@ err:
 	 * __IAVF_INIT_FAILED attempts to recover.
 	 */
 	adapter->extended_caps |= IAVF_EXTENDED_CAP_SEND_VLAN_V2;
+	iavf_change_state(adapter, __IAVF_INIT_FAILED);
+}
+
+/*
+ * iavf_init_send_max_rss_qregion - part of querying for RSS max queue region
+ * @adapter: board private structure
+ *
+ * Function processes send of the VIRTCHNL_OP_GET_MAX_RSS_QREGION to the PF.
+ * Must clear IAVF_EXTENDED_CAP_RECV_RSS_QREGION if the message is not sent, e.g.
+ * due to the PF not negotiating VIRTCHNL_VF_LARGE_NUM_QPAIRS.
+ */
+static void iavf_init_send_max_rss_qregion(struct iavf_adapter *adapter)
+{
+	int ret;
+
+	WARN_ON(!(adapter->extended_caps & IAVF_EXTENDED_CAP_SEND_RSS_QREGION));
+
+	ret = iavf_send_max_rss_qregion(adapter);
+	if (ret == -EOPNOTSUPP) {
+		/* PF does not support VIRTCHNL_VF_LARGE_NUM_QPAIRS. In this
+		 * case, we did not send the capability exchange message and do
+		 * not expect a response.
+		 */
+		adapter->extended_caps &= ~IAVF_EXTENDED_CAP_RECV_RSS_QREGION;
+	}
+
+	/* We sent the message, so move on to the next step */
+	adapter->extended_caps &= ~IAVF_EXTENDED_CAP_SEND_RSS_QREGION;
+}
+
+/**
+ * iavf_init_recv_max_rss_qregion - part of querying for RSS max queue region
+ * @adapter: board private structure
+ *
+ * Function processes receipt of the RSS max qregion to be used for the LUT.
+ */
+static void iavf_init_recv_max_rss_qregion(struct iavf_adapter *adapter)
+{
+	int ret;
+
+	WARN_ON(!(adapter->extended_caps & IAVF_EXTENDED_CAP_RECV_RSS_QREGION));
+
+	memset(&adapter->max_rss_qregion, 0, sizeof(adapter->max_rss_qregion));
+
+	ret = iavf_get_max_rss_qregion(adapter);
+	if (ret)
+		goto err;
+
+	/* We've processed the PF response to the VIRTCHNL_OP_GET_MAX_RSS_QREGION
+	 * message we sent previously.
+	 */
+	adapter->extended_caps &= ~IAVF_EXTENDED_CAP_RECV_RSS_QREGION;
+	return;
+
+err:
+	/* We didn't receive a reply. Make sure we try sending again when
+	 * __IAVF_INIT_FAILED attempts to recover.
+	 */
+	adapter->extended_caps |= IAVF_EXTENDED_CAP_SEND_RSS_QREGION;
 	iavf_change_state(adapter, __IAVF_INIT_FAILED);
 }
 
@@ -2757,6 +2936,12 @@ static void iavf_init_process_extended_caps(struct iavf_adapter *adapter)
 {
 	WARN_ON(adapter->state != __IAVF_INIT_EXTENDED_CAPS);
 
+	/* Must be first, other steps would drop the reply while polling */
+	if (adapter->extended_caps & IAVF_EXTENDED_CAP_RECV_REQ_QUEUES) {
+		iavf_init_recv_req_queues(adapter);
+		return;
+	}
+
 	/* Process capability exchange for VLAN V2 */
 	if (adapter->extended_caps & IAVF_EXTENDED_CAP_SEND_VLAN_V2) {
 		iavf_init_send_offload_vlan_v2_caps(adapter);
@@ -2781,6 +2966,16 @@ static void iavf_init_process_extended_caps(struct iavf_adapter *adapter)
 		return;
 	} else if (adapter->extended_caps & IAVF_EXTENDED_CAP_RECV_PTP) {
 		iavf_init_recv_ptp_caps(adapter);
+		return;
+	}
+
+	/* Process capability exchange for RSS max qregion */
+	if (adapter->extended_caps & IAVF_EXTENDED_CAP_SEND_RSS_QREGION) {
+		iavf_init_send_max_rss_qregion(adapter);
+		return;
+	}
+	if (adapter->extended_caps & IAVF_EXTENDED_CAP_RECV_RSS_QREGION) {
+		iavf_init_recv_max_rss_qregion(adapter);
 		return;
 	}
 
@@ -2893,6 +3088,10 @@ static void iavf_init_config_adapter(struct iavf_adapter *adapter)
 	/* Setup initial PTP configuration */
 	iavf_ptp_init(adapter);
 
+	/* queues requested at init are set up now */
+	adapter->num_req_queues = 0;
+	adapter->flags &= ~IAVF_FLAG_REINIT_ITR_NEEDED;
+
 	iavf_schedule_finish_config(adapter);
 	return;
 
@@ -2977,6 +3176,9 @@ static int iavf_watchdog_step(struct iavf_adapter *adapter)
 			 */
 			iavf_change_state(adapter, __IAVF_STARTUP);
 			adapter->flags &= ~IAVF_FLAG_PF_COMMS_FAILED;
+			/* fresh retry budget, and init asks for queues again */
+			adapter->aq_wait_count = 0;
+			adapter->num_req_queues = 0;
 		}
 		adapter->aq_required = 0;
 		adapter->current_op = VIRTCHNL_OP_UNKNOWN;
@@ -3015,7 +3217,8 @@ static int iavf_watchdog_step(struct iavf_adapter *adapter)
 	/* check for hw reset */
 	reg_val = rd32(hw, IAVF_VF_ARQLEN1) & IAVF_VF_ARQLEN1_ARQENABLE_MASK;
 	if (!reg_val) {
-		adapter->aq_required = 0;
+		/* keep a queue request of ethtool -L that is not sent yet */
+		adapter->aq_required &= IAVF_FLAG_AQ_REQUEST_QUEUES;
 		adapter->current_op = VIRTCHNL_OP_UNKNOWN;
 		dev_err(&adapter->pdev->dev, "Hardware reset detected\n");
 		iavf_schedule_reset(adapter, IAVF_FLAG_RESET_PENDING);
@@ -3251,13 +3454,19 @@ continue_reset:
 			 status);
 		goto reset_err;
 	}
-	adapter->aq_required = 0;
+	/* keep a queue request of ethtool -L that is not sent yet */
+	adapter->aq_required &= IAVF_FLAG_AQ_REQUEST_QUEUES;
 
 	if ((adapter->flags & IAVF_FLAG_REINIT_MSIX_NEEDED) ||
 	    (adapter->flags & IAVF_FLAG_REINIT_ITR_NEEDED)) {
 		err = iavf_reinit_interrupt_scheme(adapter, running);
 		if (err)
 			goto reset_err;
+	} else {
+		/* queues we requested were set up by the previous reset, fewer
+		 * of them now is a config change, not a denial
+		 */
+		adapter->num_req_queues = 0;
 	}
 
 	if (RSS_AQ(adapter)) {
@@ -3269,6 +3478,7 @@ continue_reset:
 	}
 
 	adapter->aq_required |= IAVF_FLAG_AQ_GET_CONFIG;
+	adapter->map_qps_sent = 0;
 	adapter->aq_required |= IAVF_FLAG_AQ_MAP_VECTORS;
 
 	/* Certain capabilities require an extended negotiation process using

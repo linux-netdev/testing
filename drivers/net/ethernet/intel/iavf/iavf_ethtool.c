@@ -1643,6 +1643,11 @@ static int iavf_set_rxnfc(struct net_device *netdev, struct ethtool_rxnfc *cmd)
 static u32 iavf_get_rx_ring_count(struct net_device *netdev)
 {
 	struct iavf_adapter *adapter = netdev_priv(netdev);
+	u16 width = adapter->max_rss_qregion.qregion_width;
+
+	/* RSS can use only the PF RSS region, see iavf_fill_rss_lut() */
+	if (LARGE_NUM_QPAIRS_SUPPORT(adapter) && width)
+		return min_t(u32, adapter->num_active_queues, BIT(width));
 
 	return adapter->num_active_queues;
 }
@@ -1683,6 +1688,18 @@ static int iavf_get_rxnfc(struct net_device *netdev, struct ethtool_rxnfc *cmd,
 
 	return ret;
 }
+
+/* in LARGE mode PF gives us up to its RSS region once it has told us that */
+static u32 iavf_max_channels(struct iavf_adapter *adapter)
+{
+	u16 width = adapter->max_rss_qregion.qregion_width;
+
+	if (LARGE_NUM_QPAIRS_SUPPORT(adapter) && width)
+		return BIT(width);
+
+	return adapter->vsi_res->num_queue_pairs;
+}
+
 /**
  * iavf_get_channels - get the number of channels supported by the device
  * @netdev: network interface device structure
@@ -1697,7 +1714,7 @@ static void iavf_get_channels(struct net_device *netdev,
 	struct iavf_adapter *adapter = netdev_priv(netdev);
 
 	/* Report maximum channels */
-	ch->max_combined = adapter->vsi_res->num_queue_pairs;
+	ch->max_combined = iavf_max_channels(adapter);
 
 	ch->max_other = NONQ_VECS;
 	ch->other_count = NONQ_VECS;
@@ -1730,14 +1747,25 @@ static int iavf_set_channels(struct net_device *netdev,
 	/* All of these should have already been checked by ethtool before this
 	 * even gets to us, but just to be sure.
 	 */
-	if (num_req == 0 || num_req > adapter->vsi_res->num_queue_pairs)
+	if (num_req == 0 || num_req > iavf_max_channels(adapter))
 		return -EINVAL;
+
+	if (ch->rx_count || ch->tx_count || ch->other_count != NONQ_VECS)
+		return -EINVAL;
+
+	/* PF has not answered our previous request yet */
+	if (adapter->current_op == VIRTCHNL_OP_REQUEST_QUEUES)
+		return -EBUSY;
 
 	if (num_req == adapter->num_active_queues)
 		return 0;
 
-	if (ch->rx_count || ch->tx_count || ch->other_count != NONQ_VECS)
-		return -EINVAL;
+	if (LARGE_NUM_QPAIRS_SUPPORT(adapter)) {
+		/* the watchdog sends it once no other op is in flight */
+		adapter->num_req_queues_next = num_req;
+		iavf_schedule_aq_request(adapter, IAVF_FLAG_AQ_REQUEST_QUEUES);
+		return 0;
+	}
 
 	adapter->num_req_queues = num_req;
 	adapter->flags |= IAVF_FLAG_REINIT_ITR_NEEDED;
@@ -1817,12 +1845,25 @@ static int iavf_set_rxfh(struct net_device *netdev,
 			 struct netlink_ext_ack *extack)
 {
 	struct iavf_adapter *adapter = netdev_priv(netdev);
+	u16 width = adapter->max_rss_qregion.qregion_width;
 	u16 i;
 
 	/* Only support toeplitz hash function */
 	if (rxfh->hfunc != ETH_RSS_HASH_NO_CHANGE &&
 	    rxfh->hfunc != ETH_RSS_HASH_TOP)
 		return -EOPNOTSUPP;
+
+	/* PF takes only queues from its RSS region, see iavf_fill_rss_lut() */
+	if (rxfh->indir && LARGE_NUM_QPAIRS_SUPPORT(adapter) && width) {
+		for (i = 0; i < adapter->rss_lut_size; i++) {
+			if (rxfh->indir[i] < BIT(width))
+				continue;
+			NL_SET_ERR_MSG_FMT_MOD(extack,
+					       "RSS can use only the first %lu queues",
+					       BIT(width));
+			return -EINVAL;
+		}
+	}
 
 	if ((rxfh->input_xfrm & RXH_XFRM_SYM_XOR) &&
 	    adapter->hfunc != VIRTCHNL_RSS_ALG_TOEPLITZ_SYMMETRIC) {
