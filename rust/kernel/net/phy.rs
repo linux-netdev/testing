@@ -72,10 +72,10 @@ pub trait PhyContext: private::Sealed {}
 /// other access to the `phy_device` made under `phy_device->lock`.
 pub struct Locked;
 
-/// The [`Device`] context of callbacks that PHYLIB calls both with and without
-/// `phy_device->lock` held.
+/// The [`Device`] context of [`Driver::soft_reset`] and [`Driver::match_phy_device`].
 ///
-/// A callback in this context must not take `phy_device->lock`.
+/// PHYLIB calls these callbacks both with and without `phy_device->lock` held. A callback in this
+/// context must not take `phy_device->lock`.
 ///
 /// # Invariants
 ///
@@ -322,6 +322,22 @@ impl<Ctx: PhyContext> Device<Ctx> {
     }
 }
 
+impl Device<MaybeLocked> {
+    /// Creates a new [`Device`] reference in the [`MaybeLocked`] context from a raw pointer.
+    ///
+    /// # Safety
+    ///
+    /// For the duration of `'a`, the pointer must point at a valid `phy_device` whose
+    /// `mdio.dev` is valid.
+    unsafe fn from_raw_maybe_locked<'a>(ptr: *mut bindings::phy_device) -> &'a Self {
+        // CAST: `Self` is a `repr(transparent)` wrapper around `bindings::phy_device`.
+        let ptr = ptr.cast::<Self>();
+        // SAFETY: The pointer is valid for `'a`. A shared reference does not assert exclusive
+        // access, and `Opaque` permits concurrent mutation by the C side.
+        unsafe { &*ptr }
+    }
+}
+
 impl core::ops::Deref for Device<Locked> {
     type Target = Device<MaybeLocked>;
 
@@ -370,10 +386,9 @@ impl<T: Driver> Adapter<T> {
     /// `phydev` must be passed by the corresponding callback in `phy_driver`.
     unsafe extern "C" fn soft_reset_callback(phydev: *mut bindings::phy_device) -> c_int {
         from_result(|| {
-            // SAFETY: This callback is called only in contexts
-            // where we hold `phy_device->lock`, so the accessors on
-            // `Device` are okay to call.
-            let dev = unsafe { Device::from_raw(phydev) };
+            // SAFETY: `phydev` is valid for the callback. `phy_init_hw()` calls `soft_reset` both
+            // with and without `phy_device->lock`, which is the `MaybeLocked` context.
+            let dev = unsafe { Device::from_raw_maybe_locked(phydev) };
             T::soft_reset(dev)?;
             Ok(0)
         })
@@ -471,10 +486,9 @@ impl<T: Driver> Adapter<T> {
         phydev: *mut bindings::phy_device,
         _phydrv: *const bindings::phy_driver,
     ) -> c_int {
-        // SAFETY: This callback is called only in contexts
-        // where we hold `phy_device->lock`, so the accessors on
-        // `Device` are okay to call.
-        let dev = unsafe { Device::from_raw(phydev) };
+        // SAFETY: `phydev` is valid for the callback. `phy_bus_match()` holds no PHY lock, which
+        // is the `MaybeLocked` context.
+        let dev = unsafe { Device::from_raw_maybe_locked(phydev) };
         T::match_phy_device(dev).into()
     }
 
@@ -635,7 +649,9 @@ pub trait Driver {
     const PHY_DEVICE_ID: DeviceId = DeviceId::new_with_custom_mask(0, 0);
 
     /// Issues a PHY software reset.
-    fn soft_reset(_dev: &mut Device) -> Result {
+    ///
+    /// Called in the [`MaybeLocked`] context.
+    fn soft_reset(_dev: &Device<MaybeLocked>) -> Result {
         build_error!(VTABLE_DEFAULT_ERROR)
     }
 
@@ -651,7 +667,9 @@ pub trait Driver {
 
     /// Returns true if this is a suitable driver for the given phydev.
     /// If not implemented, matching is based on [`Driver::PHY_DEVICE_ID`].
-    fn match_phy_device(_dev: &Device) -> bool {
+    ///
+    /// Called in the [`MaybeLocked`] context.
+    fn match_phy_device(_dev: &Device<MaybeLocked>) -> bool {
         false
     }
 
