@@ -971,6 +971,8 @@ static void rtl8150_disconnect(struct usb_interface *intf)
 		tasklet_kill(&dev->tl);
 		unregister_netdev(dev->netdev);
 		unlink_all_urbs(dev);
+		/* A completion may have scheduled it after the first kill. */
+		tasklet_kill(&dev->tl);
 		free_all_urbs(dev);
 		free_skb_pool(dev);
 		dev_kfree_skb(dev->rx_skb);
