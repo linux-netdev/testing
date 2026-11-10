@@ -361,7 +361,8 @@ int ice_remove_mac(struct ice_hw *hw, struct list_head *m_lst);
 bool ice_vlan_fltr_exist(struct ice_hw *hw, u16 vlan_id, u16 vsi_handle);
 int ice_add_eth_mac(struct ice_hw *hw, struct list_head *em_list);
 int ice_remove_eth_mac(struct ice_hw *hw, struct list_head *em_list);
-int ice_cfg_rdma_fltr(struct ice_hw *hw, u16 vsi_handle, bool enable);
+int ice_cfg_rdma_fltr(struct ice_hw *hw, u16 vsi_handle,
+		      const struct ice_aqc_vsi_props *info, bool enable);
 void ice_remove_vsi_fltr(struct ice_hw *hw, u16 vsi_handle);
 
 /* Promisc/defport setup for VSIs */
