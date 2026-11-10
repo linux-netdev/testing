@@ -2178,17 +2178,32 @@ EXPORT_SYMBOL_GPL(nf_ct_port_nlattr_tuple_size);
 #endif
 
 /* Used by ipt_REJECT and ip6t_REJECT. */
-static void nf_conntrack_attach(struct sk_buff *nskb, const struct sk_buff *skb)
+static void nf_conntrack_attach(struct sk_buff *nskb, const struct sk_buff *skb,
+				u8 l4proto)
 {
 	struct nf_conn *ct;
 	enum ip_conntrack_info ctinfo;
 
-	/* This ICMP is in reverse direction to the packet which caused it */
 	ct = nf_ct_get(skb, &ctinfo);
-	if (CTINFO2DIR(ctinfo) == IP_CT_DIR_ORIGINAL)
-		ctinfo = IP_CT_RELATED_REPLY;
-	else
-		ctinfo = IP_CT_RELATED;
+	if (l4proto == IPPROTO_TCP) {
+		/*
+		 * A reset we generate for an existing TCP connection belongs
+		 * to that connection, it is not an error related to it, so it
+		 * carries the state of the connection.  Attaching it as
+		 * related would let it take a fresh NAT mapping on its way
+		 * out, i.e. rewrite the reset.
+		 */
+		if (CTINFO2DIR(ctinfo) == IP_CT_DIR_ORIGINAL)
+			ctinfo = IP_CT_ESTABLISHED_REPLY;
+		else
+			ctinfo = IP_CT_ESTABLISHED;
+	} else {
+		/* Errors are in reverse direction to the packet that caused them. */
+		if (CTINFO2DIR(ctinfo) == IP_CT_DIR_ORIGINAL)
+			ctinfo = IP_CT_RELATED_REPLY;
+		else
+			ctinfo = IP_CT_RELATED;
+	}
 
 	/* Attach to new skbuff, and increment count */
 	nf_ct_set(nskb, ct, ctinfo);

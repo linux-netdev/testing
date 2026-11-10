@@ -702,7 +702,7 @@ EXPORT_SYMBOL_GPL(nf_nat_hook);
  * tracking in use: without this, connection may not be in hash table, and hence
  * manufactured ICMP or RST packets will not be associated with it.
  */
-void nf_ct_attach(struct sk_buff *new, const struct sk_buff *skb)
+void nf_ct_attach(struct sk_buff *new, const struct sk_buff *skb, u8 l4proto)
 {
 	const struct nf_ct_hook *ct_hook;
 
@@ -710,7 +710,7 @@ void nf_ct_attach(struct sk_buff *new, const struct sk_buff *skb)
 		rcu_read_lock();
 		ct_hook = rcu_dereference(nf_ct_hook);
 		if (ct_hook)
-			ct_hook->attach(new, skb);
+			ct_hook->attach(new, skb, l4proto);
 		rcu_read_unlock();
 	}
 }

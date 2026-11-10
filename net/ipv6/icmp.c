@@ -327,7 +327,7 @@ static int icmpv6_getfrag(void *from, char *to, int offset, int len, int odd, st
 				      to, len);
 	skb->csum = csum_block_add(skb->csum, csum, odd);
 	if (!(msg->type & ICMPV6_INFOMSG_MASK))
-		nf_ct_attach(skb, org_skb);
+		nf_ct_attach(skb, org_skb, IPPROTO_ICMP);
 	return 0;
 }
 
