@@ -59,6 +59,11 @@ struct fib_lookup_arg {
 	int			flags;
 #define FIB_LOOKUP_NOREF		1
 #define FIB_LOOKUP_IGNORE_LINKSTATE	2
+/* Return -ESRCH instead of mapping it to -ENETUNREACH. Only applies to IPv4
+ * lookups. When used with FIB_LOOKUP_NOREF, -ESRCH indicates the lookup
+ * exhausted all rules and tables without finding a usable route.
+ */
+#define FIB_LOOKUP_REPORT_MISS		4
 };
 
 struct fib_rules_ops {
