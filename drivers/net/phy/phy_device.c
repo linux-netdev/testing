@@ -333,8 +333,8 @@ out:
 }
 
 /* Wakeup interrupts may occur during the system sleep transition when
- * the PHY is inaccessible. Set flag to postpone handling until the PHY
- * has resumed. Wait for concurrent interrupt handler to complete.
+ * the PHY is inaccessible. Set flag to postpone handling until the
+ * transition ends. Wait for concurrent interrupt handler to complete.
  */
 static __maybe_unused void mdio_bus_phy_suspend_irq(struct phy_device *phydev)
 {
@@ -367,6 +367,7 @@ static __maybe_unused void mdio_bus_phy_resume_irq(struct phy_device *phydev)
 static __maybe_unused int mdio_bus_phy_suspend(struct device *dev)
 {
 	struct phy_device *phydev = to_phy_device(dev);
+	int ret;
 
 	if (phydev->mac_managed_pm)
 		return 0;
@@ -384,9 +385,20 @@ static __maybe_unused int mdio_bus_phy_suspend(struct device *dev)
 	if (!mdio_bus_phy_may_suspend(phydev))
 		return 0;
 
+	ret = phy_suspend(phydev);
+	if (ret) {
+		/* The PM core skips the resume callback of a device whose
+		 * suspend callback failed.
+		 */
+		mdio_bus_phy_resume_irq(phydev);
+		if (phy_uses_state_machine(phydev))
+			phy_start_machine(phydev);
+		return ret;
+	}
+
 	phydev->suspended_by_mdio_bus = 1;
 
-	return phy_suspend(phydev);
+	return 0;
 }
 
 static __maybe_unused int mdio_bus_phy_resume(struct device *dev)
@@ -412,11 +424,11 @@ static __maybe_unused int mdio_bus_phy_resume(struct device *dev)
 
 	ret = phy_init_hw(phydev);
 	if (ret < 0)
-		return ret;
+		goto err;
 
 	ret = phy_resume(phydev);
 	if (ret < 0)
-		return ret;
+		goto err;
 no_resume:
 	mdio_bus_phy_resume_irq(phydev);
 
@@ -424,6 +436,13 @@ no_resume:
 		phy_start_machine(phydev);
 
 	return 0;
+
+err:
+	/* Stop postponing, but leave a line that a postponed interrupt
+	 * disabled off: its handler may not reach a PHY that did not resume.
+	 */
+	WRITE_ONCE(phydev->irq_suspended, false);
+	return ret;
 }
 
 static SIMPLE_DEV_PM_OPS(mdio_bus_phy_pm_ops, mdio_bus_phy_suspend,
