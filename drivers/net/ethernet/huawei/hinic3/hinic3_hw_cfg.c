@@ -267,7 +267,9 @@ bool hinic3_support_nic(struct hinic3_hwdev *hwdev)
 
 u16 hinic3_func_max_qnum(struct hinic3_hwdev *hwdev)
 {
-	return hwdev->cfg_mgmt->cap.nic_svc_cap.max_sqs;
+	u16 max_qps = hwdev->cfg_mgmt->cap.nic_svc_cap.max_sqs;
+
+	return max_qps <= 1 ? 1 : max_qps;
 }
 
 u8 hinic3_physical_port_id(struct hinic3_hwdev *hwdev)
