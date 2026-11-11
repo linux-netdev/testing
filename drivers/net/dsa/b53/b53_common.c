@@ -797,6 +797,24 @@ void b53_brcm_hdr_setup(struct dsa_switch *ds, int port)
 		hdr_ctl |= GC_FRM_MGMT_PORT_M;
 	b53_write8(dev, B53_MGMT_PAGE, B53_GLOBAL_CONFIG, hdr_ctl);
 
+	/* With port 5 as the CPU port, a BCM531x5 runs in dual-IMP mode and
+	 * traps BPDUs from LAN ports to port 8. When port 8 is not a CPU
+	 * port, mirror them to port 5 instead. This takes the switch's only
+	 * mirror, so tc mirroring is refused.
+	 */
+	if (tag_en && port == 5 && is531x5(dev) &&
+	    !dsa_is_cpu_port(ds, B53_CPU_PORT)) {
+		b53_write48(dev, B53_MGMT_PAGE, B53_IG_MIR_MAC,
+			    ether_addr_to_u64(eth_stp_addr));
+		b53_write16(dev, B53_MGMT_PAGE, B53_IG_MIR_CTL,
+			    (MIRROR_DA << MIRROR_FILTER_SHIFT) |
+			    (dsa_user_ports(ds) & MIRROR_MASK));
+		b53_write16(dev, B53_MGMT_PAGE, B53_EG_MIR_CTL, 0);
+		b53_write16(dev, B53_MGMT_PAGE, B53_MIR_CAP_CTL,
+			    MIRROR_EN | port);
+		dev->bpdu_mirror = true;
+	}
+
 	/* B53_BRCM_HDR not present on devices with legacy tags */
 	if (dev->tag_protocol == DSA_TAG_PROTO_BRCM_LEGACY ||
 	    dev->tag_protocol == DSA_TAG_PROTO_BRCM_LEGACY_FCS)
@@ -2603,6 +2621,12 @@ int b53_mirror_add(struct dsa_switch *ds, int port,
 {
 	struct b53_device *dev = ds->priv;
 	u16 reg, loc;
+
+	if (dev->bpdu_mirror) {
+		NL_SET_ERR_MSG_MOD(extack,
+				   "The mirror carries BPDUs to CPU port 5");
+		return -EBUSY;
+	}
 
 	if (ingress)
 		loc = B53_IG_MIR_CTL;
