@@ -252,13 +252,13 @@ static inline const struct rt6_info *skb_rt6_info(const struct sk_buff *skb)
 /*
  *	Store a destination cache entry in a socket
  */
-static inline void ip6_dst_store(struct sock *sk, struct dst_entry *dst,
-				 bool daddr_set,
-				 bool saddr_set)
+static inline void ip6_dst_store_cookie(struct sock *sk, struct dst_entry *dst,
+					u32 cookie, bool daddr_set,
+					bool saddr_set)
 {
 	struct ipv6_pinfo *np = inet6_sk(sk);
 
-	np->dst_cookie = rt6_get_cookie(dst_rt6_info(dst));
+	np->dst_cookie = cookie;
 	sk_setup_caps(sk, dst);
 	np->daddr_cache = daddr_set;
 #ifdef CONFIG_IPV6_SUBTREES
@@ -266,8 +266,16 @@ static inline void ip6_dst_store(struct sock *sk, struct dst_entry *dst,
 #endif
 }
 
+static inline void ip6_dst_store(struct sock *sk, struct dst_entry *dst,
+				 bool daddr_set,
+				 bool saddr_set)
+{
+	ip6_dst_store_cookie(sk, dst, rt6_get_cookie(dst_rt6_info(dst)),
+			     daddr_set, saddr_set);
+}
+
 void ip6_sk_dst_store_flow(struct sock *sk, struct dst_entry *dst,
-			   const struct flowi6 *fl6);
+			   const struct flowi6 *fl6, u32 cookie);
 
 static inline bool ipv6_unicast_destination(const struct sk_buff *skb)
 {

@@ -1370,14 +1370,16 @@ struct dst_entry *ip6_sk_dst_lookup_flow(struct sock *sk, struct flowi6 *fl6,
 					 bool connected)
 {
 	struct dst_entry *dst = sk_dst_check(sk, inet6_sk(sk)->dst_cookie);
+	u32 cookie;
 
 	dst = ip6_sk_dst_check(sk, dst, fl6);
 	if (dst)
 		return dst;
 
-	dst = ip6_dst_lookup_flow(sock_net(sk), sk, fl6, final_dst);
+	dst = ip6_dst_lookup_flow_cookie(sock_net(sk), sk, fl6, final_dst,
+					 &cookie);
 	if (connected && !IS_ERR(dst))
-		ip6_sk_dst_store_flow(sk, dst_clone(dst), fl6);
+		ip6_sk_dst_store_flow(sk, dst_clone(dst), fl6, cookie);
 
 	return dst;
 }

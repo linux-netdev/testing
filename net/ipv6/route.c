@@ -3082,19 +3082,19 @@ void ip6_sk_update_pmtu(struct sk_buff *skb, struct sock *sk, __be32 mtu)
 }
 
 void ip6_sk_dst_store_flow(struct sock *sk, struct dst_entry *dst,
-			   const struct flowi6 *fl6)
+			   const struct flowi6 *fl6, u32 cookie)
 {
 #ifdef CONFIG_IPV6_SUBTREES
 	struct ipv6_pinfo *np = inet6_sk(sk);
 #endif
 
-	ip6_dst_store(sk, dst,
-		      ipv6_addr_equal(&fl6->daddr, &sk->sk_v6_daddr),
+	ip6_dst_store_cookie(sk, dst, cookie,
+			     ipv6_addr_equal(&fl6->daddr, &sk->sk_v6_daddr),
 #ifdef CONFIG_IPV6_SUBTREES
-		      ipv6_addr_equal(&fl6->saddr, &np->saddr) ?
-		      true :
+			     ipv6_addr_equal(&fl6->saddr, &np->saddr) ?
+			     true :
 #endif
-		      false);
+			     false);
 }
 
 static bool ip6_redirect_nh_match(const struct fib6_result *res,
