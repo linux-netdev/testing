@@ -1421,7 +1421,7 @@ static irqreturn_t phy_interrupt(int irq, void *phy_dat)
 	irqreturn_t ret;
 
 	/* Wakeup interrupts may occur during a system sleep transition.
-	 * Postpone handling until the PHY has resumed.
+	 * Postpone handling until the transition ends.
 	 */
 	if (IS_ENABLED(CONFIG_PM_SLEEP) && READ_ONCE(phydev->irq_suspended)) {
 		struct net_device *netdev = phydev->attached_dev;
