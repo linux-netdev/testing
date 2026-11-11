@@ -35,6 +35,23 @@
 #define PCI_VENDOR_ID_CELESTICA			0x18d4
 #define PCI_DEVICE_ID_CELESTICA_TIMECARD	0x1008
 
+#define PCI_VENDOR_ID_WIWI			0x2163
+#define PCI_DEVICE_ID_WIWI_TIMECARD		0x1008
+
+/* WiWi production firmware uses the Celestica map behind LitePCIe. */
+#define OCP_WIWI_MMIO_OFFSET			0x02000000
+#define OCP_WIWI_IRQ_OFFSET			32
+#define OCP_WIWI_MSI_ENABLE			0x1800
+/* Upper 32 bits: UARTs, I2C and SPI can interrupt during probe. */
+#define OCP_WIWI_PERIPHERAL_IRQS			(BIT(3) | BIT(5) | BIT(7) | \
+						 BIT(9) | BIT(10))
+/* PPS/TS0/TS1, TS2, GEN1-4 and TS3/TS4. */
+#define OCP_WIWI_TIMING_IRQS			(GENMASK(2, 0) | BIT(6) | \
+						 GENMASK(16, 11))
+/* Leave unwired GNSS2 (4), HWICAP (8) and EEPROM/RGB I2C (17/18) masked. */
+#define OCP_WIWI_IRQS				(OCP_WIWI_PERIPHERAL_IRQS | \
+						 OCP_WIWI_TIMING_IRQS)
+
 #define PCI_VENDOR_ID_OROLIA			0x1ad7
 #define PCI_DEVICE_ID_OROLIA_ARTCARD		0xa000
 
@@ -405,6 +422,8 @@ struct ptp_ocp {
 	struct delayed_work	sync_work;
 	int			id;
 	int			n_irqs;
+	bool			wiwi;
+	void __iomem		*wiwi_msi;
 	struct ptp_ocp_serial_port	port[__PORT_COUNT];
 	bool			fw_loader;
 	u8			fw_tag;
@@ -1322,6 +1341,13 @@ static struct ocp_resource ocp_adva_x1_resource[] = {
 static const struct pci_device_id ptp_ocp_pcidev_id[] = {
 	{ PCI_DEVICE_DATA(META, TIMECARD, &ocp_fb_resource) },
 	{ PCI_DEVICE_DATA(CELESTICA, TIMECARD, &ocp_fb_resource) },
+	{
+		PCI_DEVICE_SUB(PCI_VENDOR_ID_WIWI, PCI_DEVICE_ID_WIWI_TIMECARD,
+			       PCI_VENDOR_ID_XILINX, 0x0007),
+		.class = PCI_CLASS_MEMORY_OTHER << 8,
+		.class_mask = 0xffffff,
+		.driver_data = (kernel_ulong_t)ocp_fb_resource,
+	},
 	{ PCI_DEVICE_DATA(OROLIA, ARTCARD, &ocp_art_resource) },
 	{ PCI_DEVICE_DATA(ADVA, TIMECARD, &ocp_adva_resource) },
 	{ PCI_DEVICE_DATA(ADVA, TIMECARD_X1, &ocp_adva_x1_resource) },
@@ -2174,6 +2200,11 @@ ptp_ocp_devlink_flash_update(struct devlink *devlink,
 	const char *msg;
 	int err;
 
+	if (bp->wiwi) {
+		NL_SET_ERR_MSG_MOD(extack, "WiWi flash updates are not supported");
+		return -EOPNOTSUPP;
+	}
+
 	if (params->component) {
 		if (!bp->has_cpld ||
 		    strcmp(params->component, ADVA_CPLD_COMPONENT)) {
@@ -2332,20 +2363,29 @@ ptp_ocp_register_spi(struct ptp_ocp *bp, struct ocp_resource *r)
 }
 
 static struct platform_device *
-ptp_ocp_i2c_bus(struct pci_dev *pdev, struct ocp_resource *r, int id)
+ptp_ocp_i2c_bus(struct ptp_ocp *bp, struct ocp_resource *r, int id)
 {
+	struct xiic_i2c_platform_data wiwi_data;
+	struct pci_dev *pdev = bp->pdev;
 	struct ptp_ocp_i2c_info *info;
 	struct resource res[2];
 	resource_size_t start;
+	const void *data;
 
 	info = r->extra;
+	data = info->data;
+	if (bp->wiwi) {
+		wiwi_data = *(struct xiic_i2c_platform_data *)info->data;
+		wiwi_data.force_32bit_access = true;
+		data = &wiwi_data;
+	}
 	start = pci_resource_start(pdev, 0) + r->offset;
 	res[0] = DEFINE_RES_MEM(start, r->size);
 	res[1] = DEFINE_RES_IRQ(pci_irq_vector(pdev, r->irq_vec));
 
 	return platform_device_register_resndata(&pdev->dev, info->name,
 						 id, res, ARRAY_SIZE(res),
-						 info->data, info->data_size);
+						 data, info->data_size);
 }
 
 static int
@@ -2370,7 +2410,7 @@ ptp_ocp_register_i2c(struct ptp_ocp *bp, struct ocp_resource *r)
 
 	sprintf(buf, "%s.%d", info->name, id);
 	devm_clk_hw_register_clkdev(&pdev->dev, clk, NULL, buf);
-	p = ptp_ocp_i2c_bus(bp->pdev, r, id);
+	p = ptp_ocp_i2c_bus(bp, r, id);
 	if (IS_ERR(p))
 		return PTR_ERR(p);
 
@@ -2641,7 +2681,7 @@ ptp_ocp_serial_line(struct ptp_ocp *bp, struct ocp_resource *r)
 	 */
 	memset(&uart, 0, sizeof(uart));
 	uart.port.dev = &pdev->dev;
-	uart.port.iotype = UPIO_MEM;
+	uart.port.iotype = bp->wiwi ? UPIO_MEM32 : UPIO_MEM;
 	uart.port.regshift = 2;
 	uart.port.mapbase = pci_resource_start(pdev, 0) + r->offset;
 	uart.port.irq = pci_irq_vector(pdev, r->irq_vec);
@@ -3110,7 +3150,26 @@ ptp_ocp_register_resources(struct ptp_ocp *bp, kernel_ulong_t driver_data)
 	int err = 0;
 
 	table = (struct ocp_resource *)driver_data;
-	for (r = table; r->setup; r++) {
+	for (; table->setup; table++) {
+		struct ocp_resource translated = *table;
+
+		r = table;
+		if (bp->wiwi) {
+			/* GNSS2 is instantiated but not routed to FPGA pins. */
+			if (r->setup == ptp_ocp_register_serial &&
+			    r->bp_offset == offsetof(struct ptp_ocp,
+						    port[PORT_GNSS2]))
+				continue;
+			/* Never modify the resource table shared with other cards. */
+			if (translated.offset)
+				translated.offset += OCP_WIWI_MMIO_OFFSET;
+			if (r->setup == ptp_ocp_register_ext ||
+			    r->setup == ptp_ocp_register_serial ||
+			    r->setup == ptp_ocp_register_i2c ||
+			    r->setup == ptp_ocp_register_spi)
+				translated.irq_vec += OCP_WIWI_IRQ_OFFSET;
+			r = &translated;
+		}
 		if (!ptp_ocp_allow_irq(bp, r))
 			continue;
 		err = r->setup(bp, r);
@@ -5787,6 +5846,12 @@ ptp_ocp_detach(struct ptp_ocp *bp)
 	platform_device_unregister(bp->i2c_ctrl);
 	if (bp->i2c_clk)
 		clk_hw_unregister_fixed_rate(bp->i2c_clk);
+	/* Child removal can need interrupts, notably SPI NOR reset. */
+	if (bp->wiwi_msi) {
+		iowrite32(0, bp->wiwi_msi);
+		iowrite32(0, bp->wiwi_msi + 4);
+		ioread32(bp->wiwi_msi);
+	}
 	if (bp->n_irqs)
 		pci_free_irq_vectors(bp->pdev);
 	mutex_destroy(&bp->cpld_lock);
@@ -5952,6 +6017,99 @@ ptp_ocp_sync_work(struct work_struct *work)
 	queue_delayed_work(system_power_efficient_wq, &bp->sync_work, HZ);
 }
 
+/*
+ * CoreList is accessible via the configuration UART, not via PCIe.
+ * Check the image ID first: an unknown image need not provide any of
+ * the subsequent registers. Only the verified fixed layout is supported.
+ */
+static int ptp_ocp_wiwi_validate(struct pci_dev *pdev)
+{
+	static const struct {
+		u32 offset;
+		u32 version;
+	} versions[] = {
+		{ 0x02020000, 0x0000800f }, /* image */
+		{ 0x0300000c, 0x01040000 }, /* clock */
+		{ 0x0301000c, 0x01030001 }, /* timestamp 0 */
+		{ 0x0302000c, 0x01030001 }, /* timestamp 1 */
+		{ 0x0306000c, 0x01030001 }, /* timestamp 2 */
+		{ 0x0311000c, 0x01030001 }, /* timestamp 3 */
+		{ 0x0312000c, 0x01030001 }, /* timestamp 4 */
+		{ 0x030c000c, 0x01030001 }, /* PPS timestamp */
+		{ 0x030d000c, 0x01030001 }, /* signal 1 */
+		{ 0x030e000c, 0x01030001 }, /* signal 2 */
+		{ 0x030f000c, 0x01030001 }, /* signal 3 */
+		{ 0x0310000c, 0x01030001 }, /* signal 4 */
+		{ 0x0303000c, 0x01030001 }, /* PPS generator */
+		{ 0x0304000c, 0x01030002 }, /* PPS input */
+		{ 0x0305000c, 0x02030002 }, /* ToD */
+		{ 0x0307000c, 0x02000002 }, /* IRIG input */
+		{ 0x0308000c, 0x02000001 }, /* IRIG output */
+		{ 0x0309000c, 0x00010002 }, /* DCF input */
+		{ 0x030a000c, 0x00010000 }, /* DCF output */
+		{ 0x030b000c, 0x02000002 }, /* NMEA output */
+	};
+	u32 table, pba, value;
+	void __iomem *base;
+	unsigned int i;
+	int cap, err;
+
+	cap = pci_find_capability(pdev, PCI_CAP_ID_MSIX);
+	if (pdev->revision != 2 ||
+	    !(pci_resource_flags(pdev, 0) & IORESOURCE_MEM) ||
+	    pci_resource_len(pdev, 0) != 0x04000000 || !cap ||
+	    pci_msix_vec_count(pdev) != 64 ||
+	    pci_read_config_dword(pdev, cap + PCI_MSIX_TABLE, &table) ||
+	    pci_read_config_dword(pdev, cap + PCI_MSIX_PBA, &pba) ||
+	    table != 0x2000 || pba != 0x1808)
+		return dev_err_probe(&pdev->dev, -ENODEV,
+				     "Unsupported WiWi PCI layout\n");
+
+	err = pci_request_region(pdev, 0, KBUILD_MODNAME);
+	if (err)
+		return err;
+
+	base = pci_iomap(pdev, 0, 0);
+	if (!base) {
+		err = -ENOMEM;
+		goto out_release;
+	}
+
+	for (i = 0; i < ARRAY_SIZE(versions); i++) {
+		value = ioread32(base + versions[i].offset);
+		if (value != versions[i].version) {
+			dev_err(&pdev->dev,
+				"Unsupported WiWi register version %#x at %#x\n",
+				value, versions[i].offset);
+			err = -ENODEV;
+			break;
+		}
+	}
+	pci_iounmap(pdev, base);
+out_release:
+	pci_release_region(pdev, 0);
+	return err;
+}
+
+static int ptp_ocp_wiwi_irq_init(struct ptp_ocp *bp)
+{
+	void __iomem *msi;
+
+	msi = __ptp_ocp_get_mem(bp, pci_resource_start(bp->pdev, 0) +
+			      OCP_WIWI_MSI_ENABLE, 8);
+	if (IS_ERR(msi))
+		return PTR_ERR(msi);
+	bp->wiwi_msi = msi;
+
+	/* LiteX stores bits 63:32 before bits 31:0, as little-endian words. */
+	iowrite32(0, msi);
+	iowrite32(0, msi + 4);
+	if (ioread32(msi) || ioread32(msi + 4))
+		return -EIO;
+
+	return 0;
+}
+
 static int
 ptp_ocp_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 {
@@ -5973,6 +6131,14 @@ ptp_ocp_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	}
 
 	bp = devlink_priv(devlink);
+	bp->wiwi = pdev->vendor == PCI_VENDOR_ID_WIWI &&
+		   pdev->device == PCI_DEVICE_ID_WIWI_TIMECARD;
+	if (bp->wiwi) {
+		/* No IRQ allocation, bus mastering or FPGA writes before this. */
+		err = ptp_ocp_wiwi_validate(pdev);
+		if (err)
+			goto out_disable;
+	}
 	err = ptp_ocp_device_init(bp, pdev);
 	if (err)
 		goto out_disable;
@@ -5988,18 +6154,33 @@ ptp_ocp_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	INIT_DELAYED_WORK(&bp->sync_work, ptp_ocp_sync_work);
 
+	if (bp->wiwi) {
+		err = ptp_ocp_wiwi_irq_init(bp);
+		if (err)
+			goto out;
+	}
+
 	/* compat mode.
 	 * Older FPGA firmware only returns 2 irq's.
 	 * allow this - if not all of the IRQ's are returned, skip the
 	 * extra devices and just register the clock.
 	 */
-	err = pci_alloc_irq_vectors(pdev, 1, 17, PCI_IRQ_MSI | PCI_IRQ_MSIX);
+	if (bp->wiwi)
+		err = pci_alloc_irq_vectors(pdev, 49, 64, PCI_IRQ_MSIX);
+	else
+		err = pci_alloc_irq_vectors(pdev, 1, 17,
+					    PCI_IRQ_MSI | PCI_IRQ_MSIX);
 	if (err < 0) {
 		dev_err(&pdev->dev, "alloc_irq_vectors err: %d\n", err);
 		goto out;
 	}
 	bp->n_irqs = err;
 	pci_set_master(pdev);
+	/* SPI NOR probe needs interrupts, but timestamp consumers are not ready. */
+	if (bp->wiwi_msi) {
+		iowrite32(OCP_WIWI_PERIPHERAL_IRQS, bp->wiwi_msi);
+		ioread32(bp->wiwi_msi);
+	}
 
 	err = ptp_ocp_register_resources(bp, id->driver_data);
 	if (err)
@@ -6047,6 +6228,11 @@ ptp_ocp_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 			dpll_pin_put(bp->sma[i].dpll_pin, &bp->sma[i].tracker);
 			goto out_dpll;
 		}
+	}
+	/* All handlers and the PHC are ready for timestamp interrupts. */
+	if (bp->wiwi_msi) {
+		iowrite32(OCP_WIWI_IRQS, bp->wiwi_msi);
+		ioread32(bp->wiwi_msi);
 	}
 	queue_delayed_work(system_power_efficient_wq, &bp->sync_work, HZ);
 
