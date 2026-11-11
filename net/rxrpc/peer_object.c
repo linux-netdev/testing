@@ -207,11 +207,21 @@ void rxrpc_assess_MTU_size(struct rxrpc_local *local, struct rxrpc_peer *peer)
 	peer->tx_seg_max = dst->dev->gso_max_segs;
 	dst_release(dst);
 
-	peer->max_data		= umin(RXRPC_JUMBO(1), peer->if_mtu - peer->hdrsize);
-	peer->pmtud_good	= 500;
-	peer->pmtud_bad		= peer->if_mtu - peer->hdrsize + 1;
-	peer->pmtud_trial	= umin(peer->max_data, peer->pmtud_bad - 1);
-	peer->pmtud_pending	= true;
+	/*
+	 * Avoid unsigned underflow if the interface MTU is smaller than the
+	 * transport header size (e.g., on virtual interfaces with MTU 0).
+	 */
+	unsigned int max_mtu = peer->if_mtu > peer->hdrsize ?
+			       peer->if_mtu - peer->hdrsize : 0;
+
+	/* Clamp payload ceiling and PMTUD binary search bounds to link limits */
+	peer->max_data      = umin(RXRPC_JUMBO(1), max_mtu);
+	peer->pmtud_good    = umin(500, peer->max_data);
+	peer->pmtud_bad     = peer->max_data + 1;
+	peer->pmtud_trial   = peer->max_data;
+
+	/* Only schedule PMTUD probing if the link supports more than the floor */
+	peer->pmtud_pending = peer->max_data > peer->pmtud_good;
 
 	_leave(" [if_mtu %u]", peer->if_mtu);
 }
