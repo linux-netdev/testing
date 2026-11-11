@@ -4120,6 +4120,9 @@ static struct sk_buff *validate_xmit_vlan(struct sk_buff *skb,
 int skb_csum_hwoffload_help(struct sk_buff *skb,
 			    const netdev_features_t features)
 {
+	__be16 protocol;
+	int offset;
+
 	if (unlikely(skb_csum_is_sctp(skb)))
 		return !!(features & NETIF_F_SCTP_CRC) ? 0 :
 			skb_crc32c_csum_help(skb);
@@ -4139,6 +4142,26 @@ int skb_csum_hwoffload_help(struct sk_buff *skb,
 	}
 
 sw_checksum:
+	offset = skb_network_offset(skb);
+	protocol = skb->protocol;
+	if (eth_type_vlan(protocol))
+		protocol = __vlan_get_protocol(skb, protocol, &offset);
+
+	/* Use the parsed VLAN depth: network_header may point at an inner
+	 * tag. If the network offset is negative, network_header refers
+	 * to bytes preceding the current packet data and cannot be used
+	 * to locate the IPv4 header being validated.
+	 */
+	if (offset >= 0 && protocol == htons(ETH_P_IP)) {
+		const struct iphdr *iph;
+
+		if (!pskb_may_pull(skb, offset + sizeof(*iph)))
+			return -EINVAL;
+		iph = (const struct iphdr *)(skb->data + offset);
+		if (iph->ihl < 5 ||
+		    skb_checksum_start_offset(skb) < offset + iph->ihl * 4)
+			return -EINVAL;
+	}
 	return skb_checksum_help(skb);
 }
 EXPORT_SYMBOL(skb_csum_hwoffload_help);
