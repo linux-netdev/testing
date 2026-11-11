@@ -170,6 +170,7 @@ struct b53_device {
 
 	/* run time configuration */
 	bool enable_jumbo;
+	bool bpdu_mirror;
 
 	unsigned int num_vlans;
 	struct b53_vlan *vlans;
