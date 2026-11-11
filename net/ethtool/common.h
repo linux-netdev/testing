@@ -124,6 +124,14 @@ ethtool_nl_msg_needs_rtnl(const struct net_device *dev, u8 cmd)
 		 * these cases are Netlink-only.
 		 */
 		return true;
+	case ETHTOOL_MSG_PORT_GET:
+		/*
+		 * port_prepare_data() resolves the port through
+		 * phy_link_topo_get_port(), which asserts rtnl_lock before
+		 * reading topo->ports. There is no corresponding ethtool
+		 * ioctl, so this case is Netlink-only.
+		 */
+		return true;
 	}
 	return false;
 }
