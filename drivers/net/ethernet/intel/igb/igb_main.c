@@ -3777,8 +3777,28 @@ static int igb_sriov_reinit(struct pci_dev *dev)
 	struct net_device *netdev = pci_get_drvdata(dev);
 	struct igb_adapter *adapter = netdev_priv(netdev);
 	struct pci_dev *pdev = adapter->pdev;
+	unsigned int i, rxq, txq, end;
 
 	rtnl_lock();
+
+	/* With VFs the PF gets fewer Rx queues and a single Tx queue, see
+	 * igb_set_interrupt_capability(). Refuse that while an XSK pool is
+	 * bound to a queue the PF would lose; the core refuses ethtool -L in
+	 * the same case.
+	 */
+	rxq = min_t(unsigned int, igb_get_max_rss_queues(adapter),
+		    num_online_cpus());
+	txq = adapter->vfs_allocated_count ? 1 : rxq;
+	end = max(netdev->real_num_rx_queues, netdev->real_num_tx_queues);
+	for (i = min(rxq, txq); i < end; i++) {
+		if (xsk_get_pool_from_qid(netdev, i)) {
+			rtnl_unlock();
+			dev_err(&pdev->dev,
+				"Cannot change the number of queues, an AF_XDP socket is bound to queue %u\n",
+				i);
+			return -EBUSY;
+		}
+	}
 
 	if (netif_running(netdev))
 		igb_close(netdev);
@@ -3844,6 +3864,7 @@ static int igb_enable_sriov(struct pci_dev *pdev, int num_vfs, bool reinit)
 {
 	struct net_device *netdev = pci_get_drvdata(pdev);
 	struct igb_adapter *adapter = netdev_priv(netdev);
+	bool dmac = adapter->flags & IGB_FLAG_DMAC;
 	int old_vfs = pci_num_vf(pdev);
 	struct vf_mac_filter *mac_list;
 	int err = 0;
@@ -3933,6 +3954,8 @@ err_out:
 	kfree(adapter->vf_data);
 	adapter->vf_data = NULL;
 	adapter->vfs_allocated_count = 0;
+	if (dmac)
+		adapter->flags |= IGB_FLAG_DMAC;
 out:
 	return err;
 }
@@ -4836,9 +4859,13 @@ void igb_setup_srrctl(struct igb_adapter *adapter, struct igb_ring *ring)
 	u32 srrctl = 0;
 	u32 buf_size;
 
-	if (ring->xsk_pool)
-		buf_size = xsk_pool_get_rx_frame_size(ring->xsk_pool);
-	else if (ring_uses_large_buffer(ring))
+	/* SRRCTL.BSIZEPKT has a 1 KiB granularity, so programming the XSK
+	 * frame size would round it down and split frames over several
+	 * buffers. XSK rings use the same buffer size as the other rings.
+	 * While XDP is attached, the receive length limit keeps frames
+	 * within the XSK frame, see igb_xsk_frame_fits().
+	 */
+	if (ring_uses_large_buffer(ring))
 		buf_size = IGB_RXBUFFER_3072;
 	else
 		buf_size = IGB_RXBUFFER_2048;
@@ -6778,6 +6805,7 @@ static int igb_change_mtu(struct net_device *netdev, int new_mtu)
 {
 	struct igb_adapter *adapter = netdev_priv(netdev);
 	int max_frame = new_mtu + IGB_ETH_PKT_HDR_PAD;
+	int i;
 
 	if (igb_xdp_is_enabled(adapter) &&
 	    !igb_xdp_frame_fits(adapter, max_frame)) {
@@ -6790,6 +6818,23 @@ static int igb_change_mtu(struct net_device *netdev, int new_mtu)
 	/* adjust max frame to be at least the size of a standard frame */
 	if (max_frame < (ETH_FRAME_LEN + ETH_FCS_LEN))
 		max_frame = ETH_FRAME_LEN + ETH_FCS_LEN;
+
+	/* the frame must fit the buffers of a bound XSK pool, also while no
+	 * XDP program is attached, as attaching one does not check it again
+	 */
+	for (i = 0; i < adapter->num_rx_queues; i++) {
+		struct xsk_buff_pool *pool = xsk_get_pool_from_qid(netdev, i);
+
+		if (!pool || !pool->dev)
+			continue;
+
+		if (!igb_xsk_frame_fits(pool, max_frame)) {
+			netdev_warn(adapter->netdev,
+				    "Requested MTU size is not supported with AF_XDP. Frame size is %d\n",
+				    max_frame);
+			return -EINVAL;
+		}
+	}
 
 	while (test_and_set_bit(__IGB_RESETTING, &adapter->state))
 		usleep_range(1000, 2000);
