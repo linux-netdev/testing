@@ -54,7 +54,8 @@ selected with the component name.
      - Description
    * - (none)
      - The card's own flash, written through the SPI controller the driver
-       exposes.  The card runs the new image after its next reset.
+       exposes. Not supported on WiWi. The card runs the new image after
+       its next reset.
    * - ``fw.cpld``
      - The configuration flash of the TAP CPLD on ADVA TimeCard X1 boards,
        programmed over I2C with the MachXO3 in-system programming commands
@@ -73,3 +74,35 @@ with the standard devlink status notifications.
 Example::
 
     $ devlink dev flash pci/0000:02:00.0 file adva-cpld.bin component fw.cpld
+
+WiWi production firmware
+========================
+
+WiWi Time Cards with PCI ID ``2163:1008`` and subsystem ID ``10ee:0007``
+use the Celestica register layout behind a LitePCIe bridge. The driver
+currently supports revision 2 with production image ID ``0x0000800f``
+(reported as firmware version ``1.15``). It verifies the PCI layout and
+the image/core versions before initializing the card. Other firmware
+layouts are rejected, even if they use the same PCI ID.
+
+CoreList is readable over the configuration UART, not over PCIe. The
+driver reads the image ID at BAR0 offset ``0x02020000`` before reading the
+known core version registers. Neither a higher image ID nor the Xilinx
+default subsystem ID guarantees a compatible layout.
+
+The image uses the Celestica LitePCIe production map: add ``0x02000000``
+to the peripheral offsets and use aligned 32-bit MMIO. Interrupt input
+``n`` uses MSI-X vector ``n + 32``. The per-input enable mask is at BAR0
+offset ``0x1800``. The driver enables the SPI interrupt before probing
+the flash and defers timing interrupts until the PHC is ready. GNSS2 is
+instantiated but not wired to pins, so no second GNSS port is registered.
+The separate EEPROM and RGB I2C inputs (17 and 18) have no handlers in
+this driver and stay masked; these are distinct from its I2C input 7.
+
+WiWi firmware updates through ``devlink dev flash`` are not supported.
+The WiWi image has a different flash header from the Celestica image.
+The golden image at flash offset zero boots the update image via MultiBoot
+with watchdog fallback. The vendor's programming path requires a modified
+``spi-xilinx`` driver. Recognizing the SPI NOR does not validate that path
+or the image header. Successful clock registration does not establish
+GNSS synchronization or valid UTC.
