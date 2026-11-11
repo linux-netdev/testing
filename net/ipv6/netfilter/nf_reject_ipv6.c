@@ -84,6 +84,12 @@ struct sk_buff *nf_reject_skb_v6_tcp_reset(struct net *net,
 	if (!nf_reject_ip6hdr_validate(oldskb))
 		return NULL;
 
+	/* Only received skbs get here (bridge, netdev ingress): see
+	 * nf_send_reset6()
+	 */
+	if (unlikely(skb_is_decrypted(oldskb)))
+		return NULL;
+
 	oth = nf_reject_ip6_tcphdr_get(oldskb, &_oth, &otcplen, hook);
 	if (!oth)
 		return NULL;
@@ -142,6 +148,12 @@ struct sk_buff *nf_reject_skb_v6_unreach(struct net *net,
 	unsigned int len;
 
 	if (!nf_reject_ip6hdr_validate(oldskb))
+		return NULL;
+
+	/* Only received skbs get here (bridge, netdev ingress): see
+	 * nf_send_reset6()
+	 */
+	if (unlikely(skb_is_decrypted(oldskb)))
 		return NULL;
 
 	/* Don't reply to ICMPV6_DEST_UNREACH with ICMPV6_DEST_UNREACH */
@@ -331,6 +343,16 @@ void nf_send_reset6(struct net *net, struct sock *sk, struct sk_buff *oldskb,
 	if (!otcph)
 		return;
 
+	/* Don't send the decrypted part of an skb onto the network. A
+	 * received skb was decrypted by the device with crypto offload, which
+	 * in some cases encrypts the transport header. The different offloads
+	 * can't be reliably distinguished, so don't reply at all. A locally
+	 * originated skb to be encrypted gets a reply if the reply is routed to
+	 * a local address.
+	 */
+	if (unlikely(skb_is_decrypted(oldskb) && oldskb->skb_iif))
+		return;
+
 	memset(&fl6, 0, sizeof(fl6));
 	fl6.flowi6_proto = IPPROTO_TCP;
 	fl6.saddr = oip6h->daddr;
@@ -358,6 +380,12 @@ void nf_send_reset6(struct net *net, struct sock *sk, struct sk_buff *oldskb,
 	dst = xfrm_lookup(net, dst, flowi6_to_flowi(&fl6), NULL, 0);
 	if (IS_ERR(dst))
 		return;
+
+	if (unlikely(skb_is_decrypted(oldskb)) &&
+	    !(dst_rt6_info(dst)->rt6i_flags & RTF_LOCAL)) {
+		dst_release(dst);
+		return;
+	}
 
 	nskb = alloc_skb(LL_MAX_HEADER + sizeof(struct ipv6hdr) +
 			 sizeof(struct tcphdr) + dst->trailer_len,
