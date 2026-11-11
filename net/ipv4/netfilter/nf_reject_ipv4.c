@@ -59,6 +59,12 @@ struct sk_buff *nf_reject_skb_v4_tcp_reset(struct net *net,
 	if (!nf_reject_iphdr_validate(oldskb))
 		return NULL;
 
+	/* Only received skbs get here (bridge, netdev ingress): see
+	 * nf_send_reset()
+	 */
+	if (unlikely(skb_is_decrypted(oldskb)))
+		return NULL;
+
 	oth = nf_reject_ip_tcphdr_get(oldskb, &_oth, hook);
 	if (!oth)
 		return NULL;
@@ -116,6 +122,12 @@ struct sk_buff *nf_reject_skb_v4_unreach(struct net *net,
 	u8 proto;
 
 	if (!nf_reject_iphdr_validate(oldskb))
+		return NULL;
+
+	/* Only received skbs get here (bridge, netdev ingress): see
+	 * nf_send_reset()
+	 */
+	if (unlikely(skb_is_decrypted(oldskb)))
 		return NULL;
 
 	/* IP header checks: fragment. */
@@ -287,6 +299,16 @@ void nf_send_reset(struct net *net, struct sock *sk, struct sk_buff *oldskb,
 	if (skb_rtable(oldskb)->rt_flags & (RTCF_BROADCAST | RTCF_MULTICAST))
 		return;
 
+	/* Don't send the decrypted part of an skb onto the network. A
+	 * received skb was decrypted by the device with crypto offload, which
+	 * in some cases encrypts the transport header. The different offloads
+	 * can't be reliably distinguished, so don't reply at all. A locally
+	 * originated skb to be encrypted gets a reply if the reply is routed to
+	 * a local address.
+	 */
+	if (unlikely(skb_is_decrypted(oldskb) && oldskb->skb_iif))
+		return;
+
 	nskb = alloc_skb(sizeof(struct iphdr) + sizeof(struct tcphdr) +
 			 LL_MAX_HEADER, GFP_ATOMIC);
 	if (!nskb)
@@ -302,6 +324,10 @@ void nf_send_reset(struct net *net, struct sock *sk, struct sk_buff *oldskb,
 			    ip4_dst_hoplimit(skb_dst(nskb)));
 	nf_reject_ip_tcphdr_put(nskb, oldskb, oth);
 	if (ip_route_me_harder(net, sk, nskb, RTN_UNSPEC))
+		goto free_nskb;
+
+	if (unlikely(skb_is_decrypted(oldskb)) &&
+	    !(skb_rtable(nskb)->rt_flags & RTCF_LOCAL))
 		goto free_nskb;
 
 	/* "Never happens" */
