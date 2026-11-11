@@ -58,10 +58,25 @@ static int vti_input(struct sk_buff *skb, int nexthdr, __be32 spi,
 	tunnel = ip_tunnel_lookup(itn, skb->dev->ifindex, flags,
 				  iph->saddr, iph->daddr, 0);
 	if (tunnel) {
+		struct xfrm_tunnel_info *info;
+
 		if (!xfrm4_policy_check(NULL, XFRM_POLICY_IN, skb))
 			goto drop;
 
-		XFRM_TUNNEL_SKB_CB(skb)->tunnel.ip4 = tunnel;
+		info = xfrm_tunnel_info_add(skb);
+		if (!info)
+			goto drop;
+
+		*info = (struct xfrm_tunnel_info) {
+			.ifindex = tunnel->dev->ifindex,
+			.i_key = tunnel->parms.i_key,
+			.type = XFRM_TUNNEL_INFO_VTI4,
+			.ip4 = {
+				.link = tunnel->parms.link,
+				.saddr = tunnel->parms.iph.saddr,
+				.daddr = tunnel->parms.iph.daddr,
+			},
+		};
 
 		if (update_skb_dev)
 			skb->dev = tunnel->dev;
@@ -96,18 +111,28 @@ static int vti_rcv_proto(struct sk_buff *skb)
 
 static int vti_rcv_cb(struct sk_buff *skb, int err)
 {
+	const struct xfrm_tunnel_info *info = xfrm_tunnel_info(skb);
 	unsigned short family;
 	struct net_device *dev;
 	struct xfrm_state *x;
 	const struct xfrm_mode *inner_mode;
-	struct ip_tunnel *tunnel = XFRM_TUNNEL_SKB_CB(skb)->tunnel.ip4;
+	struct ip_tunnel *tunnel;
 	u32 orig_mark = skb->mark;
 	int ret;
 
-	if (!tunnel)
+	if (!info || info->type != XFRM_TUNNEL_INFO_VTI4)
 		return 1;
 
-	dev = tunnel->dev;
+	dev = dev_get_by_index_rcu(dev_net(skb->dev), info->ifindex);
+	if (!dev || dev->rtnl_link_ops != &vti_link_ops)
+		return err ? 1 : -ENODEV;
+
+	tunnel = netdev_priv(dev);
+	if (tunnel->parms.i_key != info->i_key ||
+	    tunnel->parms.link != info->ip4.link ||
+	    tunnel->parms.iph.saddr != info->ip4.saddr ||
+	    tunnel->parms.iph.daddr != info->ip4.daddr)
+		return err ? 1 : -ENODEV;
 
 	if (err) {
 		DEV_STATS_INC(dev, rx_errors);
@@ -131,7 +156,7 @@ static int vti_rcv_cb(struct sk_buff *skb, int err)
 
 	family = inner_mode->family;
 
-	skb->mark = be32_to_cpu(tunnel->parms.i_key);
+	skb->mark = be32_to_cpu(info->i_key);
 	ret = xfrm_policy_check(NULL, XFRM_POLICY_IN, skb, family);
 	skb->mark = orig_mark;
 

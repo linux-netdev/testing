@@ -322,10 +322,10 @@ static int xfrmi_input(struct sk_buff *skb, int nexthdr, __be32 spi,
 	XFRM_SPI_SKB_CB(skb)->family = family;
 	if (family == AF_INET) {
 		XFRM_SPI_SKB_CB(skb)->daddroff = offsetof(struct iphdr, daddr);
-		XFRM_TUNNEL_SKB_CB(skb)->tunnel.ip4 = NULL;
+		xfrm_tunnel_info_clear(skb);
 	} else {
 		XFRM_SPI_SKB_CB(skb)->daddroff = offsetof(struct ipv6hdr, daddr);
-		XFRM_TUNNEL_SKB_CB(skb)->tunnel.ip6 = NULL;
+		xfrm_tunnel_info_clear(skb);
 	}
 
 	return xfrm_input(skb, nexthdr, spi, encap_type);

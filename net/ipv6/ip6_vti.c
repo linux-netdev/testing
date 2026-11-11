@@ -302,6 +302,8 @@ static int vti6_input_proto(struct sk_buff *skb, int nexthdr, __be32 spi,
 	rcu_read_lock();
 	t = vti6_tnl_lookup(dev_net(skb->dev), &ipv6h->saddr, &ipv6h->daddr);
 	if (t) {
+		struct xfrm_tunnel_info *info;
+
 		if (t->parms.proto != IPPROTO_IPV6 && t->parms.proto != 0) {
 			rcu_read_unlock();
 			goto discard;
@@ -319,9 +321,26 @@ static int vti6_input_proto(struct sk_buff *skb, int nexthdr, __be32 spi,
 			goto discard;
 		}
 
+		info = xfrm_tunnel_info_add(skb);
+		if (!info) {
+			rcu_read_unlock();
+			goto discard;
+		}
+
+		*info = (struct xfrm_tunnel_info) {
+			.ifindex = t->dev->ifindex,
+			.i_key = t->parms.i_key,
+			.type = XFRM_TUNNEL_INFO_VTI6,
+			.ip6 = {
+				.link = t->parms.link,
+				.proto = t->parms.proto,
+				.laddr = t->parms.laddr,
+				.raddr = t->parms.raddr,
+			},
+		};
+
 		rcu_read_unlock();
 
-		XFRM_TUNNEL_SKB_CB(skb)->tunnel.ip6 = t;
 		XFRM_SPI_SKB_CB(skb)->family = AF_INET6;
 		XFRM_SPI_SKB_CB(skb)->daddroff = offsetof(struct ipv6hdr, daddr);
 		return xfrm_input(skb, nexthdr, spi, encap_type);
@@ -342,18 +361,29 @@ static int vti6_rcv(struct sk_buff *skb)
 
 static int vti6_rcv_cb(struct sk_buff *skb, int err)
 {
+	const struct xfrm_tunnel_info *info = xfrm_tunnel_info(skb);
 	unsigned short family;
 	struct net_device *dev;
 	struct xfrm_state *x;
 	const struct xfrm_mode *inner_mode;
-	struct ip6_tnl *t = XFRM_TUNNEL_SKB_CB(skb)->tunnel.ip6;
+	struct ip6_tnl *t;
 	u32 orig_mark = skb->mark;
 	int ret;
 
-	if (!t)
+	if (!info || info->type != XFRM_TUNNEL_INFO_VTI6)
 		return 1;
 
-	dev = t->dev;
+	dev = dev_get_by_index_rcu(dev_net(skb->dev), info->ifindex);
+	if (!dev || dev->rtnl_link_ops != &vti6_link_ops)
+		return err ? 1 : -ENODEV;
+
+	t = netdev_priv(dev);
+	if (t->parms.i_key != info->i_key ||
+	    t->parms.link != info->ip6.link ||
+	    t->parms.proto != info->ip6.proto ||
+	    !ipv6_addr_equal(&t->parms.laddr, &info->ip6.laddr) ||
+	    !ipv6_addr_equal(&t->parms.raddr, &info->ip6.raddr))
+		return err ? 1 : -ENODEV;
 
 	if (err) {
 		DEV_STATS_INC(dev, rx_errors);
@@ -377,7 +407,7 @@ static int vti6_rcv_cb(struct sk_buff *skb, int err)
 
 	family = inner_mode->family;
 
-	skb->mark = be32_to_cpu(t->parms.i_key);
+	skb->mark = be32_to_cpu(info->i_key);
 	ret = xfrm_policy_check(NULL, XFRM_POLICY_IN, skb, family);
 	skb->mark = orig_mark;
 
