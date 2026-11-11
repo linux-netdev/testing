@@ -124,6 +124,12 @@ int br_ip6_fragment(struct net *net, struct sock *sk, struct sk_buff *skb,
 	int hroom, err = 0;
 	__be32 frag_id;
 
+	/* PSP and TLS offload need the packet's L4 header, which non-initial
+	 * fragments do not have.
+	 */
+	if (unlikely(skb_is_decrypted(skb)))
+		goto blackhole;
+
 	err = ip6_find_1stfragopt(skb, &prevhdr);
 	if (err < 0)
 		goto blackhole;
