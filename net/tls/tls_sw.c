@@ -1150,6 +1150,7 @@ tls_rx_rec_wait(struct sock *sk, bool nonblock, bool released, bool has_copied)
 		if (!timeo)
 			return -EAGAIN;
 
+		ctx->empty_run = 0;
 		released = true;
 		add_wait_queue(sk_sleep(sk), &wait);
 		sk_set_bit(SOCKWQ_ASYNC_WAITDATA, sk);
@@ -1569,6 +1570,7 @@ static int tls_rx_one_record(struct sock *sk, struct msghdr *msg,
 			     struct tls_decrypt_arg *darg)
 {
 	struct tls_context *tls_ctx = tls_get_ctx(sk);
+	struct tls_sw_context_rx *ctx = tls_sw_ctx_rx(tls_ctx);
 	struct tls_prot_info *prot = &tls_ctx->prot_info;
 	struct strp_msg *rxm;
 	int err;
@@ -1585,6 +1587,19 @@ static int tls_rx_one_record(struct sock *sk, struct msghdr *msg,
 	rxm->offset += prot->prepend_size;
 	rxm->full_len -= prot->overhead_size;
 	tls_advance_record_sn(sk, prot, &tls_ctx->rx);
+
+	/* A peer may send empty data records, e.g. as cover traffic, but
+	 * a burst of them traps the reader in the kernel. Treat more than
+	 * 128 in a row, without the reader sleeping or returning to the
+	 * caller in between, as a protocol violation. Stop the strparser
+	 * before the next record gets parsed, so the reader finds the
+	 * error in tls_rx_rec_wait().
+	 */
+	if (rxm->full_len ||
+	    tls_msg(darg->skb)->control != TLS_RECORD_TYPE_DATA)
+		ctx->empty_run = 0;
+	else if (unlikely(++ctx->empty_run > 128))
+		tls_strp_abort_strp(&ctx->strp, -EBADMSG);
 
 	return tls_check_pending_rekey(sk, tls_ctx, darg->skb);
 }
@@ -1765,6 +1780,7 @@ static int tls_rx_reader_acquire(struct sock *sk, struct tls_sw_context_rx *ctx,
 	}
 
 	WRITE_ONCE(ctx->reader_present, 1);
+	ctx->empty_run = 0;
 
 	return 0;
 }
@@ -1878,9 +1894,11 @@ int tls_sw_recvmsg(struct sock *sk,
 		    tlm->control == TLS_RECORD_TYPE_DATA)
 			darg.zc = true;
 
-		/* Do not use async mode if record is non-data */
+		/* Do not use async mode if record is non-data or empty,
+		 * recv_end would report an error after empty records as EOF.
+		 */
 		if (tlm->control == TLS_RECORD_TYPE_DATA)
-			darg.async = ctx->async_capable;
+			darg.async = ctx->async_capable && to_decrypt;
 		else
 			darg.async = false;
 
@@ -1922,7 +1940,10 @@ put_on_rx_list_err:
 
 			DEBUG_NET_WARN_ON_ONCE(darg.skb == ctx->strp.anchor);
 
-			if (async) {
+			/* Consume empty records, even when peeking, so that
+			 * they cannot pile up on rx_list.
+			 */
+			if (async && chunk) {
 				/* TLS 1.2-only, to_decrypt must be text len */
 				chunk = min_t(int, to_decrypt, len);
 				async_copy_bytes += chunk;
@@ -1943,7 +1964,7 @@ put_on_rx_list:
 			if (err < 0)
 				goto put_on_rx_list_err;
 
-			if (is_peek) {
+			if (is_peek && chunk) {
 				peeked += chunk;
 				goto put_on_rx_list;
 			}
