@@ -176,6 +176,7 @@ static void nft_fwd_neigh_eval(const struct nft_expr *expr,
 		}
 	}
 
+	skb_dst_drop(skb);
 	skb->dev = dev;
 	skb_clear_tstamp(skb);
 
