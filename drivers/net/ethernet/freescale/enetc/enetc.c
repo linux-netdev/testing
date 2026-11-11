@@ -1122,7 +1122,15 @@ netdev_features_t enetc_features_check(struct sk_buff *skb,
 
 	features = vlan_features_check(skb, features);
 
-	if (!skb_is_gso(skb) || enetc_skb_uses_lso(priv, skb))
+	if (!skb_is_gso(skb))
+		return features;
+
+	if (enetc_lso_get_hdr_len(skb) > TSO_HEADER_SIZE) {
+		features &= ~NETIF_F_GSO_MASK;
+		return features;
+	}
+
+	if (enetc_skb_uses_lso(priv, skb))
 		return features;
 
 	if (enetc_tso_count_descs(skb) >= priv->tx_bd_count)
