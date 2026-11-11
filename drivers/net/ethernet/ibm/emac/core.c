@@ -2642,6 +2642,40 @@ static int emac_dt_phy_probe(struct emac_instance *dev)
 	return res;
 }
 
+/* The fixed PHY is never started, so phylib never fills in its link state.
+ * Take the link parameters straight from the device tree.
+ */
+static void emac_fixed_link_state(struct emac_instance *dev,
+				  struct device_node *np)
+{
+	struct device_node *fixed_link;
+	u32 prop[5];
+
+	dev->phy.autoneg = AUTONEG_DISABLE;
+	dev->phy.advertising = 0;
+
+	fixed_link = of_get_child_by_name(np, "fixed-link");
+	if (fixed_link) {
+		u32 speed = SPEED_UNKNOWN;
+
+		of_property_read_u32(fixed_link, "speed", &speed);
+		dev->phy.speed = speed;
+		dev->phy.duplex = of_property_read_bool(fixed_link, "full-duplex") ?
+				  DUPLEX_FULL : DUPLEX_HALF;
+		dev->phy.pause = of_property_read_bool(fixed_link, "pause");
+		dev->phy.asym_pause = of_property_read_bool(fixed_link,
+							    "asym-pause");
+		of_node_put(fixed_link);
+	} else if (!of_property_read_u32_array(np, "fixed-link", prop,
+					       ARRAY_SIZE(prop))) {
+		/* legacy <phy_id duplex speed pause asym_pause> */
+		dev->phy.duplex = prop[1] ? DUPLEX_FULL : DUPLEX_HALF;
+		dev->phy.speed = prop[2];
+		dev->phy.pause = prop[3];
+		dev->phy.asym_pause = prop[4];
+	}
+}
+
 static int emac_init_phy(struct emac_instance *dev)
 {
 	struct device_node *np = dev->ofdev->dev.of_node;
@@ -2676,7 +2710,7 @@ static int emac_init_phy(struct emac_instance *dev)
 			ndev->phydev = of_phy_find_device(np);
 			if (res || !ndev->phydev)
 				return res ? res : -EINVAL;
-			emac_adjust_link(dev->ndev);
+			emac_fixed_link_state(dev, np);
 			put_device(&ndev->phydev->mdio.dev);
 		}
 		return 0;
