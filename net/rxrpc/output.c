@@ -325,9 +325,19 @@ void rxrpc_send_ACK(struct rxrpc_call *call, u8 ack_reason,
 	if (why == rxrpc_propose_ack_ping_for_mtu_probe) {
 		size_t probe_mtu = call->peer->pmtud_trial + sizeof(struct rxrpc_wire_header);
 
+		/*
+		 * skip padding if the base ACK packets already meets/exceeds probe_mut
+		 */
+
 		if (len > probe_mtu)
 			goto skip;
-		while (len < probe_mtu) {
+		/*
+		 * pad the probe packet with zero pages up to probe_mut,
+		 * ensuring we never write past the fixed capacity of
+		 * local->kvec.
+		 */
+
+		while (len < probe_mtu && nr_kv < ARRAY_SIZE(call->local->kvec)) {
 			size_t part = umin(probe_mtu - len, PAGE_SIZE);
 
 			kv[nr_kv].iov_base = page_address(ZERO_PAGE(0));
