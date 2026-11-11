@@ -578,6 +578,20 @@ struct phy_oatc14_sqi_capability {
 };
 
 /**
+ * enum phy_irq_wake - wakeup event a postponed PHY interrupt reports
+ * @PHY_IRQ_WAKE_NONE: none
+ * @PHY_IRQ_WAKE_SYSTEM: pm_system_wakeup(), Wake-on-LAN is enabled
+ * @PHY_IRQ_WAKE_NETDEV: pm_wakeup_dev_event() for the attached netdev
+ * @PHY_IRQ_WAKE_PARENT: pm_wakeup_dev_event() for the netdev's parent
+ */
+enum phy_irq_wake {
+	PHY_IRQ_WAKE_NONE,
+	PHY_IRQ_WAKE_SYSTEM,
+	PHY_IRQ_WAKE_NETDEV,
+	PHY_IRQ_WAKE_PARENT,
+};
+
+/**
  * struct phy_device - An instance of a PHY
  *
  * @mdio: MDIO bus this PHY is on
@@ -604,6 +618,7 @@ struct phy_oatc14_sqi_capability {
  * @mac_managed_pm: Set true if MAC driver takes of suspending/resuming PHY
  * @wol_enabled: Set to true if the PHY or the attached MAC have Wake-on-LAN
  * 		 enabled.
+ * @wol_phy: Set to true if phy_suspend() found that the PHY may wake the system
  * @is_genphy_driven: PHY is driven by one of the generic PHY drivers
  * @state: State of the PHY for management purposes
  * @dev_flags: Device-specific flags used by the PHY driver.
@@ -653,9 +668,11 @@ struct phy_oatc14_sqi_capability {
  * @mdix_ctrl: User setting of crossover
  * @pma_extable: Cached value of PMA/PMD Extended Abilities Register
  * @interrupts: Flag interrupts have been enabled
- * @irq_suspended: Flag indicating PHY is suspended and therefore interrupt
- *                 handling shall be postponed until PHY has resumed
+ * @irq_suspended: Flag indicating a system sleep transition in progress, so
+ *                 interrupt handling shall be postponed until it ends
  * @irq_rerun: Set by the postponed interrupt that disabled the line
+ * @irq_wake: Wakeup event a postponed interrupt reports, decided by
+ *            mdio_bus_phy_suspend()
  * @irq_pm_lock: Serializes phy_free_interrupt() against the rerun of a
  *               postponed interrupt; never taken by phy_interrupt()
  * @default_timestamp: Flag indicating whether we are using the phy
@@ -720,6 +737,7 @@ struct phy_device {
 	unsigned is_on_sfp_module:1;
 	unsigned mac_managed_pm:1;
 	unsigned wol_enabled:1;
+	unsigned wol_phy:1;
 	unsigned is_genphy_driven:1;
 
 	unsigned autoneg:1;
@@ -734,6 +752,7 @@ struct phy_device {
 	/* Written without phydev->lock, so not bitfields */
 	bool irq_suspended;
 	bool irq_rerun;
+	enum phy_irq_wake irq_wake;
 	/* Serializes phy_free_interrupt() against mdio_bus_phy_resume_irq() */
 	struct mutex irq_pm_lock;
 
