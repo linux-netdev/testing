@@ -228,6 +228,12 @@ int st21nfca_hci_se_io(struct nfc_hci_dev *hdev, u32 se_idx,
 	switch (se_idx) {
 	case ST21NFCA_ESE_HOST_ID:
 		spin_lock(&info->se_info.se_lock);
+		if (info->se_info.bwi_active) {
+			spin_unlock(&info->se_info.se_lock);
+			/* The callback is not called, see the comment below */
+			kfree(cb_context);
+			return -EBUSY;
+		}
 		info->se_info.cb = cb;
 		info->se_info.cb_context = cb_context;
 		info->se_info.bwi_active = true;
@@ -269,6 +275,10 @@ static void st21nfca_se_wt_work(struct work_struct *work)
 						se_info.timeout_work);
 
 	spin_lock(&info->se_info.se_lock);
+	if (!info->se_info.bwi_active) {
+		spin_unlock(&info->se_info.se_lock);
+		return;
+	}
 	info->se_info.bwi_active = false;
 	cb = info->se_info.cb;
 	cb_context = info->se_info.cb_context;
@@ -383,6 +393,7 @@ int st21nfca_apdu_reader_event_received(struct nfc_hci_dev *hdev,
 					u8 event, struct sk_buff *skb)
 {
 	int r = 0;
+	bool active;
 	se_io_cb_t cb;
 	void *cb_context;
 	struct st21nfca_hci_info *info = nfc_hci_get_clientdata(hdev);
@@ -395,6 +406,7 @@ int st21nfca_apdu_reader_event_received(struct nfc_hci_dev *hdev,
 		cancel_work_sync(&info->se_info.timeout_work);
 
 		spin_lock(&info->se_info.se_lock);
+		active = info->se_info.bwi_active;
 		info->se_info.bwi_active = false;
 		cb = info->se_info.cb;
 		cb_context = info->se_info.cb_context;
@@ -405,7 +417,9 @@ int st21nfca_apdu_reader_event_received(struct nfc_hci_dev *hdev,
 		if (r < 0)
 			goto exit;
 
-		cb(cb_context, skb->data, skb->len, 0);
+		/* The request may have been completed by the timeout already */
+		if (active)
+			cb(cb_context, skb->data, skb->len, 0);
 		break;
 	case ST21NFCA_EVT_WTX_REQUEST:
 		mod_timer(&info->se_info.bwi_timer, jiffies +
