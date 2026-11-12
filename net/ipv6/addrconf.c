@@ -7587,14 +7587,16 @@ static struct rtnl_af_ops inet6_ops __read_mostly = {
 
 static const struct rtnl_msg_handler addrconf_rtnl_msg_handlers[] __initconst_or_module = {
 	{.owner = THIS_MODULE, .protocol = PF_INET6, .msgtype = RTM_GETLINK,
-	 .dumpit = inet6_dump_ifinfo, .flags = RTNL_FLAG_DUMP_UNLOCKED},
+	 .dumpit = inet6_dump_ifinfo,
+	 .flags = RTNL_FLAG_DUMP_UNLOCKED | RTNL_FLAG_DUMP_SPLIT_NLM_DONE},
 	{.owner = THIS_MODULE, .protocol = PF_INET6, .msgtype = RTM_NEWADDR,
 	 .doit = inet6_rtm_newaddr, .flags = RTNL_FLAG_DOIT_PERNET},
 	{.owner = THIS_MODULE, .protocol = PF_INET6, .msgtype = RTM_DELADDR,
 	 .doit = inet6_rtm_deladdr, .flags = RTNL_FLAG_DOIT_PERNET},
 	{.owner = THIS_MODULE, .protocol = PF_INET6, .msgtype = RTM_GETADDR,
 	 .doit = inet6_rtm_getaddr, .dumpit = inet6_dump_ifaddr,
-	 .flags = RTNL_FLAG_DOIT_UNLOCKED | RTNL_FLAG_DUMP_UNLOCKED},
+	 .flags = RTNL_FLAG_DOIT_UNLOCKED | RTNL_FLAG_DUMP_UNLOCKED |
+		  RTNL_FLAG_DUMP_SPLIT_NLM_DONE},
 	{.owner = THIS_MODULE, .protocol = PF_INET6, .msgtype = RTM_GETMULTICAST,
 	 .dumpit = inet6_dump_ifmcaddr,
 	 .flags = RTNL_FLAG_DUMP_UNLOCKED},
