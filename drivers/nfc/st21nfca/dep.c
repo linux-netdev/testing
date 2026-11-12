@@ -496,6 +496,7 @@ int st21nfca_im_send_atr_req(struct nfc_hci_dev *hdev, u8 *gb, size_t gb_len)
 	struct st21nfca_atr_req *atr_req;
 	struct nfc_target *target;
 	uint size;
+	int r;
 
 	info->dep_info.to = ST21NFCA_DEFAULT_TIMEOUT;
 	size = ST21NFCA_ATR_REQ_MIN_SIZE + gb_len;
@@ -547,9 +548,11 @@ int st21nfca_im_send_atr_req(struct nfc_hci_dev *hdev, u8 *gb, size_t gb_len)
 	info->dep_info.bsi = atr_req->bsi;
 	info->dep_info.lri = ST21NFCA_PP2LRI(atr_req->ppi);
 
-	return nfc_hci_send_cmd_async(hdev, ST21NFCA_RF_READER_F_GATE,
-				ST21NFCA_WR_XCHG_DATA, skb->data,
-				skb->len, info->async_cb, info);
+	r = nfc_hci_send_cmd_async(hdev, ST21NFCA_RF_READER_F_GATE,
+				   ST21NFCA_WR_XCHG_DATA, skb->data,
+				   skb->len, info->async_cb, info);
+	kfree_skb(skb);
+	return r;
 }
 EXPORT_SYMBOL(st21nfca_im_send_atr_req);
 
