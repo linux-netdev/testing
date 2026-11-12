@@ -382,6 +382,7 @@ struct xfrm_dst_lookup_params {
 };
 
 struct net_device;
+struct ip6_tnl;
 struct xfrm_type;
 struct xfrm_dst;
 struct xfrm_policy_afinfo {
@@ -740,14 +741,70 @@ struct xfrm_tunnel_skb_cb {
 		struct inet_skb_parm h4;
 		struct inet6_skb_parm h6;
 	} header;
-
-	union {
-		struct ip_tunnel *ip4;
-		struct ip6_tnl *ip6;
-	} tunnel;
+	/* Keep the layout of the other XFRM skb control blocks stable. */
+	unsigned long reserved;
 };
 
-#define XFRM_TUNNEL_SKB_CB(__skb) ((struct xfrm_tunnel_skb_cb *)&((__skb)->cb[0]))
+enum xfrm_tunnel_info_type {
+	XFRM_TUNNEL_INFO_VTI4,
+	XFRM_TUNNEL_INFO_VTI6,
+	XFRM_TUNNEL_INFO_IP6,
+};
+
+/* Stored in an skb extension so it survives asynchronous XFRM input. */
+struct xfrm_tunnel_info {
+	int ifindex;
+	__be32 i_key;
+	u8 type;
+	union {
+		struct {
+			int link;
+			__be32 saddr;
+			__be32 daddr;
+		} ip4;
+		struct {
+			int link;
+			u8 proto;
+			struct in6_addr laddr;
+			struct in6_addr raddr;
+		} ip6;
+	};
+};
+
+#ifdef CONFIG_XFRM
+static inline struct xfrm_tunnel_info *
+xfrm_tunnel_info_add(struct sk_buff *skb)
+{
+	return skb_ext_add(skb, SKB_EXT_XFRM_TUNNEL);
+}
+
+static inline const struct xfrm_tunnel_info *
+xfrm_tunnel_info(const struct sk_buff *skb)
+{
+	return skb_ext_find(skb, SKB_EXT_XFRM_TUNNEL);
+}
+
+static inline void xfrm_tunnel_info_clear(struct sk_buff *skb)
+{
+	skb_ext_del(skb, SKB_EXT_XFRM_TUNNEL);
+}
+#else
+static inline struct xfrm_tunnel_info *
+xfrm_tunnel_info_add(struct sk_buff *skb)
+{
+	return NULL;
+}
+
+static inline const struct xfrm_tunnel_info *
+xfrm_tunnel_info(const struct sk_buff *skb)
+{
+	return NULL;
+}
+
+static inline void xfrm_tunnel_info_clear(struct sk_buff *skb)
+{
+}
+#endif /* CONFIG_XFRM */
 
 /*
  * This structure is used for the duration where packets are being
@@ -1851,7 +1908,7 @@ int xfrm4_rcv(struct sk_buff *skb);
 
 static inline int xfrm4_rcv_spi(struct sk_buff *skb, int nexthdr, __be32 spi)
 {
-	XFRM_TUNNEL_SKB_CB(skb)->tunnel.ip4 = NULL;
+	xfrm_tunnel_info_clear(skb);
 	XFRM_SPI_SKB_CB(skb)->family = AF_INET;
 	XFRM_SPI_SKB_CB(skb)->daddroff = offsetof(struct iphdr, daddr);
 	return xfrm_input(skb, nexthdr, spi, 0);
@@ -2300,15 +2357,17 @@ static inline int xfrm_if_id_put(struct sk_buff *skb, __u32 if_id)
 static inline int xfrm_tunnel_check(struct sk_buff *skb, struct xfrm_state *x,
 				    unsigned int family)
 {
+	const struct xfrm_tunnel_info *info = xfrm_tunnel_info(skb);
 	bool tunnel = false;
 
 	switch(family) {
 	case AF_INET:
-		if (XFRM_TUNNEL_SKB_CB(skb)->tunnel.ip4)
+		if (info && info->type == XFRM_TUNNEL_INFO_VTI4)
 			tunnel = true;
 		break;
 	case AF_INET6:
-		if (XFRM_TUNNEL_SKB_CB(skb)->tunnel.ip6)
+		if (info && (info->type == XFRM_TUNNEL_INFO_VTI6 ||
+			     info->type == XFRM_TUNNEL_INFO_IP6))
 			tunnel = true;
 		break;
 	}

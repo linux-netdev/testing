@@ -5563,6 +5563,7 @@ static const u8 skb_ext_type_len[] = {
 #endif
 #ifdef CONFIG_XFRM
 	[SKB_EXT_SEC_PATH] = SKB_EXT_CHUNKSIZEOF(struct sec_path),
+	[SKB_EXT_XFRM_TUNNEL] = SKB_EXT_CHUNKSIZEOF(struct xfrm_tunnel_info),
 #endif
 #if IS_ENABLED(CONFIG_NET_TC_SKB_EXT)
 	[TC_SKB_EXT] = SKB_EXT_CHUNKSIZEOF(struct tc_skb_ext),

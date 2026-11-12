@@ -66,7 +66,7 @@ int xfrm6_rcv_encap(struct sk_buff *skb, int nexthdr, __be32 spi,
 	struct xfrm6_protocol *handler;
 	struct xfrm6_protocol __rcu **head = proto_handlers(nexthdr);
 
-	XFRM_TUNNEL_SKB_CB(skb)->tunnel.ip6 = NULL;
+	xfrm_tunnel_info_clear(skb);
 	XFRM_SPI_SKB_CB(skb)->family = AF_INET6;
 	XFRM_SPI_SKB_CB(skb)->daddroff = offsetof(struct ipv6hdr, daddr);
 
@@ -113,7 +113,7 @@ static int xfrm6_esp_rcv(struct sk_buff *skb)
 	int ret;
 	struct xfrm6_protocol *handler;
 
-	XFRM_TUNNEL_SKB_CB(skb)->tunnel.ip6 = NULL;
+	xfrm_tunnel_info_clear(skb);
 
 	for_each_protocol_rcu(esp6_handlers, handler)
 		if ((ret = handler->handler(skb)) != -EINVAL)
@@ -142,7 +142,7 @@ static int xfrm6_ah_rcv(struct sk_buff *skb)
 	int ret;
 	struct xfrm6_protocol *handler;
 
-	XFRM_TUNNEL_SKB_CB(skb)->tunnel.ip6 = NULL;
+	xfrm_tunnel_info_clear(skb);
 
 	for_each_protocol_rcu(ah6_handlers, handler)
 		if ((ret = handler->handler(skb)) != -EINVAL)
@@ -171,7 +171,7 @@ static int xfrm6_ipcomp_rcv(struct sk_buff *skb)
 	int ret;
 	struct xfrm6_protocol *handler;
 
-	XFRM_TUNNEL_SKB_CB(skb)->tunnel.ip6 = NULL;
+	xfrm_tunnel_info_clear(skb);
 
 	for_each_protocol_rcu(ipcomp6_handlers, handler)
 		if ((ret = handler->handler(skb)) != -EINVAL)
