@@ -10,6 +10,7 @@
 #include <linux/kernel.h>
 #include <linux/list.h>
 #include <linux/nfc.h>
+#include <linux/security.h>
 
 #include "nfc.h"
 #include "llcp.h"
@@ -1005,6 +1006,8 @@ static void nfc_llcp_recv_connect(struct nfc_llcp_local *local,
 		sock_put(&sock->sk);
 		goto fail;
 	}
+
+	security_sk_clone(parent, new_sk);
 
 	new_sock = nfc_llcp_sock(new_sk);
 
