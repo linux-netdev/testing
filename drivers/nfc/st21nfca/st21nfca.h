@@ -6,6 +6,7 @@
 #ifndef __LOCAL_ST21NFCA_H_
 #define __LOCAL_ST21NFCA_H_
 
+#include <linux/spinlock.h>
 #include <net/nfc/hci.h>
 #include <linux/skbuff.h>
 #include <linux/workqueue.h>
@@ -131,6 +132,7 @@ struct st21nfca_se_info {
 	struct timer_list bwi_timer;
 	int wt_timeout; /* in msecs */
 	bool bwi_active;
+	spinlock_t se_lock; /* protects bwi_active, cb and cb_context */
 
 	struct timer_list se_active_timer;
 	bool se_active;
