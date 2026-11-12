@@ -102,7 +102,7 @@ static void mana_serv_reset(struct pci_dev *pdev)
 	}
 
 	/* HWC is not responding in this case, so don't wait */
-	hwc->hwc_timeout = 0;
+	WRITE_ONCE(hwc->hwc_timeout, 0);
 
 	dev_info(&pdev->dev, "MANA reset cycle start\n");
 
