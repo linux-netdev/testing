@@ -892,6 +892,11 @@ only one timer is needed 'count' is set to zero and only 'ival2' is used.
 When SET_TIMER and START_TIMER flag were set the timers are activated.
 The timer values can be altered at runtime when only SET_TIMER is set.
 
+For cyclic transmission tasks, ``count`` specifies the number of
+transmission attempts scheduled at ``ival1``, not the number of
+successfully transmitted CAN frames. The counter advances even when
+``can_send()`` returns an error. When ``count`` reaches zero, the
+transmission continues at ``ival2`` if nonzero, or stops otherwise.
 
 Broadcast Manager message sequence transmission
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
