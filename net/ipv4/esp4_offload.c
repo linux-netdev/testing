@@ -81,7 +81,7 @@ static struct sk_buff *esp4_gro_receive(struct list_head *head,
 	if (NAPI_GRO_CB(skb)->proto == IPPROTO_UDP)
 		encap_type = UDP_ENCAP_ESPINUDP;
 
-	XFRM_TUNNEL_SKB_CB(skb)->tunnel.ip4 = NULL;
+	xfrm_tunnel_info_clear(skb);
 	XFRM_SPI_SKB_CB(skb)->family = AF_INET;
 	XFRM_SPI_SKB_CB(skb)->daddroff = offsetof(struct iphdr, daddr);
 	XFRM_SPI_SKB_CB(skb)->seq = seq;

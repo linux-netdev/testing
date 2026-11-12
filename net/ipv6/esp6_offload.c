@@ -110,7 +110,7 @@ static struct sk_buff *esp6_gro_receive(struct list_head *head,
 		goto out;
 
 	IP6CB(skb)->nhoff = nhoff;
-	XFRM_TUNNEL_SKB_CB(skb)->tunnel.ip6 = NULL;
+	xfrm_tunnel_info_clear(skb);
 	XFRM_SPI_SKB_CB(skb)->family = AF_INET6;
 	XFRM_SPI_SKB_CB(skb)->daddroff = offsetof(struct ipv6hdr, daddr);
 	XFRM_SPI_SKB_CB(skb)->seq = seq;

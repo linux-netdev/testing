@@ -466,6 +466,7 @@ static int xfrm_inner_mode_input(struct xfrm_state *x,
 int xfrm_input(struct sk_buff *skb, int nexthdr, __be32 spi, int encap_type)
 {
 	const struct xfrm_state_afinfo *afinfo;
+	const struct xfrm_tunnel_info *tunnel_info;
 	struct net *net = dev_net(skb->dev);
 	struct net_device *dev = skb->dev;
 	int err;
@@ -555,16 +556,20 @@ int xfrm_input(struct sk_buff *skb, int nexthdr, __be32 spi, int encap_type)
 	}
 
 	family = XFRM_SPI_SKB_CB(skb)->family;
+	tunnel_info = xfrm_tunnel_info(skb);
 
 	/* if tunnel is present override skb->mark value with tunnel i_key */
 	switch (family) {
 	case AF_INET:
-		if (XFRM_TUNNEL_SKB_CB(skb)->tunnel.ip4)
-			mark = be32_to_cpu(XFRM_TUNNEL_SKB_CB(skb)->tunnel.ip4->parms.i_key);
+		if (tunnel_info &&
+		    tunnel_info->type == XFRM_TUNNEL_INFO_VTI4)
+			mark = be32_to_cpu(tunnel_info->i_key);
 		break;
 	case AF_INET6:
-		if (XFRM_TUNNEL_SKB_CB(skb)->tunnel.ip6)
-			mark = be32_to_cpu(XFRM_TUNNEL_SKB_CB(skb)->tunnel.ip6->parms.i_key);
+		if (tunnel_info &&
+		    (tunnel_info->type == XFRM_TUNNEL_INFO_VTI6 ||
+		     tunnel_info->type == XFRM_TUNNEL_INFO_IP6))
+			mark = be32_to_cpu(tunnel_info->i_key);
 		break;
 	}
 
@@ -739,6 +744,7 @@ resume_decapped:
 		goto drop;
 	}
 
+	xfrm_tunnel_info_clear(skb);
 	nf_reset_ct(skb);
 
 	if (decaps) {

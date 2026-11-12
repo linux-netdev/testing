@@ -15,6 +15,7 @@
 #include <linux/netfilter.h>
 #include <linux/netfilter_ipv6.h>
 #include <net/ipv6.h>
+#include <net/ip6_tunnel.h>
 #include <net/xfrm.h>
 #include <net/protocol.h>
 #include <net/gro.h>
@@ -22,7 +23,28 @@
 int xfrm6_rcv_spi(struct sk_buff *skb, int nexthdr, __be32 spi,
 		  struct ip6_tnl *t)
 {
-	XFRM_TUNNEL_SKB_CB(skb)->tunnel.ip6 = t;
+	struct xfrm_tunnel_info *info;
+
+	xfrm_tunnel_info_clear(skb);
+	if (t) {
+		info = xfrm_tunnel_info_add(skb);
+		if (!info) {
+			kfree_skb(skb);
+			return 0;
+		}
+
+		*info = (struct xfrm_tunnel_info) {
+			.ifindex = t->dev->ifindex,
+			.i_key = t->parms.i_key,
+			.type = XFRM_TUNNEL_INFO_IP6,
+			.ip6 = {
+				.link = t->parms.link,
+				.proto = t->parms.proto,
+				.laddr = t->parms.laddr,
+				.raddr = t->parms.raddr,
+			},
+		};
+	}
 	XFRM_SPI_SKB_CB(skb)->family = AF_INET6;
 	XFRM_SPI_SKB_CB(skb)->daddroff = offsetof(struct ipv6hdr, daddr);
 	return xfrm_input(skb, nexthdr, spi, 0);
