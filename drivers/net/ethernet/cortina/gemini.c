@@ -671,6 +671,7 @@ static void gmac_clean_txq(struct net_device *netdev, struct gmac_txq *txq,
 	union gmac_txdesc_1 word1;
 	unsigned int hwchksum = 0;
 	unsigned long bytes = 0;
+	unsigned long flags;
 	struct gmac_txdesc *txd;
 	unsigned short nfrags;
 	unsigned int errs = 0;
@@ -716,18 +717,21 @@ static void gmac_clean_txq(struct net_device *netdev, struct gmac_txq *txq,
 			if (nfrags >= TX_MAX_FRAGS)
 				nfrags = TX_MAX_FRAGS - 1;
 
-			u64_stats_update_begin(&port->tx_stats_syncp);
+			flags = u64_stats_update_begin_irqsave(&port->tx_stats_syncp);
 			port->tx_frag_stats[nfrags]++;
-			u64_stats_update_end(&port->tx_stats_syncp);
+			u64_stats_update_end_irqrestore(&port->tx_stats_syncp,
+							flags);
 		}
 	}
 
+	spin_lock_irqsave(&geth->irq_lock, flags);
 	u64_stats_update_begin(&port->ir_stats_syncp);
 	port->stats.tx_errors += errs;
 	port->stats.tx_packets += pkts;
 	port->stats.tx_bytes += bytes;
 	port->tx_hw_csummed += hwchksum;
 	u64_stats_update_end(&port->ir_stats_syncp);
+	spin_unlock_irqrestore(&geth->irq_lock, flags);
 
 	txq->cptr = c;
 }
