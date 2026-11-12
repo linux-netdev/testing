@@ -129,11 +129,11 @@ __le32 wg_index_hashtable_insert(struct index_hashtable *table,
 
 search_unused_slot:
 	/* First we try to find an unused slot, randomly, while unlocked. */
-	entry->index = (__force __le32)get_random_u32();
+	WRITE_ONCE(entry->index, (__force __le32)get_random_u32());
 	hlist_for_each_entry_rcu_bh(existing_entry,
 				    index_bucket(table, entry->index),
 				    index_hash) {
-		if (existing_entry->index == entry->index)
+		if (READ_ONCE(existing_entry->index) == entry->index)
 			/* If it's already in use, we continue searching. */
 			goto search_unused_slot;
 	}
@@ -145,7 +145,7 @@ search_unused_slot:
 	hlist_for_each_entry_rcu_bh(existing_entry,
 				    index_bucket(table, entry->index),
 				    index_hash) {
-		if (existing_entry->index == entry->index) {
+		if (READ_ONCE(existing_entry->index) == entry->index) {
 			spin_unlock_bh(&table->lock);
 			/* If it was stolen, we start over. */
 			goto search_unused_slot;
@@ -208,7 +208,7 @@ wg_index_hashtable_lookup(struct index_hashtable *table,
 	rcu_read_lock_bh();
 	hlist_for_each_entry_rcu_bh(iter_entry, index_bucket(table, index),
 				    index_hash) {
-		if (iter_entry->index == index) {
+		if (READ_ONCE(iter_entry->index) == index) {
 			if (likely(iter_entry->type & type_mask))
 				entry = iter_entry;
 			break;
