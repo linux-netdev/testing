@@ -2673,11 +2673,14 @@ static int emac_init_phy(struct emac_instance *dev)
 				return res;
 
 			res = of_phy_register_fixed_link(np);
-			ndev->phydev = of_phy_find_device(np);
-			if (res || !ndev->phydev)
-				return res ? res : -EINVAL;
-			emac_adjust_link(dev->ndev);
-			put_device(&ndev->phydev->mdio.dev);
+			if (res)
+				return res;
+
+			if (!of_phy_connect(ndev, np, &emac_adjust_link, 0,
+					    dev->phy_mode))
+				return -EINVAL;
+
+			emac_adjust_link(ndev);
 		}
 		return 0;
 	}
