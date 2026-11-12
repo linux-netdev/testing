@@ -602,6 +602,20 @@ static int gmac_init(struct net_device *netdev)
 	return 0;
 }
 
+static bool gmac_txq_size_valid(struct net_device *netdev, unsigned int entries)
+{
+	struct gemini_ethernet_port *port = netdev_priv(netdev);
+	unsigned int i;
+
+	/* DMA is stopped, so the hardware read pointers cannot advance. */
+	for (i = 0; i < netdev->num_tx_queues; i++)
+		if (GET_RPTR(port->dma_base + GMAC_SW_TX_QUEUE_PTR_REG(i)) >=
+		    entries)
+			return false;
+
+	return true;
+}
+
 static int gmac_setup_txqs(struct net_device *netdev)
 {
 	struct gemini_ethernet_port *port = netdev_priv(netdev);
@@ -615,6 +629,12 @@ static int gmac_setup_txqs(struct net_device *netdev)
 	void __iomem *rwptr_reg;
 	unsigned int r;
 	int i;
+
+	if (!gmac_txq_size_valid(netdev, entries)) {
+		netdev_err(netdev,
+			   "TX ring is too small for the retained read pointer\n");
+		return -EINVAL;
+	}
 
 	rwptr_reg = port->dma_base + GMAC_SW_TX_QUEUE0_PTR_REG;
 
@@ -2623,10 +2643,20 @@ static int gmac_set_ringparam(struct net_device *netdev,
 {
 	struct gemini_ethernet_port *port = netdev_priv(netdev);
 	unsigned int old_rxq_order;
+	unsigned int txq_order = port->txq_order;
 	int err = 0;
 
 	if (netif_running(netdev))
 		return -EBUSY;
+
+	if (rp->tx_pending) {
+		txq_order = min(15, ilog2(rp->tx_pending - 1) + 1);
+		if (!gmac_txq_size_valid(netdev, BIT(txq_order))) {
+			NL_SET_ERR_MSG(extack,
+				       "TX ring is too small for the retained read pointer");
+			return -EINVAL;
+		}
+	}
 
 	if (rp->rx_pending) {
 		old_rxq_order = port->rxq_order;
@@ -2638,7 +2668,7 @@ static int gmac_set_ringparam(struct net_device *netdev,
 		}
 	}
 	if (rp->tx_pending) {
-		port->txq_order = min(15, ilog2(rp->tx_pending - 1) + 1);
+		port->txq_order = txq_order;
 		port->irq_every_tx_packets = 1 << (port->txq_order - 2);
 	}
 
