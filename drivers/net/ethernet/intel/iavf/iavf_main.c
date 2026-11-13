@@ -5681,6 +5681,7 @@ static void iavf_remove(struct pci_dev *pdev)
 
 	pci_set_drvdata(pdev, NULL);
 
+	kfree(adapter->qos_caps);
 	free_netdev(netdev);
 
 	pci_disable_device(pdev);
