@@ -27057,6 +27057,7 @@ S:	Maintained
 F:	Documentation/core-api/stringset.rst
 F:	include/linux/stringset.h
 F:	lib/stringset.c
+F:	lib/tests/stringset_kunit.c
 
 SUN HAPPY MEAL ETHERNET DRIVER
 M:	Sean Anderson <seanga2@gmail.com>
