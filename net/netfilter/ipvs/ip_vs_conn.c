@@ -1057,7 +1057,7 @@ static inline void ip_vs_bind_xmit(struct ip_vs_conn *cp)
 		break;
 
 	case IP_VS_CONN_F_LOCALNODE:
-		cp->packet_xmit = ip_vs_null_xmit;
+		cp->packet_xmit = ip_vs_null_xmit_v6;
 		break;
 
 	case IP_VS_CONN_F_BYPASS:
