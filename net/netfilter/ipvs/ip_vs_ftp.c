@@ -29,6 +29,7 @@
 #include <linux/netfilter.h>
 #include <net/netfilter/nf_conntrack.h>
 #include <net/netfilter/nf_conntrack_expect.h>
+#include <net/netfilter/nf_conntrack_seqadj.h>
 #include <net/netfilter/nf_nat.h>
 #include <net/netfilter/nf_nat_helper.h>
 #include <linux/gfp.h>
@@ -384,19 +385,25 @@ static int ip_vs_ftp_out(struct ip_vs_app *app, struct ip_vs_conn *cp,
 
 	ct = nf_ct_get(skb, &ctinfo);
 	if (ct && !nf_ct_is_template(ct)) {
-		bool mangled;
+		bool mangled = false;
 
 		/* If mangling fails this function will return 0
 		 * which will cause the packet to be dropped.
 		 * Mangling can only fail under memory pressure,
 		 * hopefully it will succeed on the retransmitted
 		 * packet.
+		 *
+		 * Add the seqadj extension before the expectation is
+		 * linked into the helper extension: adding it later
+		 * reallocates ct->ext under the expectation list.
 		 */
-		mangled = nf_nat_mangle_tcp_packet(skb, ct, ctinfo,
-						   ipvsh->len,
-						   start - data,
-						   end - start,
-						   buf, buf_len);
+		if (nf_ct_is_confirmed(ct) || nfct_seqadj(ct) ||
+		    nfct_seqadj_ext_add(ct))
+			mangled = nf_nat_mangle_tcp_packet(skb, ct, ctinfo,
+							   ipvsh->len,
+							   start - data,
+							   end - start,
+							   buf, buf_len);
 		if (mangled) {
 			ip_vs_nfct_expect_related(skb, ct, n_cp,
 						  ipvsh->protocol, 0, 0);
