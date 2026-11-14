@@ -1278,6 +1278,31 @@ static void netvsc_sc_open(struct vmbus_channel *new_sc)
 		wake_up(&nvscdev->subchan_open);
 }
 
+static bool rndis_subchannel_opened(struct netvsc_device *nvdev, int i)
+{
+	struct vmbus_channel *chn = nvdev->chan_table[i].channel;
+
+	return chn && chn->state == CHANNEL_OPENED_STATE;
+}
+
+/* Disable the NAPI of the sub channels that opened. netvsc_sc_open()
+ * already disabled it on the others.
+ */
+static void rndis_disable_subchannels(struct net_device *ndev,
+				      struct netvsc_device *nvdev)
+{
+	int i;
+
+	for (i = 1; i < nvdev->num_chn; i++) {
+		if (!rndis_subchannel_opened(nvdev, i))
+			continue;
+
+		netif_queue_set_napi(ndev, i, NETDEV_QUEUE_TYPE_TX, NULL);
+		netif_queue_set_napi(ndev, i, NETDEV_QUEUE_TYPE_RX, NULL);
+		napi_disable(&nvdev->chan_table[i].napi);
+	}
+}
+
 /* Open sub-channels after completing the handling of the device probe.
  * This breaks overlap of processing the host message for the
  * new primary channel with the initialization of sub-channels.
@@ -1328,6 +1353,19 @@ int rndis_set_subchannel(struct net_device *ndev,
 	/* wait for all sub channels to open */
 	wait_event(nvdev->subchan_open,
 		   atomic_read(&nvdev->open_chn) == nvdev->num_chn);
+
+	/* open_chn also counts the sub channels that failed to open. They
+	 * have no ring buffer and a disabled NAPI, so fall back to the
+	 * primary channel.
+	 */
+	for (i = 1; i < nvdev->num_chn; i++) {
+		if (!rndis_subchannel_opened(nvdev, i)) {
+			netdev_warn(ndev, "sub channel %d is not open, using one queue\n",
+				    i);
+			rndis_disable_subchannels(ndev, nvdev);
+			return -EIO;
+		}
+	}
 
 	for (i = 0; i < VRSS_SEND_TAB_SIZE; i++)
 		ndev_ctx->tx_table[i] = i % nvdev->num_chn;
