@@ -1866,6 +1866,10 @@ static void ip_encap(struct net *net, struct sk_buff *skb,
 	struct iphdr *iph;
 	const struct iphdr *old_iph = ip_hdr(skb);
 
+	/* skb_cow() in ipmr_prepare_xmit() leaves no header to unclone */
+	iptunnel_handle_offloads(skb, SKB_GSO_IPXIP4);
+	skb_set_inner_ipproto(skb, IPPROTO_IPIP);
+
 	skb_push(skb, sizeof(struct iphdr));
 	skb->transport_header = skb->network_header;
 	skb_reset_network_header(skb);
@@ -1879,8 +1883,8 @@ static void ip_encap(struct net *net, struct sk_buff *skb,
 	iph->saddr	=	saddr;
 	iph->protocol	=	IPPROTO_IPIP;
 	iph->ihl	=	5;
-	iph->tot_len	=	htons(skb->len);
-	ip_select_ident(net, skb, NULL);
+	iph_set_totlen(iph, skb->len);
+	ip_select_ident_segs(net, skb, NULL, skb_shinfo(skb)->gso_segs ?: 1);
 	ip_send_check(iph);
 
 	memset(&(IPCB(skb)->opt), 0, sizeof(IPCB(skb)->opt));
@@ -1948,6 +1952,9 @@ static int ipmr_prepare_xmit(struct net *net, struct mr_table *mrt,
 	}
 
 	if (vif->flags & VIFF_TUNNEL) {
+		/* The inner headers can describe one tunnel only */
+		if (skb_is_gso(skb) && skb->encapsulation)
+			return -1;
 		rt = ip_route_output_ports(net, &fl4, NULL,
 					   vif->remote, vif->local,
 					   0, 0,
