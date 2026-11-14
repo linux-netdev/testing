@@ -141,14 +141,10 @@ static void br_switchdev_fdb_populate(struct net_bridge *br,
 	item->info.ctx = ctx;
 }
 
-void
-br_switchdev_fdb_notify(struct net_bridge *br,
-			const struct net_bridge_fdb_entry *fdb, int type)
+static bool br_switchdev_fdb_notifies(const struct net_bridge_fdb_entry *fdb)
 {
-	struct switchdev_notifier_fdb_info item;
-
 	if (test_bit(BR_FDB_LOCKED, &fdb->flags))
-		return;
+		return false;
 
 	/* Entries with these flags were created using ndm_state == NUD_REACHABLE,
 	 * ndm_flags == NTF_MASTER( | NTF_STICKY), ext_flags == 0 by something
@@ -156,9 +152,67 @@ br_switchdev_fdb_notify(struct net_bridge *br,
 	 * Drivers don't know how to deal with these, so don't notify them to
 	 * avoid confusing them.
 	 */
-	if (test_bit(BR_FDB_ADDED_BY_USER, &fdb->flags) &&
-	    !test_bit(BR_FDB_STATIC, &fdb->flags) &&
-	    !test_bit(BR_FDB_ADDED_BY_EXT_LEARN, &fdb->flags))
+	return !test_bit(BR_FDB_ADDED_BY_USER, &fdb->flags) ||
+	       test_bit(BR_FDB_STATIC, &fdb->flags) ||
+	       test_bit(BR_FDB_ADDED_BY_EXT_LEARN, &fdb->flags);
+}
+
+/**
+ * br_switchdev_fdb_find_port - find the device a switchdev entry is reported on
+ * @br_dev: the bridge device
+ * @addr: the MAC address of the entry
+ * @vid: the VLAN of the entry
+ * @added_by_user: set to whether the entry was added by the user, may be NULL
+ *
+ * Must be called under RCU; the device is valid until the read-side critical
+ * section ends.
+ *
+ * Return: the device that br_switchdev_fdb_notify() reports the entry for
+ * @addr and @vid on: its port, or @br_dev for a local entry. NULL if there is
+ * no such entry, or if it is locked, was added with "master dynamic", or was
+ * learned by a switchdev driver, whose addition br_switchdev_fdb_notify()
+ * does not report.
+ */
+struct net_device *br_switchdev_fdb_find_port(struct net_device *br_dev,
+					      const unsigned char *addr,
+					      u16 vid, bool *added_by_user)
+{
+	const struct net_bridge_port *p;
+	struct net_bridge_fdb_entry *f;
+	bool by_user;
+
+	RCU_LOCKDEP_WARN(!rcu_read_lock_held(), "suspicious use outside RCU");
+
+	if (!netif_is_bridge_master(br_dev))
+		return NULL;
+
+	f = br_fdb_find_rcu(netdev_priv(br_dev), addr, vid);
+	if (!f || !br_switchdev_fdb_notifies(f))
+		return NULL;
+
+	by_user = test_bit(BR_FDB_ADDED_BY_USER, &f->flags);
+	if (!by_user && test_bit(BR_FDB_ADDED_BY_EXT_LEARN, &f->flags))
+		return NULL;
+
+	if (added_by_user)
+		*added_by_user = by_user;
+
+	if (test_bit(BR_FDB_LOCAL, &f->flags))
+		return br_dev;
+
+	p = br_fdb_dst_port(f);
+
+	return p ? p->dev : NULL;
+}
+EXPORT_SYMBOL_GPL(br_switchdev_fdb_find_port);
+
+void
+br_switchdev_fdb_notify(struct net_bridge *br,
+			const struct net_bridge_fdb_entry *fdb, int type)
+{
+	struct switchdev_notifier_fdb_info item;
+
+	if (!br_switchdev_fdb_notifies(fdb))
 		return;
 
 	br_switchdev_fdb_populate(br, &item, fdb, NULL);
