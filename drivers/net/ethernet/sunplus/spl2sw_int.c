@@ -125,13 +125,14 @@ spl2sw_rx_poll_alloc_err:
 			h_desc = comm->rx_desc[queue] + rx_pos;
 	}
 
-	spin_lock_irqsave(&comm->int_mask_lock, flags);
-	mask = readl(comm->l2sw_reg_base + L2SW_SW_INT_MASK_0);
-	mask &= ~MAC_INT_RX;
-	writel(mask, comm->l2sw_reg_base + L2SW_SW_INT_MASK_0);
-	spin_unlock_irqrestore(&comm->int_mask_lock, flags);
+	if (budget_left > 0 && napi_complete_done(napi, budget - budget_left)) {
+		spin_lock_irqsave(&comm->int_mask_lock, flags);
+		mask = readl(comm->l2sw_reg_base + L2SW_SW_INT_MASK_0);
+		mask &= ~MAC_INT_RX;
+		writel(mask, comm->l2sw_reg_base + L2SW_SW_INT_MASK_0);
+		spin_unlock_irqrestore(&comm->int_mask_lock, flags);
+	}
 
-	napi_complete(napi);
 	return budget - budget_left;
 }
 
@@ -198,13 +199,14 @@ spl2sw_tx_poll_next:
 
 	spin_unlock(&comm->tx_lock);
 
-	spin_lock_irqsave(&comm->int_mask_lock, flags);
-	mask = readl(comm->l2sw_reg_base + L2SW_SW_INT_MASK_0);
-	mask &= ~MAC_INT_TX;
-	writel(mask, comm->l2sw_reg_base + L2SW_SW_INT_MASK_0);
-	spin_unlock_irqrestore(&comm->int_mask_lock, flags);
+	if (budget_left > 0 && napi_complete_done(napi, budget - budget_left)) {
+		spin_lock_irqsave(&comm->int_mask_lock, flags);
+		mask = readl(comm->l2sw_reg_base + L2SW_SW_INT_MASK_0);
+		mask &= ~MAC_INT_TX;
+		writel(mask, comm->l2sw_reg_base + L2SW_SW_INT_MASK_0);
+		spin_unlock_irqrestore(&comm->int_mask_lock, flags);
+	}
 
-	napi_complete(napi);
 	return budget - budget_left;
 }
 
