@@ -2,8 +2,10 @@
 // Copyright (C) 2019-2020 Arm Ltd.
 
 #include <linux/compiler.h>
+#include <linux/export.h>
 #include <linux/kasan-checks.h>
 #include <linux/kernel.h>
+#include <linux/unaligned.h>
 
 #include <net/checksum.h>
 
@@ -115,6 +117,104 @@ unsigned int __no_sanitize_address do_csum(const unsigned char *buff, int len)
 
 	return sum >> 16;
 }
+
+static __always_inline __wsum csum_fold128(__uint128_t sum)
+{
+	u64 s;
+
+	sum += (sum >> 64) | (sum << 64);
+	s = sum >> 64;
+	s += (s >> 32) | (s << 32);
+	return (__force __wsum)(u32)(s >> 32);
+}
+
+/*
+ * Single-pass copy and ones' complement sum. Each word is read once into a
+ * GPR before storing and summing, so the returned sum always matches @dst
+ * even if @src is concurrently modified.
+ */
+__wsum csum_partial_copy_nocheck(const void *src, void *dst, int len)
+{
+	const u8 *s = src;
+	u8 *d = dst;
+	__uint128_t sum0 = 0, sum1 = 0, sum2 = 0, sum3 = 0;
+	unsigned int n;
+
+	if (unlikely(len <= 0))
+		return 0;
+
+	n = (unsigned int)len >> 5;
+	if (n) {
+		do {
+			u64 v0, v1;
+
+			v0 = get_unaligned((const u64 *)s);
+			v1 = get_unaligned((const u64 *)(s + 8));
+			put_unaligned(v0, (u64 *)d);
+			put_unaligned(v1, (u64 *)(d + 8));
+			sum0 += v0;
+			sum1 += v1;
+
+			v0 = get_unaligned((const u64 *)(s + 16));
+			v1 = get_unaligned((const u64 *)(s + 24));
+			put_unaligned(v0, (u64 *)(d + 16));
+			put_unaligned(v1, (u64 *)(d + 24));
+			sum2 += v0;
+			sum3 += v1;
+
+			s += 32;
+			d += 32;
+		} while (--n);
+
+		sum0 += sum2;
+		sum1 += sum3;
+	}
+
+	if (len & 16) {
+		u64 v0 = get_unaligned((const u64 *)s);
+		u64 v1 = get_unaligned((const u64 *)(s + 8));
+
+		put_unaligned(v0, (u64 *)d);
+		put_unaligned(v1, (u64 *)(d + 8));
+		sum0 += v0;
+		sum1 += v1;
+		s += 16;
+		d += 16;
+	}
+	if (len & 8) {
+		u64 v = get_unaligned((const u64 *)s);
+
+		put_unaligned(v, (u64 *)d);
+		sum0 += v;
+		s += 8;
+		d += 8;
+	}
+	if (len & 4) {
+		u32 v = get_unaligned((const u32 *)s);
+
+		put_unaligned(v, (u32 *)d);
+		sum1 += v;
+		s += 4;
+		d += 4;
+	}
+	if (len & 2) {
+		u16 v = get_unaligned((const u16 *)s);
+
+		put_unaligned(v, (u16 *)d);
+		sum0 += v;
+		s += 2;
+		d += 2;
+	}
+	if (len & 1) {
+		u8 v = *s;
+
+		*d = v;
+		sum1 += v;
+	}
+
+	return csum_fold128(sum0 + sum1);
+}
+EXPORT_SYMBOL(csum_partial_copy_nocheck);
 
 __sum16 csum_ipv6_magic(const struct in6_addr *saddr,
 			const struct in6_addr *daddr,
