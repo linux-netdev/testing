@@ -1023,7 +1023,7 @@ static int netvsc_attach(struct net_device *ndev,
 	struct netvsc_device *nvdev;
 	struct rndis_device *rdev;
 	struct bpf_prog *prog;
-	int ret = 0;
+	int i, ret = 0;
 
 	nvdev = rndis_filter_device_add(hdev, dev_info);
 	if (IS_ERR(nvdev))
@@ -1034,8 +1034,13 @@ static int netvsc_attach(struct net_device *ndev,
 
 		/* if unavailable, just proceed with one queue */
 		if (ret) {
+			for (i = 1; i < nvdev->num_chn; i++)
+				netif_napi_del(&nvdev->chan_table[i].napi);
+
 			nvdev->max_chn = 1;
 			nvdev->num_chn = 1;
+			netif_set_real_num_tx_queues(ndev, 1);
+			netif_set_real_num_rx_queues(ndev, 1);
 		}
 	}
 
