@@ -14,6 +14,7 @@
 #include <net/netfilter/nf_tables.h>
 #include <net/netfilter/nf_tables_offload.h>
 #include <net/netfilter/nf_dup_netdev.h>
+#include <net/dst_metadata.h>
 #include <net/netfilter/nf_recursion.h>
 #include <net/neighbour.h>
 #include <net/ip.h>
@@ -156,6 +157,11 @@ static void nft_fwd_neigh_eval(const struct nft_expr *expr,
 
 	dev = dev_get_by_index_rcu(nft_net(pkt), oif);
 	if (!dev) {
+		verdict = NF_DROP;
+		goto out;
+	}
+
+	if (!skb_dst_drop_keep_metadata(skb)) {
 		verdict = NF_DROP;
 		goto out;
 	}
