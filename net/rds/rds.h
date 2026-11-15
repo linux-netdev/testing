@@ -1081,16 +1081,11 @@ void rds_stats_info_copy(struct rds_info_iterator *iter,
 /* sysctl.c */
 int rds_sysctl_init(void);
 void rds_sysctl_exit(void);
-extern unsigned long rds_sysctl_sndbuf_min;
-extern unsigned long rds_sysctl_sndbuf_default;
-extern unsigned long rds_sysctl_sndbuf_max;
 extern unsigned long rds_sysctl_reconnect_min_jiffies;
 extern unsigned long rds_sysctl_reconnect_max_jiffies;
 extern unsigned int  rds_sysctl_max_unacked_packets;
 extern unsigned int  rds_sysctl_max_unacked_bytes;
 extern unsigned int  rds_sysctl_ping_enable;
-extern unsigned long rds_sysctl_trace_flags;
-extern unsigned int  rds_sysctl_trace_level;
 
 /* threads.c */
 int rds_threads_init(void);
