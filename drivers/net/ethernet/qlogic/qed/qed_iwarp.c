@@ -2314,8 +2314,8 @@ qed_iwarp_ll2_comp_mpa_pkt(void *cxt, struct qed_ll2_comp_rx_data *data)
 	u16 first_mpa_offset;
 
 	iwarp_info = &p_hwfn->p_rdma_info->iwarp;
-	mpa_buf = list_first_entry(&iwarp_info->mpa_buf_list,
-				   struct qed_iwarp_ll2_mpa_buf, list_entry);
+	mpa_buf = list_first_entry_or_null(&iwarp_info->mpa_buf_list,
+					   struct qed_iwarp_ll2_mpa_buf, list_entry);
 	if (!mpa_buf) {
 		DP_ERR(p_hwfn, "No free mpa buf\n");
 		goto err;
