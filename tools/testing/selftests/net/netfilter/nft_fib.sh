@@ -202,7 +202,38 @@ check_fib_counter() {
 	return 0
 }
 
-load_ruleset "$nsrouter"
+# Count probes matching the expected FIB result, then drop them.
+test_fib_suppress() {
+	local label="$1" expected="$2"
+	local result="${3:-oifname}" err=0
+
+	ip netns exec "$nsrouter" nft -f /dev/stdin <<EOF || return 1
+flush table ip6 filter
+table ip6 filter {
+	chain prerouting {
+		type filter hook prerouting priority -1;
+		ip6 saddr dead:1::99 icmpv6 type echo-request \
+			fib saddr . mark $result "$expected" counter drop
+	}
+}
+EOF
+	ip netns exec "$ns1" ping -6 -c 1 -W 0.1 -q dead:1::1 > /dev/null 2>&1
+	if [ "$result" = type ]; then
+		ip -net "$nsrouter" -6 route get dead:1::99 from dead:1::1 > /dev/null 2>&1 && err=1
+	else
+		ip -net "$nsrouter" -6 route get dead:1::99 from dead:1::1 |
+			grep -q "dev $expected " || err=1
+	fi
+	if check_fib_type_counter_family ip6 1 "$nsrouter" prerouting "$result" "$label" &&
+	   [ "$err" -eq 0 ]; then
+		echo "PASS: $label"
+	else
+		echo "FAIL: $label"
+		ret=1
+		return 1
+	fi
+}
+
 load_ruleset "$ns1"
 load_ruleset "$ns2"
 
@@ -723,6 +754,36 @@ test_fib_vrf()
 
 	check_fib_veth_vrf_type "fib expression address types match (iif in vrf)"
 }
+
+# Test prefix suppression before installing the router's logging RPF rules.
+# Neighbour discovery must remain usable even when reverse routes differ.
+ip -net "$nsrouter" -6 route add table 128 default dev veth1 || exit 1
+ip -net "$nsrouter" -6 route add table 129 dead:1::/64 dev veth0 || exit 1
+ip -net "$nsrouter" -6 rule add pref 100 to dead:1::99 table 128 suppress_prefixlength 0 || exit 1
+ip -net "$nsrouter" -6 rule add pref 101 to dead:1::99 table 129 || exit 1
+ip netns exec "$nsrouter" nft add table ip6 filter || exit 1
+
+test_fib_suppress "suppress default route" veth0 || ret=1
+ip -net "$nsrouter" -6 route add table 128 dead:1::/64 dev veth1 || exit 1
+test_fib_suppress "retain non-default route" veth1 || ret=1
+ip -net "$nsrouter" -6 route del table 128 dead:1::/64 dev veth1 || exit 1
+
+for type in blackhole unreachable prohibit; do
+	ip -net "$nsrouter" -6 route replace "$type" default table 128 || exit 1
+	test_fib_suppress "retain $type" "$type" type || ret=1
+done
+
+ip -net "$nsrouter" -6 nexthop add id 1 blackhole || exit 1
+ip -net "$nsrouter" -6 route replace default nhid 1 table 128 || exit 1
+test_fib_suppress "retain blackhole nexthop" blackhole type || ret=1
+
+ip -net "$nsrouter" -6 rule del pref 100
+ip -net "$nsrouter" -6 rule del pref 101
+ip -net "$nsrouter" -6 route del table 128 default
+ip -net "$nsrouter" -6 route flush table 129
+ip -net "$nsrouter" -6 nexthop del id 1
+ip netns exec "$nsrouter" nft delete table ip6 filter
+load_ruleset "$nsrouter"
 
 ip netns exec "$nsrouter" sysctl net.ipv6.conf.all.forwarding=1 > /dev/null
 ip netns exec "$nsrouter" sysctl net.ipv4.conf.veth0.forwarding=1 > /dev/null
