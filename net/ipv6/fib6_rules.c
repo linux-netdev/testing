@@ -283,9 +283,16 @@ INDIRECT_CALLABLE_SCOPE bool fib6_rule_suppress(struct fib_rule *rule,
 						struct fib_lookup_arg *arg)
 {
 	struct fib6_result *res = arg->result;
-	struct rt6_info *rt = res->rt6;
+	struct rt6_info *rt;
 	struct net_device *dev = NULL;
 
+	if (arg->lookup_ptr == fib6_table_lookup) {
+		/* Raw lookups report reject routes without an error. */
+		return !(res->fib6_flags & RTF_REJECT) &&
+		       res->f6i->fib6_dst.plen <= rule->suppress_prefixlen;
+	}
+
+	rt = res->rt6;
 	if (!rt)
 		return false;
 
