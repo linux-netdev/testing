@@ -53,13 +53,71 @@ static atomic_t rds_tcp_unloading = ATOMIC_INIT(0);
 
 static struct kmem_cache *rds_tcp_conn_slab;
 
-static int rds_tcp_sndbuf_handler(const struct ctl_table *ctl, int write,
-				  void *buffer, size_t *lenp, loff_t *fpos);
-static int rds_tcp_rcvbuf_handler(const struct ctl_table *ctl, int write,
-				  void *buffer, size_t *lenp, loff_t *fpos);
-
+#ifdef CONFIG_SYSCTL
 static int rds_tcp_min_sndbuf = SOCK_MIN_SNDBUF;
 static int rds_tcp_min_rcvbuf = SOCK_MIN_RCVBUF;
+
+/* when sysctl is used to modify some kernel socket parameters,this
+ * function  resets the RDS connections in that netns  so that we can
+ * restart with new parameters.  The assumption is that such reset
+ * events are few and far-between.
+ */
+static void rds_tcp_sysctl_reset(struct net *net)
+{
+	struct rds_tcp_connection *tc, *_tc;
+
+	spin_lock_irq(&rds_tcp_conn_lock);
+	list_for_each_entry_safe(tc, _tc, &rds_tcp_conn_list, t_tcp_node) {
+		struct net *c_net = read_pnet(&tc->t_cpath->cp_conn->c_net);
+
+		if (net != c_net || !tc->t_sock)
+			continue;
+
+		/* reconnect with new parameters */
+		rds_conn_path_drop(tc->t_cpath, false);
+	}
+	spin_unlock_irq(&rds_tcp_conn_lock);
+}
+
+static int rds_tcp_skbuf_handler(struct rds_tcp_net *rtn,
+				 const struct ctl_table *ctl, int write,
+				 void *buffer, size_t *lenp, loff_t *fpos)
+{
+	int err;
+
+	err = proc_dointvec_minmax(ctl, write, buffer, lenp, fpos);
+	if (err < 0) {
+		pr_warn("Invalid input. Must be >= %d\n",
+			*(int *)(ctl->extra1));
+		return err;
+	}
+
+	if (write && rtn->rds_tcp_listen_sock && rtn->rds_tcp_listen_sock->sk) {
+		struct net *net = sock_net(rtn->rds_tcp_listen_sock->sk);
+
+		rds_tcp_sysctl_reset(net);
+	}
+
+	return 0;
+}
+
+static int rds_tcp_sndbuf_handler(const struct ctl_table *ctl, int write,
+				  void *buffer, size_t *lenp, loff_t *fpos)
+{
+	struct rds_tcp_net *rtn = container_of(ctl->data, struct rds_tcp_net,
+					       sndbuf_size);
+
+	return rds_tcp_skbuf_handler(rtn, ctl, write, buffer, lenp, fpos);
+}
+
+static int rds_tcp_rcvbuf_handler(const struct ctl_table *ctl, int write,
+				  void *buffer, size_t *lenp, loff_t *fpos)
+{
+	struct rds_tcp_net *rtn = container_of(ctl->data, struct rds_tcp_net,
+					       rcvbuf_size);
+
+	return rds_tcp_skbuf_handler(rtn, ctl, write, buffer, lenp, fpos);
+}
 
 static struct ctl_table rds_tcp_sysctl_table[] = {
 #define	RDS_TCP_SNDBUF	0
@@ -105,7 +163,7 @@ static __net_init int rds_tcp_init_net_sysctl(struct net *net)
 	tbl[RDS_TCP_RCVBUF].data = &rtn->rcvbuf_size;
 	rtn->rds_tcp_sysctl = register_net_sysctl_sz(net, "net/rds/tcp", tbl,
 						     ARRAY_SIZE(rds_tcp_sysctl_table));
-	if (!rtn->rds_tcp_sysctl && IS_ENABLED(CONFIG_SYSCTL)) {
+	if (!rtn->rds_tcp_sysctl) {
 		pr_warn("could not register sysctl\n");
 		if (net != &init_net)
 			kfree(tbl);
@@ -127,6 +185,15 @@ static void __net_exit rds_tcp_exit_net_sysctl(struct net *net)
 	if (net != &init_net)
 		kfree(rtn->ctl_table);
 }
+#else
+static inline int rds_tcp_init_net_sysctl(struct net *net)
+{
+	return 0;
+}
+static inline void rds_tcp_exit_net_sysctl(struct net *net)
+{
+}
+#endif
 
 u32 rds_tcp_write_seq(struct rds_tcp_connection *tc)
 {
@@ -782,68 +849,6 @@ void *rds_tcp_listen_sock_def_readable(struct net *net)
 		return NULL;
 
 	return lsock->sk->sk_user_data;
-}
-
-/* when sysctl is used to modify some kernel socket parameters,this
- * function  resets the RDS connections in that netns  so that we can
- * restart with new parameters.  The assumption is that such reset
- * events are few and far-between.
- */
-static void rds_tcp_sysctl_reset(struct net *net)
-{
-	struct rds_tcp_connection *tc, *_tc;
-
-	spin_lock_irq(&rds_tcp_conn_lock);
-	list_for_each_entry_safe(tc, _tc, &rds_tcp_conn_list, t_tcp_node) {
-		struct net *c_net = read_pnet(&tc->t_cpath->cp_conn->c_net);
-
-		if (net != c_net || !tc->t_sock)
-			continue;
-
-		/* reconnect with new parameters */
-		rds_conn_path_drop(tc->t_cpath, false);
-	}
-	spin_unlock_irq(&rds_tcp_conn_lock);
-}
-
-static int rds_tcp_skbuf_handler(struct rds_tcp_net *rtn,
-				 const struct ctl_table *ctl, int write,
-				 void *buffer, size_t *lenp, loff_t *fpos)
-{
-	int err;
-
-	err = proc_dointvec_minmax(ctl, write, buffer, lenp, fpos);
-	if (err < 0) {
-		pr_warn("Invalid input. Must be >= %d\n",
-			*(int *)(ctl->extra1));
-		return err;
-	}
-
-	if (write && rtn->rds_tcp_listen_sock && rtn->rds_tcp_listen_sock->sk) {
-		struct net *net = sock_net(rtn->rds_tcp_listen_sock->sk);
-
-		rds_tcp_sysctl_reset(net);
-	}
-
-	return 0;
-}
-
-static int rds_tcp_sndbuf_handler(const struct ctl_table *ctl, int write,
-				  void *buffer, size_t *lenp, loff_t *fpos)
-{
-	struct rds_tcp_net *rtn = container_of(ctl->data, struct rds_tcp_net,
-					       sndbuf_size);
-
-	return rds_tcp_skbuf_handler(rtn, ctl, write, buffer, lenp, fpos);
-}
-
-static int rds_tcp_rcvbuf_handler(const struct ctl_table *ctl, int write,
-				  void *buffer, size_t *lenp, loff_t *fpos)
-{
-	struct rds_tcp_net *rtn = container_of(ctl->data, struct rds_tcp_net,
-					       rcvbuf_size);
-
-	return rds_tcp_skbuf_handler(rtn, ctl, write, buffer, lenp, fpos);
 }
 
 static void rds_tcp_exit(void)
