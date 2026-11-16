@@ -402,6 +402,7 @@ static void tipc_node_write_unlock(struct tipc_node *n)
 	struct list_head *publ_list;
 	struct tipc_uaddr ua;
 	u32 bearer_id, node;
+	int err = 0;
 
 	if (likely(!flags)) {
 		write_unlock_bh(&n->lock);
@@ -429,12 +430,15 @@ static void tipc_node_write_unlock(struct tipc_node *n)
 
 	if (flags & TIPC_NOTIFY_LINK_UP) {
 		tipc_mon_peer_up(net, node, bearer_id);
-		tipc_nametbl_publish(net, &ua, &sk, sk.ref);
+		tipc_nametbl_publish(net, &ua, &sk, sk.ref, &err);
 	}
 	if (flags & TIPC_NOTIFY_LINK_DOWN) {
 		tipc_mon_peer_down(net, node, bearer_id);
 		tipc_nametbl_withdraw(net, &ua, &sk, sk.ref);
 	}
+
+	if (err == -ENOBUFS)
+		tipc_node_link_down(n, bearer_id, false);
 }
 
 static void tipc_node_assign_peer_net(struct tipc_node *n, u32 hash_mixes)
@@ -2193,6 +2197,16 @@ rcv:
 			}
 		}
 		tipc_node_write_unlock(n);
+
+		/* tipc_node_link_down() was called in
+		 * tipc_node_write_unlock().
+		 */
+		tipc_node_read_lock(n);
+		le = &n->links[bearer_id];
+		if (le->link && !tipc_link_is_up(le->link) &&
+		    !skb_queue_empty(&xmitq))
+			__skb_queue_purge(&xmitq);
+		tipc_node_read_unlock(n);
 	}
 
 	if (unlikely(rc & TIPC_LINK_UP_EVT))
