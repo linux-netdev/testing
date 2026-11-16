@@ -76,17 +76,17 @@ struct dst_entry {
 	struct rcu_head		rcu_head;
 	short			error;
 	short			__pad;
-	__u32			tclassid;
 #ifndef CONFIG_64BIT
+	__u32			tclassid;
 	struct lwtunnel_state   *lwtstate;
 	rcuref_t		__rcuref;	/* 32-bit offset 64 */
 #endif
 	netdevice_tracker	dev_tracker;
 
 	/*
-	 * Used by rtable and rt6_info. Moves lwtstate into the next cache
-	 * line on 64bit so that lwtstate does not cause false sharing with
-	 * __rcuref under contention of __rcuref. This also puts the
+	 * Used by rtable and rt6_info. Moves lwtstate and tclassid into the
+	 * next cache line on 64bit so that they do not cause false sharing
+	 * with __rcuref under contention of __rcuref. This also puts the
 	 * frequently accessed members of rtable and rt6_info out of the
 	 * __rcuref cache line.
 	 */
@@ -94,6 +94,7 @@ struct dst_entry {
 	struct uncached_list	*rt_uncached_list;
 #ifdef CONFIG_64BIT
 	struct lwtunnel_state   *lwtstate;
+	__u32			tclassid;
 #endif
 };
 
