@@ -234,11 +234,16 @@ static struct sock *udp6_lib_lookup2(const struct net *net,
 rescore:
 		score = compute_score(need_rescore ? result : sk, net, saddr,
 				      sport, daddr, hnum, dif, sdif);
+		if (need_rescore) {
+			if (score > badness)
+				badness = score;
+			else
+				result = sk;
+			continue;
+		}
+
 		if (score > badness) {
 			badness = score;
-
-			if (need_rescore)
-				continue;
 
 			if (sk->sk_state == TCP_ESTABLISHED) {
 				result = sk;
