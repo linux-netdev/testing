@@ -1341,6 +1341,23 @@ static int m88e1510_config_mode(struct phy_device *phydev, u16 mode)
 	if (oldpage < 0)
 		goto error;
 
+	ret = __phy_read(phydev, MII_88E1510_GEN_CTRL_REG_1);
+	if (ret < 0)
+		goto error;
+
+	if (mode == MII_88E1510_GEN_CTRL_REG_1_MODE_RGMII) {
+		switch (FIELD_GET(MII_88E1510_GEN_CTRL_REG_1_MODE_MASK, ret)) {
+		case MII_88E1510_GEN_CTRL_REG_1_MODE_RGMII:
+		case MII_88E1510_GEN_CTRL_REG_1_MODE_RGMII_1000X:
+		case MII_88E1510_GEN_CTRL_REG_1_MODE_RGMII_100FX:
+		case MII_88E1510_GEN_CTRL_REG_1_MODE_RGMII_SGMII:
+			ret = 0;
+			goto error;
+		default:
+			break;
+		}
+	}
+
 	ret = __phy_modify(phydev, MII_88E1510_GEN_CTRL_REG_1,
 			   MII_88E1510_GEN_CTRL_REG_1_MODE_MASK, mode);
 	if (ret < 0)
@@ -1403,9 +1420,11 @@ static int m88e1510_config_init(struct phy_device *phydev)
 	if (err < 0)
 		return err;
 
-	/* SGMII-to-Copper mode initialization */
+	/* RGMII/SGMII-to-Copper mode initialization */
 	if (phydev->interface == PHY_INTERFACE_MODE_SGMII)
 		err = m88e1510_config_mode(phydev, MII_88E1510_GEN_CTRL_REG_1_MODE_SGMII);
+	else if (phy_interface_is_rgmii(phydev))
+		err = m88e1510_config_mode(phydev, MII_88E1510_GEN_CTRL_REG_1_MODE_RGMII);
 	if (err < 0)
 		return err;
 
