@@ -3657,7 +3657,8 @@ static int igb_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 err_register:
 	igb_release_hw_control(adapter);
-	memset(&adapter->i2c_adap, 0, sizeof(adapter->i2c_adap));
+	if (adapter->i2c_adap.dev.parent)
+		i2c_del_adapter(&adapter->i2c_adap);
 err_eeprom:
 	if (!igb_check_reset_block(hw))
 		igb_reset_phy(hw);
