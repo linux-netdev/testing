@@ -65,6 +65,8 @@ void nf_dup_ipv4(struct net *net, struct sk_buff *skb, unsigned int hooknum,
 	if (skb == NULL)
 		goto out;
 
+	skb_unset_mac_header(skb);
+
 #if IS_ENABLED(CONFIG_NF_CONNTRACK)
 	/* Avoid counting cloned packets towards the original connection. */
 	nf_reset_ct(skb);
