@@ -8,12 +8,14 @@
 
 #include <linux/bitfield.h>
 #include <linux/device.h>
+#include <linux/ethtool.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/nvmem-consumer.h>
 #include <linux/of.h>
 #include <linux/phy.h>
 #include <linux/slab.h>
+#include <linux/timekeeping.h>
 
 #include "../phylib.h"
 #include "acx00.h"
@@ -31,6 +33,7 @@
 #define ACX00_PAGE_2				2
 #define ACX00_PAGE_6				6
 #define ACX00_PAGE_8				8
+#define ACX00_PAGE_9				9
 
 #define ACX00_PAGE0_GLOBAL_CONFIG_REG		0x13
 #define ACX00_PAGE0_XMII_RX_CLOCK_INVERT	BIT(12)
@@ -76,6 +79,26 @@
 	(ACX00_PAGE8_AUTO_CAL_TX_LEVEL_ADJUST_BYPASS | \
 	 ACX00_PAGE8_AUTO_CAL_LOW_CAL_OPAQUE_BITS)
 
+#define ACX00_PAGE9_RX_BYTES_HIGH_REG		0x19
+#define ACX00_PAGE9_RX_PACKETS_HIGH_REG		0x1b
+#define ACX00_PAGE9_RX_CRC_ERRORS_HIGH_REG	0x1d
+
+/*
+ * AC200 and AC300 hardware testing confirmed that the receive byte counter
+ * wraps at 4,000,000,000 rather than 2^32.
+ */
+#define ACX00_RX_BYTES_WRAP			4000000000ULL
+/* At 100 Mb/s, a full byte-counter cycle takes at least 320 seconds. */
+#define ACX00_STATS_MAX_INTERVAL_MS		(ACX00_RX_BYTES_WRAP * 8 / (SPEED_100 * 1000))
+#define ACX00_COUNTER_READ_ATTEMPTS		3
+
+enum acx00_ephy_stat {
+	ACX00_STAT_RX_PACKETS,
+	ACX00_STAT_RX_CRC_ERRORS,
+	ACX00_STAT_RX_BYTES,
+	ACX00_NUM_STATS,
+};
+
 /*
  * Another integration of this exact-ID PHY documents its digital vendor
  * register map, which also matches the observed ACx00 reset values. The ACx00
@@ -86,11 +109,16 @@
 struct acx00_ephy_priv {
 	struct phy_device *phydev;
 	struct acx00_ephy_control *control;
-	/* Serializes package state and multi-register power sequences. */
+	/* Serializes package state, power sequences and statistics. */
 	struct mutex state_lock;
 	bool is_ac300;
 	bool use_low_calibration_tuning;
 	bool xmii_rx_clock_inverted;
+	bool stats_active;
+	u8 stats_valid;
+	ktime_t stats_start[ACX00_NUM_STATS];
+	u32 stats_last[ACX00_NUM_STATS];
+	u64 stats[ACX00_NUM_STATS];
 };
 
 static int acx00_ephy_read_page(struct phy_device *phydev)
@@ -110,6 +138,169 @@ static int acx00_ephy_write_page(struct phy_device *phydev, int page)
 			   FIELD_PREP(ACX00_PAGE_SELECT_MASK, page));
 }
 
+/* Return 0 on success, 1 for an unstable sample, or a negative MDIO error. */
+static int acx00_ephy_read_counter(struct phy_device *phydev, u8 reg, u32 *count)
+{
+	int high, low, check;
+	int i;
+
+	/* The free-running counter can carry while its two halves are read. */
+	for (i = 0; i < ACX00_COUNTER_READ_ATTEMPTS; i++) {
+		high = __phy_read(phydev, reg);
+		if (high < 0)
+			return high;
+		low = __phy_read(phydev, reg + 1);
+		if (low < 0)
+			return low;
+		check = __phy_read(phydev, reg);
+		if (check < 0)
+			return check;
+		if (high != check)
+			continue;
+
+		*count = (u32)high << 16 | low;
+		return 0;
+	}
+
+	return 1;
+}
+
+/* Return a mask of usable counters, or a negative MDIO error. */
+static int acx00_ephy_read_counts(struct phy_device *phydev, u32 *counts)
+{
+	u32 packets, errors;
+	int ret;
+	int i;
+
+	ret = acx00_ephy_read_counter(phydev, ACX00_PAGE9_RX_CRC_ERRORS_HIGH_REG,
+				      &counts[ACX00_STAT_RX_CRC_ERRORS]);
+	if (ret)
+		return ret < 0 ? ret : 0;
+
+	/* Bracket the packet counter with an unchanged CRC count. */
+	for (i = 0; i < ACX00_COUNTER_READ_ATTEMPTS; i++) {
+		ret = acx00_ephy_read_counter(phydev, ACX00_PAGE9_RX_PACKETS_HIGH_REG,
+					      &packets);
+		if (ret < 0)
+			return ret;
+		if (ret)
+			break;
+		ret = acx00_ephy_read_counter(phydev, ACX00_PAGE9_RX_CRC_ERRORS_HIGH_REG,
+					      &errors);
+		if (ret < 0)
+			return ret;
+		if (ret)
+			break;
+		if (errors == counts[ACX00_STAT_RX_CRC_ERRORS]) {
+			/* Both hardware counters and their difference wrap at 2^32. */
+			counts[ACX00_STAT_RX_PACKETS] = packets - errors;
+			return BIT(ACX00_STAT_RX_PACKETS) | BIT(ACX00_STAT_RX_CRC_ERRORS);
+		}
+		counts[ACX00_STAT_RX_CRC_ERRORS] = errors;
+	}
+
+	/* Keep reporting errors even when no coherent packet sample is possible. */
+	return BIT(ACX00_STAT_RX_CRC_ERRORS);
+}
+
+static int __acx00_ephy_update_stats(struct phy_device *phydev)
+{
+	struct acx00_ephy_priv *priv = phydev->priv;
+	u32 counts[ACX00_NUM_STATS];
+	ktime_t start;
+	int oldpage;
+	int valid;
+	int ret;
+	int i;
+
+	lockdep_assert_held(&priv->state_lock);
+
+	if (!priv->stats_active)
+		return 0;
+
+	start = ktime_get_boottime();
+	oldpage = phy_select_page(phydev, ACX00_PAGE_9);
+	if (oldpage < 0)
+		return phy_restore_page(phydev, oldpage, oldpage);
+
+	valid = acx00_ephy_read_counts(phydev, counts);
+	if (valid < 0) {
+		ret = valid;
+		goto out_restore_page;
+	}
+
+	ret = acx00_ephy_read_counter(phydev, ACX00_PAGE9_RX_BYTES_HIGH_REG,
+				      &counts[ACX00_STAT_RX_BYTES]);
+	if (ret < 0)
+		goto out_restore_page;
+	if (!ret && counts[ACX00_STAT_RX_BYTES] < ACX00_RX_BYTES_WRAP)
+		valid |= BIT(ACX00_STAT_RX_BYTES);
+	ret = valid;
+
+out_restore_page:
+	ret = phy_restore_page(phydev, oldpage, ret);
+	if (ret < 0)
+		return ret;
+
+	for (i = 0; i < ACX00_NUM_STATS; i++) {
+		u64 count;
+
+		if (!(ret & BIT(i)))
+			continue;
+		count = counts[i];
+
+		/* Include sleep and read time; unseen cycles cannot be recovered. */
+		if ((priv->stats_valid & BIT(i)) &&
+		    ktime_ms_delta(ktime_get_boottime(), priv->stats_start[i]) <
+		    (s64)ACX00_STATS_MAX_INTERVAL_MS) {
+			if (count < priv->stats_last[i])
+				count += i == ACX00_STAT_RX_BYTES ?
+					ACX00_RX_BYTES_WRAP : BIT_ULL(32);
+			priv->stats[i] += count - priv->stats_last[i];
+		}
+		priv->stats_last[i] = counts[i];
+		priv->stats_start[i] = start;
+		priv->stats_valid |= BIT(i);
+	}
+
+	return 0;
+}
+
+static int acx00_ephy_update_stats(struct phy_device *phydev)
+{
+	struct acx00_ephy_priv *priv = phydev->priv;
+	int ret;
+
+	mutex_lock(&priv->state_lock);
+	ret = __acx00_ephy_update_stats(phydev);
+	mutex_unlock(&priv->state_lock);
+
+	return ret;
+}
+
+static void acx00_ephy_get_phy_stats(struct phy_device *phydev,
+				     struct ethtool_eth_phy_stats *eth_stats,
+				     struct ethtool_phy_stats *stats)
+{
+	struct acx00_ephy_priv *priv = phydev->priv;
+
+	mutex_lock(&priv->state_lock);
+	stats->rx_packets = priv->stats[ACX00_STAT_RX_PACKETS];
+	stats->rx_errors = priv->stats[ACX00_STAT_RX_CRC_ERRORS];
+	stats->rx_bytes = priv->stats[ACX00_STAT_RX_BYTES];
+	mutex_unlock(&priv->state_lock);
+}
+
+static void acx00_ephy_snapshot_stats(struct phy_device *phydev)
+{
+	int ret;
+
+	/* Statistics collection must not prevent reset or power management. */
+	ret = __acx00_ephy_update_stats(phydev);
+	if (ret)
+		phydev_dbg(phydev, "failed to snapshot statistics: %pe\n", ERR_PTR(ret));
+}
+
 static int acx00_ephy_control_power_on(struct acx00_ephy_priv *priv)
 {
 	lockdep_assert_held(&priv->state_lock);
@@ -121,6 +312,10 @@ static int acx00_ephy_control_power_on(struct acx00_ephy_priv *priv)
 static int acx00_ephy_control_power_off(struct acx00_ephy_priv *priv)
 {
 	lockdep_assert_held(&priv->state_lock);
+
+	/* Even a failed power-off can have reset the hardware counter. */
+	priv->stats_active = false;
+	priv->stats_valid = 0;
 
 	return priv->control->power_off(priv->control);
 }
@@ -350,6 +545,10 @@ static int acx00_ephy_soft_reset(struct phy_device *phydev)
 
 	mutex_lock(&priv->state_lock);
 
+	/* phylib may already have reset the counters before calling us. */
+	priv->stats_active = false;
+	priv->stats_valid = 0;
+
 	ret = acx00_ephy_set_interface(phydev);
 	if (ret)
 		goto out_power_off;
@@ -475,10 +674,21 @@ out_restore_page:
 
 	/* Restore the standard EEE policy retained by phylib across resets. */
 	ret = genphy_c45_an_config_eee_aneg(phydev);
-	if (ret <= 0)
+	if (ret < 0)
 		return ret;
+	if (ret > 0) {
+		ret = genphy_restart_aneg(phydev);
+		if (ret)
+			return ret;
+	}
 
-	return genphy_restart_aneg(phydev);
+	if (!priv->stats_active) {
+		/* Establish a new baseline after reset, retaining the software total. */
+		priv->stats_active = true;
+		acx00_ephy_snapshot_stats(phydev);
+	}
+
+	return 0;
 }
 
 static int acx00_ephy_config_init(struct phy_device *phydev)
@@ -534,6 +744,9 @@ static int acx00_ephy_resume(struct phy_device *phydev)
 	int ret;
 
 	mutex_lock(&priv->state_lock);
+	/* WoL can keep the PHY counting while phylib polling is stopped. */
+	priv->stats_active = false;
+	priv->stats_valid = 0;
 	ret = __acx00_ephy_power_on_and_resume(phydev);
 	mutex_unlock(&priv->state_lock);
 
@@ -549,6 +762,8 @@ static int acx00_ephy_suspend(struct phy_device *phydev)
 	/* The suspend callback is invoked without the phylib lock held. */
 	mutex_lock(&phydev->lock);
 	mutex_lock(&priv->state_lock);
+
+	acx00_ephy_snapshot_stats(phydev);
 
 	ret = genphy_suspend(phydev);
 	if (ret)
@@ -616,6 +831,8 @@ static struct phy_driver acx00_ephy_driver[] = {
 		.soft_reset = acx00_ephy_soft_reset,
 		.config_init = acx00_ephy_config_init,
 		.disable_autonomous_eee = acx00_ephy_disable_autonomous_eee,
+		.get_phy_stats = acx00_ephy_get_phy_stats,
+		.update_stats = acx00_ephy_update_stats,
 		.suspend = acx00_ephy_suspend,
 		.resume = acx00_ephy_resume,
 	},
