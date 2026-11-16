@@ -2920,6 +2920,7 @@ static int tipc_sk_publish(struct tipc_sock *tsk, struct tipc_uaddr *ua)
 	struct net *net = sock_net(sk);
 	struct tipc_socket_addr skaddr;
 	struct publication *p;
+	int err = 0;
 	u32 key;
 
 	if (tipc_sk_connected(sk))
@@ -2929,7 +2930,7 @@ static int tipc_sk_publish(struct tipc_sock *tsk, struct tipc_uaddr *ua)
 		return -EADDRINUSE;
 	skaddr.ref = tsk->portid;
 	skaddr.node = tipc_own_addr(net);
-	p = tipc_nametbl_publish(net, ua, &skaddr, key);
+	p = tipc_nametbl_publish(net, ua, &skaddr, key, &err);
 	if (unlikely(!p))
 		return -EINVAL;
 
