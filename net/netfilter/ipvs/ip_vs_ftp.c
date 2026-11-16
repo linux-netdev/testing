@@ -398,8 +398,10 @@ static int ip_vs_ftp_out(struct ip_vs_app *app, struct ip_vs_conn *cp,
 						   end - start,
 						   buf, buf_len);
 		if (mangled) {
-			ip_vs_nfct_expect_related(skb, ct, n_cp,
-						  ipvsh->protocol, 0, 0);
+			if (nf_ct_is_confirmed(ct))
+				ip_vs_nfct_expect_related(skb, ct, n_cp,
+							  ipvsh->protocol,
+							  0, 0);
 			if (skb->ip_summed == CHECKSUM_COMPLETE)
 				skb->ip_summed = CHECKSUM_UNNECESSARY;
 			/* csum is updated */
