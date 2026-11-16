@@ -204,6 +204,27 @@ static int motorcomm_resume(struct device *dev, void *bsp_priv)
 	return 0;
 }
 
+static void motorcomm_shutdown(struct pci_dev *pdev)
+{
+	struct net_device *ndev = dev_get_drvdata(&pdev->dev);
+
+	/*
+	 * A failed resume leaves the netdev detached with NAPI disabled, and
+	 * stmmac_suspend() must not run on it a second time.
+	 */
+	if (!netif_device_present(ndev))
+		return;
+
+	/* Stop the device before reboot, kexec or power-off */
+	stmmac_suspend(&pdev->dev);
+
+	/*
+	 * stmmac_pci_plat_suspend() enables PME if wakeup is enabled for the
+	 * device. Nothing arms the chip to wake the system, so undo that.
+	 */
+	pci_wake_from_d3(pdev, false);
+}
+
 static struct plat_stmmacenet_data *
 motorcomm_default_plat_data(struct pci_dev *pdev)
 {
@@ -374,6 +395,7 @@ static struct pci_driver dwmac_motorcomm_pci_driver = {
 	.id_table = dwmac_motorcomm_pci_id_table,
 	.probe = motorcomm_probe,
 	.remove = motorcomm_remove,
+	.shutdown = motorcomm_shutdown,
 	.driver = {
 		.pm = &stmmac_simple_pm_ops,
 	},
