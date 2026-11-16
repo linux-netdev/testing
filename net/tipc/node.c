@@ -111,6 +111,7 @@ struct tipc_bclink_entry {
  * @peer_net: peer's net namespace
  * @peer_hash_mix: hash for this peer (FIXME)
  * @crypto_rx: RX crypto handler
+ * @dist_bulk: flag to redistribute cluster-scope publications
  */
 struct tipc_node {
 	u32 addr;
@@ -145,6 +146,7 @@ struct tipc_node {
 #ifdef CONFIG_TIPC_CRYPTO
 	struct tipc_crypto *crypto_rx;
 #endif
+	bool dist_bulk;
 };
 
 /* Node FSM states and events:
@@ -400,7 +402,7 @@ static void tipc_node_write_unlock(struct tipc_node *n)
 	struct net *net = n->net;
 	u32 flags = n->action_flags;
 	struct list_head *publ_list;
-	int rc = 0, bearer = 0;
+	int rc = 0, bearer = -1;
 	struct tipc_uaddr ua;
 	u32 bearer_id, node;
 	int err = 0;
@@ -421,6 +423,8 @@ static void tipc_node_write_unlock(struct tipc_node *n)
 	n->action_flags &= ~(TIPC_NOTIFY_NODE_DOWN | TIPC_NOTIFY_NODE_UP |
 			     TIPC_NOTIFY_LINK_DOWN | TIPC_NOTIFY_LINK_UP);
 
+	if (flags & TIPC_NOTIFY_NODE_DOWN)
+		n->dist_bulk = false;
 	write_unlock_bh(&n->lock);
 
 	if (flags & TIPC_NOTIFY_NODE_DOWN)
@@ -438,14 +442,43 @@ static void tipc_node_write_unlock(struct tipc_node *n)
 		tipc_nametbl_withdraw(net, &ua, &sk, sk.ref);
 	}
 
-	if (rc == -ENOBUFS)
-		tipc_node_link_down(n, bearer, false);
+	if (rc == -ENOBUFS) {
+		/* tipc_named_node_up() calls tipc_node_distribute() and
+		 * tipc_node_distribute() returns -ENOBUFS.
+		 */
+		if (bearer != -1) {
+			tipc_node_link_down(n, bearer, false);
+		} else {
+			/* tipc_named_node_up() calls __tipc_named_distribute()
+			 * and __tipc_named_distribute() returns -ENOBUFS.
+			 * Force the node down to retry distribution.
+			 */
+			for (bearer = 0; bearer < MAX_BEARERS; bearer++)
+				tipc_node_link_down(n, bearer, false);
+			return;
+		}
+	}
 
 	if (err == -ENOBUFS) {
-		if (rc == -ENOBUFS && bearer == bearer_id)
+		/* link has been down already */
+		if (bearer == bearer_id)
 			return;
 
 		tipc_node_link_down(n, bearer_id, false);
+	}
+}
+
+void tipc_node_set_dist_bulk(struct net *net, u32 addr)
+{
+	struct tipc_node *node;
+
+	node = tipc_node_find(net, addr);
+	if (node) {
+		tipc_node_write_lock(node);
+		if (node_is_up(node))
+			node->dist_bulk = true;
+		tipc_node_write_unlock_fast(node);
+		tipc_node_put(node);
 	}
 }
 
@@ -576,6 +609,7 @@ update:
 	INIT_LIST_HEAD(&n->list);
 	INIT_LIST_HEAD(&n->publ_list);
 	INIT_LIST_HEAD(&n->conn_sks);
+	n->dist_bulk = false;
 	skb_queue_head_init(&n->bc_entry.namedq);
 	skb_queue_head_init(&n->bc_entry.inputq1);
 	__skb_queue_head_init(&n->bc_entry.arrvq);
@@ -833,9 +867,12 @@ static void tipc_node_timeout(struct timer_list *t)
 	struct tipc_node *n = timer_container_of(n, t, timer);
 	struct tipc_link_entry *le;
 	struct sk_buff_head xmitq;
-	int remains = n->link_cnt;
+	bool dist_bulk = false;
+	int remains = 0;
+	int dist_rc = 0;
+	int bearer = -1;
 	int bearer_id;
-	int rc = 0;
+	int rc;
 
 	trace_tipc_node_timeout(n, false, " ");
 	if (!node_is_up(n) && tipc_node_cleanup(n)) {
@@ -850,13 +887,33 @@ static void tipc_node_timeout(struct timer_list *t)
 #endif
 	__skb_queue_head_init(&xmitq);
 
+	tipc_node_write_lock(n);
 	/* Initial node interval to value larger (10 seconds), then it will be
 	 * recalculated with link lowest tolerance
 	 */
-	tipc_node_read_lock(n);
 	n->keepalive_intv = 10000;
-	tipc_node_read_unlock(n);
+	remains = n->link_cnt;
+	if (n->dist_bulk) {
+		dist_bulk = true;
+		n->dist_bulk = false;
+	}
+	tipc_node_write_unlock_fast(n);
+	if (dist_bulk)
+		dist_rc = tipc_named_distribute(n->net, n->addr, &bearer);
+
 	for (bearer_id = 0; remains && (bearer_id < MAX_BEARERS); bearer_id++) {
+		/* 1. tipc_named_distribute() calls tipc_node_distribute() and
+		 *    tipc_node_distribute() returns -ENOBUFS.
+		 * 2. tipc_named_distribute() calls __tipc_named_distribute()
+		 *    and __tipc_named_distribute() returns -ENOBUFS.
+		 */
+		if (dist_rc == -ENOBUFS &&
+		    (bearer == -1 || bearer == bearer_id)) {
+			rc = TIPC_LINK_DOWN_EVT;
+			goto link_down;
+		}
+
+		rc = 0;
 		tipc_node_read_lock(n);
 		le = &n->links[bearer_id];
 		if (le->link) {
@@ -869,6 +926,7 @@ static void tipc_node_timeout(struct timer_list *t)
 		}
 		tipc_node_read_unlock(n);
 		tipc_bearer_xmit(n->net, bearer_id, &xmitq, &le->maddr, n);
+link_down:
 		if (rc & TIPC_LINK_DOWN_EVT)
 			tipc_node_link_down(n, bearer_id, false);
 	}
