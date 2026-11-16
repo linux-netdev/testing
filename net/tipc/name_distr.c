@@ -378,18 +378,26 @@ void tipc_named_rcv(struct net *net, struct sk_buff_head *namedq,
 	struct distr_item *item;
 	struct tipc_msg *hdr;
 	struct sk_buff *skb;
+	struct tipc_node *n;
 	u32 count, node;
 
 	spin_lock_bh(&tn->nametbl_lock);
 	while ((skb = tipc_named_dequeue(namedq, rcv_nxt, open))) {
 		hdr = buf_msg(skb);
 		node = msg_orignode(hdr);
+		n = tipc_node_find_remote(net, node);
+		if (!n)
+			goto free_skb;
+		else
+			tipc_node_put(n);
+
 		item = (struct distr_item *)msg_data(hdr);
 		count = msg_data_sz(hdr) / ITEM_SIZE;
 		while (count--) {
 			tipc_update_nametbl(net, item, node, msg_type(hdr));
 			item++;
 		}
+free_skb:
 		kfree_skb(skb);
 	}
 	spin_unlock_bh(&tn->nametbl_lock);
