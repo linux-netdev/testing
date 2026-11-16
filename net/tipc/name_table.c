@@ -789,26 +789,34 @@ exit:
 	rcu_read_unlock();
 }
 
-/* tipc_nametbl_publish - add service binding to name table
+/**
+ * tipc_nametbl_insert - insert service binding into name table
+ * @net: network namespace
+ * @ua: the service range is binding to
+ * @sk: address publishing socket
+ * @key: target publication key
+ * @skb: buffer containing the publication
+ * @err: error code
+ *
+ * Return:
+ * * Inserted publication - Success
+ * * -ENOBUFS             - No buffer space is available
+ *
  */
-struct publication *tipc_nametbl_publish(struct net *net, struct tipc_uaddr *ua,
-					 struct tipc_socket_addr *sk,
-					 u32 key, int *err)
+struct publication *tipc_nametbl_insert(struct net *net, struct tipc_uaddr *ua,
+					struct tipc_socket_addr *sk, u32 key,
+					struct sk_buff **skb, int *err)
 {
 	struct name_table *nt = tipc_name_table(net);
 	u32 max_user_pub = TIPC_MAX_PUBL - 1;
-	struct tipc_net *tn = tipc_net(net);
 	struct publication *p = NULL;
-	struct sk_buff *skb = NULL;
 	bool protocol_type = false;
 	int error = 0;
-	u32 rc_dests;
 
 	if (ua->sr.type == TIPC_NODE_STATE || ua->sr.type == TIPC_LINK_STATE ||
 	    ua->sr.type == TIPC_TOP_SRV)
 		protocol_type = true;
 
-	spin_lock_bh(&tn->nametbl_lock);
 	if (protocol_type)
 		goto insert;
 
@@ -831,24 +839,91 @@ insert:
 		 */
 		if (!protocol_type)
 			nt->local_publ_count++;
-		skb = tipc_named_publish(net, p);
+		*skb = tipc_named_publish(net, p);
 		/* Local-scope publication is not published (skb is NULL).
 		 * For cluster-cope one, skb is NULL when named_prepare_buf()
 		 * returns NULL in tipc_named_publish().
 		 */
-		if (!skb && p->scope == TIPC_CLUSTER_SCOPE && err)
+		if (!*skb && p->scope == TIPC_CLUSTER_SCOPE && err)
 			*err = -ENOBUFS;
 	} else if ((error == -ENOBUFS) && err) {
 		*err = -ENOBUFS;
 	}
-	rc_dests = nt->rc_dests;
 exit:
+	return p;
+}
+
+/* tipc_nametbl_publish - add service binding to name table
+ */
+struct publication *tipc_nametbl_publish(struct net *net, struct tipc_uaddr *ua,
+					 struct tipc_socket_addr *sk,
+					 u32 key, int *err)
+{
+	struct name_table *nt = tipc_name_table(net);
+	struct tipc_net *tn = tipc_net(net);
+	struct publication *p = NULL;
+	struct sk_buff *skb = NULL;
+	u32 rc_dests;
+
+	spin_lock_bh(&tn->nametbl_lock);
+	p = tipc_nametbl_insert(net, ua, sk, key, &skb, err);
+	rc_dests = nt->rc_dests;
 	spin_unlock_bh(&tn->nametbl_lock);
 
 	if (skb)
 		tipc_node_broadcast(net, skb, rc_dests);
 	return p;
+}
 
+/**
+ * tipc_nametb_insert_self_node_pub - insert publication of node's self address
+ * @net: network namespace
+ *
+ * Return:
+ * * 0          - Success
+ * * -ENOBUFS   - No buffer space is available
+ *
+ */
+int tipc_nametb_insert_self_node_pub(struct net *net)
+{
+	struct name_table *nt = tipc_name_table(net);
+	struct tipc_net *tn = tipc_net(net);
+	struct publication *p = NULL;
+	struct tipc_socket_addr sk;
+	struct tipc_uaddr ua;
+	int err = 0;
+
+	sk.ref = 0;
+	sk.node = tn->node_addr;
+	tipc_uaddr(&ua, TIPC_SERVICE_RANGE, TIPC_CLUSTER_SCOPE,
+		   TIPC_NODE_STATE, tn->node_addr, tn->node_addr);
+
+	p = tipc_nametbl_insert_publ(net, &ua, &sk, tn->node_addr, &err);
+
+	if (p) {
+		list_add_tail(&p->binding_node, &nt->cluster_scope);
+		return 0;
+
+	} else if (err == -EEXIST) {
+		bool found = false;
+
+		list_for_each_entry(p, &nt->cluster_scope, binding_node) {
+			if (p->sr.type == TIPC_NODE_STATE &&
+			    p->sr.lower == tn->node_addr &&
+			    p->sr.upper == tn->node_addr &&
+			    p->key == tn->node_addr &&
+			    p->sk.ref == 0 && p->sk.node == tn->node_addr) {
+				found = true;
+				break;
+			}
+		}
+
+		if (!found)
+			list_add_tail(&p->binding_node, &nt->cluster_scope);
+		return 0;
+	}
+
+	return -ENOBUFS;
 }
 
 /**
