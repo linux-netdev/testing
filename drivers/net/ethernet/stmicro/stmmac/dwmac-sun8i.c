@@ -729,7 +729,10 @@ static int sun8i_dwmac_rx_ipc_enable(struct mac_device_info *hw)
 	u32 v;
 
 	v = readl(ioaddr + EMAC_RX_CTL0);
-	v |= EMAC_RX_DO_CRC;
+	if (hw->rx_csum)
+		v |= EMAC_RX_DO_CRC;
+	else
+		v &= ~EMAC_RX_DO_CRC;
 	writel(v, ioaddr + EMAC_RX_CTL0);
 
 	return 1;
