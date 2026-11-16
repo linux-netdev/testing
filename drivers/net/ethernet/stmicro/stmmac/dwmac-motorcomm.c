@@ -27,6 +27,9 @@
 #define EPHY_CTRL				0x1004
 /* Clearing this bit asserts resets for internal MDIO bus and PHY */
 #define  EPHY_MDIO_PHY_RESET			BIT(0)
+#define WOL_CTRL				0x100c
+/* Magic and remote wake-up packet enable */
+#define  WOL_CTRL_PKT_EN			BIT(1)
 #define OOB_WOL_CTRL				0x1010
 #define  OOB_WOL_CTRL_DIS			BIT(0)
 #define MGMT_INT_CTRL0				0x1100
@@ -204,9 +207,51 @@ static int motorcomm_resume(struct device *dev, void *bsp_priv)
 	return 0;
 }
 
+/*
+ * Arm the chip to wake the system from S5. stmmac_suspend() has already
+ * programmed the PMT register of the GMAC. The rest lives in the wrapper.
+ */
+static void motorcomm_arm_s5_wake(struct net_device *ndev)
+{
+	struct stmmac_priv *spriv = netdev_priv(ndev);
+	struct dwmac_motorcomm_priv *priv = spriv->plat->bsp_priv;
+	u32 reg;
+
+	/*
+	 * motorcomm_init() disables OOB WoL right after the chip reset, as
+	 * normal operation requires. With it disabled the chip ignores wake
+	 * packets once the system is off. Once it has been enabled, only a
+	 * chip reset disables it again, so enable it only when powering off.
+	 */
+	reg = readl(priv->base + OOB_WOL_CTRL);
+	reg &= ~OOB_WOL_CTRL_DIS;
+	writel(reg, priv->base + OOB_WOL_CTRL);
+
+	/*
+	 * Enabling OOB WoL reloads the address from eFuse into the first
+	 * MAC address filter. Write the address in use again, or the chip
+	 * wakes on the factory address only. The reload is not immediate:
+	 * without the wait, taken from the vendor driver, it overwrites
+	 * the address written here.
+	 */
+	usleep_range(2000, 3000);
+
+	rtnl_lock();
+	phylink_rx_clk_stop_block(spriv->phylink);
+	stmmac_set_umac_addr(spriv, spriv->hw, ndev->dev_addr, 0);
+	phylink_rx_clk_stop_unblock(spriv->phylink);
+	rtnl_unlock();
+
+	reg = readl(priv->base + WOL_CTRL);
+	reg |= WOL_CTRL_PKT_EN;
+	writel(reg, priv->base + WOL_CTRL);
+}
+
 static void motorcomm_shutdown(struct pci_dev *pdev)
 {
 	struct net_device *ndev = dev_get_drvdata(&pdev->dev);
+	struct stmmac_priv *spriv = netdev_priv(ndev);
+	bool wake;
 
 	/*
 	 * A failed resume leaves the netdev detached with NAPI disabled, and
@@ -215,14 +260,31 @@ static void motorcomm_shutdown(struct pci_dev *pdev)
 	if (!netif_device_present(ndev))
 		return;
 
-	/* Stop the device before reboot, kexec or power-off */
+	wake = system_state == SYSTEM_POWER_OFF && netif_running(ndev) &&
+	       spriv->wolopts && device_may_wakeup(&pdev->dev);
+
+	/*
+	 * Stop the device before reboot, kexec or power-off. With
+	 * Wake-on-LAN set, this arms the PMT register and keeps the PHY up.
+	 */
 	stmmac_suspend(&pdev->dev);
 
 	/*
 	 * stmmac_pci_plat_suspend() enables PME if wakeup is enabled for the
-	 * device. Nothing arms the chip to wake the system, so undo that.
+	 * device. Keep it only when the chip is armed.
 	 */
-	pci_wake_from_d3(pdev, false);
+	if (!wake) {
+		pci_wake_from_d3(pdev, false);
+		return;
+	}
+
+	/*
+	 * The device is left in D0. The platform removes main power anyway,
+	 * and with MAC Wake-on-LAN phylib keeps polling the PHY until then:
+	 * in D3hot the MDIO registers read as all-ones and the poll fails
+	 * with a warning.
+	 */
+	motorcomm_arm_s5_wake(ndev);
 }
 
 static struct plat_stmmacenet_data *
