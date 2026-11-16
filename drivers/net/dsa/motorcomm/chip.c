@@ -80,7 +80,7 @@ static const struct yt921x_info yt921x_infos[] = {
 	{}
 };
 
-#define YT921X_VID_UNWARE	4095
+#define YT921X_VID_STANDALONE	4095
 
 struct yt921x_reg_mdio {
 	struct mii_bus *bus;
@@ -1067,8 +1067,10 @@ yt921x_vlan_filtering(struct yt921x_priv *priv, int port, bool vlan_filtering)
 
 	brport = dsa_port_to_bridge_port(dp);
 
-	if (!brport || !vlan_filtering)
-		pvid = YT921X_VID_UNWARE;
+	if (!brport)
+		pvid = YT921X_VID_STANDALONE;
+	else if (!vlan_filtering)
+		pvid = 0;
 	else
 		br_vlan_get_pvid(brport, &pvid);
 	res = yt921x_port_set_pvid(priv, port, pvid);
@@ -1136,8 +1138,7 @@ yt921x_pvid_clear(struct yt921x_priv *priv, int port)
 
 	vlan_filtering = dsa_port_is_vlan_filtering(dp);
 
-	res = yt921x_port_set_pvid(priv, port,
-				   vlan_filtering ? 0 : YT921X_VID_UNWARE);
+	res = yt921x_port_set_pvid(priv, port, 0);
 	if (res)
 		return res;
 
@@ -1205,6 +1206,8 @@ yt921x_dsa_port_vlan_del(struct dsa_switch *ds, int port,
 
 	if (dsa_is_cpu_port(ds, port))
 		return 0;
+	if (!vid)
+		return 0;
 
 	mutex_lock(&priv->reg_lock);
 	do {
@@ -1241,6 +1244,11 @@ yt921x_dsa_port_vlan_add(struct dsa_switch *ds, int port,
 	 * yt921x_vlan_add() and yt921x_port_setup()
 	 */
 	if (dsa_is_cpu_port(ds, port))
+		return 0;
+	/* VID 0 is the VLAN-unaware bridges' FDB domain; nothing to program,
+	 * keep the entry at reset defaults
+	 */
+	if (!vid)
 		return 0;
 
 	mutex_lock(&priv->reg_lock);
@@ -1294,7 +1302,7 @@ static int yt921x_userport_standalone(struct yt921x_priv *priv, int port)
 	/* Unrelated since learning is off and all packets are trapped;
 	 * set it anyway
 	 */
-	res = yt921x_port_set_pvid(priv, port, YT921X_VID_UNWARE);
+	res = yt921x_port_set_pvid(priv, port, YT921X_VID_STANDALONE);
 	if (res)
 		return res;
 
@@ -1310,6 +1318,14 @@ static int yt921x_userport_bridge(struct yt921x_priv *priv, int port)
 	res = yt921x_reg_clear_bits(priv, YT921X_PORTn_LEARN(port), mask);
 	if (res)
 		return res;
+
+	if (!vlan_filtering) {
+		/* DSA may shortcut .port_vlan_filtering(), leaving stale PVID
+		 */
+		res = yt921x_port_set_pvid(priv, port, 0);
+		if (res)
+			return res;
+	}
 
 	return 0;
 }
@@ -1392,7 +1408,8 @@ static int yt921x_bridge_leave(struct yt921x_priv *priv, int port)
 }
 
 static int
-yt921x_bridge_join(struct yt921x_priv *priv, int port, u16 ports_mask)
+yt921x_bridge_join(struct yt921x_priv *priv, int port, u16 ports_mask,
+		   bool vlan_filtering)
 {
 	int res;
 
@@ -1534,7 +1551,8 @@ yt921x_dsa_port_bridge_join(struct dsa_switch *ds, int port,
 	mutex_lock(&priv->reg_lock);
 	pp->isolated = br_port_flag_is_set(brport_dev, BR_ISOLATED);
 	pp->hairpin = br_port_flag_is_set(brport_dev, BR_HAIRPIN_MODE);
-	res = yt921x_bridge_join(priv, port, ports_mask);
+	res = yt921x_bridge_join(priv, port, ports_mask,
+				 br_vlan_enabled(bridge.dev));
 	mutex_unlock(&priv->reg_lock);
 
 	return res;
@@ -2379,7 +2397,6 @@ static int yt921x_chip_setup_dsa(struct yt921x_priv *priv)
 {
 	struct dsa_switch *ds = &priv->ds;
 	unsigned long cpu_ports_mask;
-	u32 ctrls[2];
 	u32 ctrl;
 	int port;
 	int res;
@@ -2434,15 +2451,6 @@ static int yt921x_chip_setup_dsa(struct yt921x_priv *priv)
 	if (res)
 		return res;
 	res = yt921x_reg_write(priv, YT921X_ACT_UNK_MCAST, ctrl);
-	if (res)
-		return res;
-
-	/* Tagged VID 0 should be treated as untagged, which confuses the
-	 * hardware a lot
-	 */
-	ctrls[0] = YT921X_VLAN_CTRLa_LEARN_DIS | YT921X_VLAN_CTRLa_PORTS_M;
-	ctrls[1] = 0;
-	res = yt921x_reg64_write(priv, YT921X_VLANn_CTRL(0), ctrls);
 	if (res)
 		return res;
 
