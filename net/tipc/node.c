@@ -1747,10 +1747,13 @@ int tipc_node_xmit(struct net *net, struct sk_buff_head *list,
 	spin_unlock_bh(&le->lock);
 	tipc_node_read_unlock(n);
 
-	if (unlikely(rc == -ENOBUFS))
+	if (unlikely(rc == -ENOBUFS)) {
+		if (!skb_queue_empty(&xmitq))
+			__skb_queue_purge(&xmitq);
 		tipc_node_link_down(n, bearer_id, false);
-	else
+	} else {
 		tipc_bearer_xmit(net, bearer_id, &xmitq, &le->maddr, n);
+	}
 
 	tipc_node_put(n);
 
