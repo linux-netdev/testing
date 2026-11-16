@@ -137,19 +137,22 @@ int mlx5e_ktls_set_feature_rx(struct net_device *netdev, bool enable)
 	mutex_lock(&priv->state_lock);
 	if (enable) {
 		err = mlx5e_accel_fs_tcp_create(priv->fs);
-		if (!err && !priv->ktls_rx_was_enabled) {
-			priv->ktls_rx_was_enabled = true;
-			err = mlx5e_safe_reopen_channels(priv);
-			if (err) {
-				priv->ktls_rx_was_enabled = false;
-				mlx5e_accel_fs_tcp_destroy(priv->fs);
-			}
-		}
-	} else {
-		mlx5e_accel_fs_tcp_destroy(priv->fs);
-	}
-	mutex_unlock(&priv->state_lock);
+		if (err || priv->ktls_rx_was_enabled)
+			goto out_unlock;
 
+		priv->ktls_rx_was_enabled = true;
+		err = mlx5e_safe_reopen_channels(priv);
+		if (err) {
+			priv->ktls_rx_was_enabled = false;
+			enable = false;
+		}
+	}
+
+	if (!enable)
+		mlx5e_accel_fs_tcp_destroy(priv->fs);
+
+out_unlock:
+	mutex_unlock(&priv->state_lock);
 	return err;
 }
 
