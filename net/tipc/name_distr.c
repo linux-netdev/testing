@@ -415,6 +415,5 @@ void tipc_named_reinit(struct net *net)
 		p->sk.node = self;
 	list_for_each_entry_rcu(p, &nt->cluster_scope, binding_node)
 		p->sk.node = self;
-	nt->rc_dests = 0;
 	spin_unlock_bh(&tn->nametbl_lock);
 }
