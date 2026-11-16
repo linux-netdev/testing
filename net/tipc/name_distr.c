@@ -285,6 +285,7 @@ static bool tipc_update_nametbl(struct net *net, struct distr_item *i,
 	struct tipc_socket_addr sk;
 	u32 key = ntohl(i->key);
 	struct tipc_uaddr ua;
+	int err = 0;
 
 	/* A peer-advertised binding with lower > upper can never be matched
 	 * or withdrawn and would leak the publication; the local bind path
@@ -299,7 +300,7 @@ static bool tipc_update_nametbl(struct net *net, struct distr_item *i,
 	sk.node = node;
 
 	if (dtype == PUBLICATION) {
-		p = tipc_nametbl_insert_publ(net, &ua, &sk, key);
+		p = tipc_nametbl_insert_publ(net, &ua, &sk, key, &err);
 		if (p) {
 			tipc_node_subscribe(net, &p->binding_node, node);
 			return true;
