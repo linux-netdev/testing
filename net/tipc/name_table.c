@@ -329,7 +329,7 @@ static struct service_range *tipc_service_create_range(struct tipc_service *sc,
 
 static bool tipc_service_insert_publ(struct net *net,
 				     struct tipc_service *sc,
-				     struct publication *p)
+				     struct publication *p, int *err)
 {
 	struct tipc_subscription *sub, *tmp;
 	struct service_range *sr;
@@ -341,8 +341,11 @@ static bool tipc_service_insert_publ(struct net *net,
 
 	spin_lock_bh(&sc->lock);
 	sr = tipc_service_create_range(sc, p);
-	if (!sr)
-		goto  exit;
+	if (!sr) {
+		if (err)
+			*err = -ENOBUFS;
+		goto exit;
+	}
 
 	first = list_empty(&sr->all_publ);
 
@@ -353,6 +356,9 @@ static bool tipc_service_insert_publ(struct net *net,
 			pr_debug("Failed to bind duplicate %u,%u,%u/%u:%u/%u\n",
 				 p->sr.type, p->sr.lower, p->sr.upper,
 				 node, p->sk.ref, key);
+			if (err)
+				*err = -EEXIST;
+
 			goto exit;
 		}
 	}
@@ -368,9 +374,15 @@ static bool tipc_service_insert_publ(struct net *net,
 	}
 	res = true;
 exit:
-	if (!res)
-		pr_warn("Failed to bind to %u,%u,%u\n",
-			p->sr.type, p->sr.lower, p->sr.upper);
+	if (!res) {
+		if (err && *err == -EEXIST) {
+			rb_erase_augmented(&sr->tree_node, &sc->ranges,
+					   &sr_callbacks);
+			kfree(sr);
+		}
+		pr_warn_ratelimited("Failed to bind to %u,%u,%u\n",
+				    p->sr.type, p->sr.lower, p->sr.upper);
+	}
 	spin_unlock_bh(&sc->lock);
 	return res;
 }
@@ -478,20 +490,40 @@ static struct tipc_service *tipc_service_find(struct net *net,
 struct publication *tipc_nametbl_insert_publ(struct net *net,
 					     struct tipc_uaddr *ua,
 					     struct tipc_socket_addr *sk,
-					     u32 key)
+					     u32 key, int *err)
 {
+	bool service_created = false;
 	struct tipc_service *sc;
 	struct publication *p;
 
 	p = tipc_publ_create(ua, sk, key);
-	if (!p)
+	if (!p) {
+		if (err)
+			*err = -ENOBUFS;
 		return NULL;
+	}
 
 	sc = tipc_service_find(net, ua);
-	if (!sc)
+
+	if (!sc) {
 		sc = tipc_service_create(net, ua);
-	if (sc && tipc_service_insert_publ(net, sc, p))
-		return p;
+		service_created = true;
+	}
+
+	if (sc) {
+		if (tipc_service_insert_publ(net, sc, p, err))
+			return p;
+
+		spin_lock_bh(&sc->lock);
+		if (service_created && err && *err == -ENOBUFS) {
+			hlist_del_init_rcu(&sc->service_list);
+			kfree_rcu(sc, rcu);
+		}
+		spin_unlock_bh(&sc->lock);
+	} else if (err) {
+		*err = -ENOBUFS;
+	}
+
 	kfree(p);
 	return NULL;
 }
@@ -540,9 +572,9 @@ unlock:
 	spin_unlock_bh(&sc->lock);
 exit:
 	if (!p) {
-		pr_err("Failed to remove unknown binding: %u,%u,%u/%u:%u/%u\n",
-		       ua->sr.type, ua->sr.lower, ua->sr.upper,
-		       sk->node, sk->ref, key);
+		pr_warn_ratelimited("Remove unknown pub: %u,%u,%u/%u:%u/%u\n",
+				    ua->sr.type, ua->sr.lower, ua->sr.upper,
+				    sk->node, sk->ref, key);
 	}
 	return p;
 }
@@ -760,7 +792,8 @@ exit:
 /* tipc_nametbl_publish - add service binding to name table
  */
 struct publication *tipc_nametbl_publish(struct net *net, struct tipc_uaddr *ua,
-					 struct tipc_socket_addr *sk, u32 key)
+					 struct tipc_socket_addr *sk,
+					 u32 key, int *err)
 {
 	struct name_table *nt = tipc_name_table(net);
 	u32 max_user_pub = TIPC_MAX_PUBL - 1;
@@ -768,6 +801,7 @@ struct publication *tipc_nametbl_publish(struct net *net, struct tipc_uaddr *ua,
 	struct publication *p = NULL;
 	struct sk_buff *skb = NULL;
 	bool protocol_type = false;
+	int error = 0;
 	u32 rc_dests;
 
 	if (ua->sr.type == TIPC_NODE_STATE || ua->sr.type == TIPC_LINK_STATE ||
@@ -788,7 +822,7 @@ struct publication *tipc_nametbl_publish(struct net *net, struct tipc_uaddr *ua,
 	}
 
 insert:
-	p = tipc_nametbl_insert_publ(net, ua, sk, key);
+	p = tipc_nametbl_insert_publ(net, ua, sk, key, &error);
 	if (p) {
 		/* Not count node state, link state and topology server types
 		 * so that maximum nt->local_publ_count does not prevent
@@ -798,6 +832,14 @@ insert:
 		if (!protocol_type)
 			nt->local_publ_count++;
 		skb = tipc_named_publish(net, p);
+		/* Local-scope publication is not published (skb is NULL).
+		 * For cluster-cope one, skb is NULL when named_prepare_buf()
+		 * returns NULL in tipc_named_publish().
+		 */
+		if (!skb && p->scope == TIPC_CLUSTER_SCOPE && err)
+			*err = -ENOBUFS;
+	} else if ((error == -ENOBUFS) && err) {
+		*err = -ENOBUFS;
 	}
 	rc_dests = nt->rc_dests;
 exit:
