@@ -657,16 +657,37 @@ void tipc_node_stop(struct net *net)
 	spin_unlock_bh(&tn->node_list_lock);
 }
 
-void tipc_node_subscribe(struct net *net, struct list_head *subscr, u32 addr)
+/**
+ * tipc_node_find_remote - Find a node associated with an address
+ * @net: the associated network namespace
+ * @addr: node's address
+ *
+ * Return:
+ * * Found node - Success
+ * * NULL       - Invalid node's address
+ *
+ */
+struct tipc_node *tipc_node_find_remote(struct net *net, u32 addr)
 {
 	struct tipc_node *n;
 
 	if (in_own_node(net, addr))
-		return;
+		return NULL;
 
 	n = tipc_node_find(net, addr);
+	if (!n)
+		return NULL;
+
+	return n;
+}
+
+void tipc_node_subscribe(struct net *net, struct list_head *subscr, u32 addr)
+{
+	struct tipc_node *n;
+
+	n = tipc_node_find_remote(net, addr);
 	if (!n) {
-		pr_warn("Node subscribe rejected, unknown node 0x%x\n", addr);
+		pr_warn("Node subscribe rejected, invalid node 0x%x\n", addr);
 		return;
 	}
 	tipc_node_write_lock(n);
@@ -679,12 +700,9 @@ void tipc_node_unsubscribe(struct net *net, struct list_head *subscr, u32 addr)
 {
 	struct tipc_node *n;
 
-	if (in_own_node(net, addr))
-		return;
-
-	n = tipc_node_find(net, addr);
+	n = tipc_node_find_remote(net, addr);
 	if (!n) {
-		pr_warn("Node unsubscribe rejected, unknown node 0x%x\n", addr);
+		pr_warn("Node unsubscribe rejected, invalid node 0x%x\n", addr);
 		return;
 	}
 	tipc_node_write_lock(n);
