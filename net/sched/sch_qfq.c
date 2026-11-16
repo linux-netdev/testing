@@ -1300,7 +1300,7 @@ static int qfq_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 static void qfq_schedule_agg(struct qfq_sched *q, struct qfq_aggregate *agg)
 {
 	struct qfq_group *grp = agg->grp;
-	u64 roundedS;
+	u64 roundedS, slot;
 	int s;
 
 	roundedS = qfq_round_down(agg->S, grp->slot_shift);
@@ -1317,6 +1317,17 @@ static void qfq_schedule_agg(struct qfq_sched *q, struct qfq_aggregate *agg)
 	if (grp->full_slots) {
 		if (!qfq_gt(grp->S, agg->S))
 			goto skip_update;
+
+		slot = (grp->S - roundedS) >> grp->slot_shift;
+		if (unlikely(slot > BITS_PER_LONG - QFQ_MAX_SLOTS + 1)) {
+			u64 deltaS = grp->S - roundedS -
+				((u64)(BITS_PER_LONG - QFQ_MAX_SLOTS + 1) <<
+				 grp->slot_shift);
+
+			agg->S += deltaS;
+			agg->F += deltaS;
+			roundedS += deltaS;
+		}
 
 		/* create a slot for this agg->S */
 		qfq_slot_rotate(grp, roundedS);
