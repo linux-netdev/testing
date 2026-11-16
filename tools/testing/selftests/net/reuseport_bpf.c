@@ -303,6 +303,154 @@ static void test_reuseport_cbpf(struct test_params p)
 		close(fd[i]);
 }
 
+static uint16_t get_sockaddr_port(const struct sockaddr *addr)
+{
+	if (addr->sa_family == AF_INET)
+		return ntohs(((const struct sockaddr_in *)addr)->sin_port);
+	return ntohs(((const struct sockaddr_in6 *)addr)->sin6_port);
+}
+
+static void attach_cbpf_index(int fd, uint32_t index)
+{
+	struct sock_filter code[] = {
+		{ BPF_RET | BPF_K, 0, 0, index },
+	};
+	struct sock_fprog p = {
+		.len = ARRAY_SIZE(code),
+		.filter = code,
+	};
+
+	if (setsockopt(fd, SOL_SOCKET, SO_ATTACH_REUSEPORT_CBPF, &p, sizeof(p)))
+		error(1, errno, "failed to set constant SO_REUSEPORT_CBPF");
+}
+
+static void send_udp_packet(int fd, struct sockaddr *dst, const char *payload)
+{
+	if (sendto(fd, payload, strlen(payload), 0, dst, sockaddr_size()) < 0)
+		error(1, errno, "failed to send UDP packet");
+}
+
+static void expect_udp_socket(int epfd, int good_fd, int connected_fd,
+			     int expected_fd, const char *payload)
+{
+	struct epoll_event ev;
+	char buf[32];
+	int n;
+
+	n = epoll_wait(epfd, &ev, 1, 1000);
+	if (n < 0)
+		error(1, errno, "epoll wait failed");
+	if (!n)
+		error(1, 0, "timed out waiting for UDP packet");
+	if (ev.data.fd != expected_fd)
+		error(1, 0, "UDP packet delivered to unexpected reuseport socket");
+
+	n = recv(ev.data.fd, buf, sizeof(buf), 0);
+	if (n < 0)
+		error(1, errno, "failed to receive UDP packet");
+	if ((size_t)n != strlen(payload) || memcmp(buf, payload, n))
+		error(1, 0, "received unexpected UDP payload");
+
+	/* No copy of the packet should be queued on the other socket. */
+	ev.events = EPOLLIN;
+	ev.data.fd = expected_fd == good_fd ? connected_fd : good_fd;
+	if (epoll_ctl(epfd, EPOLL_CTL_MOD, ev.data.fd, &ev))
+		error(1, errno, "failed to update epoll registration");
+	n = epoll_wait(epfd, &ev, 1, 0);
+	if (n < 0)
+		error(1, errno, "epoll wait failed");
+	if (n)
+		error(1, 0, "UDP packet was also queued on the other socket");
+}
+
+static void test_connected_reuseport_rescore(int family)
+{
+	static const char mismatch_payload[] = "mismatch";
+	static const char match_payload[] = "match";
+	struct sockaddr *good_addr, *peer_addr;
+	struct sockaddr *match_src, *other_src, *dst;
+	struct epoll_event ev;
+	int good_fd, connected_fd, match_send_fd, other_send_fd, epfd, one = 1;
+	uint16_t recv_port, peer_port;
+
+	fprintf(stderr, "Testing connected reuseport rescore, family %d...\n",
+		family);
+	good_fd = socket(family, SOCK_DGRAM, 0);
+	connected_fd = socket(family, SOCK_DGRAM, 0);
+	match_send_fd = socket(family, SOCK_DGRAM, 0);
+	other_send_fd = socket(family, SOCK_DGRAM, 0);
+	if (good_fd < 0 || connected_fd < 0 || match_send_fd < 0 ||
+	    other_send_fd < 0)
+		error(1, errno, "failed to create connected reuseport test sockets");
+	if (setsockopt(good_fd, SOL_SOCKET, SO_REUSEPORT, &one, sizeof(one)) ||
+	    setsockopt(connected_fd, SOL_SOCKET, SO_REUSEPORT, &one, sizeof(one)))
+		error(1, errno, "failed to set SO_REUSEPORT");
+
+	good_addr = new_loopback_sockaddr(family, 0);
+	if (bind(good_fd, good_addr, sockaddr_size()))
+		error(1, errno, "failed to bind good reuseport socket");
+	if (getsockname(good_fd, good_addr, (socklen_t []){ sockaddr_size() }))
+		error(1, errno, "failed to get reuseport port");
+	recv_port = get_sockaddr_port(good_addr);
+	if (bind(connected_fd, good_addr, sockaddr_size()))
+		error(1, errno, "failed to bind connected reuseport socket");
+
+	match_src = new_loopback_sockaddr(family, 0);
+	if (bind(match_send_fd, match_src, sockaddr_size()))
+		error(1, errno, "failed to bind matching source socket");
+	if (getsockname(match_send_fd, match_src,
+			(socklen_t []){ sockaddr_size() }))
+		error(1, errno, "failed to get matching source port");
+	peer_port = get_sockaddr_port(match_src);
+	peer_addr = new_loopback_sockaddr(family, peer_port);
+	if (connect(connected_fd, peer_addr, sockaddr_size()))
+		error(1, errno, "failed to connect reuseport socket");
+
+	/* Bind order makes good_fd index 0 and connected_fd index 1. */
+	attach_cbpf_index(good_fd, 1);
+	other_src = new_loopback_sockaddr(family, 0);
+	if (bind(other_send_fd, other_src, sockaddr_size()))
+		error(1, errno, "failed to bind non-matching source socket");
+	dst = new_loopback_sockaddr(family, recv_port);
+	if (getsockname(other_send_fd, other_src,
+			(socklen_t []){ sockaddr_size() }))
+		error(1, errno, "failed to get non-matching source port");
+	if (get_sockaddr_port(other_src) == peer_port)
+		error(1, 0, "source ports unexpectedly match");
+
+	epfd = epoll_create1(0);
+	if (epfd < 0)
+		error(1, errno, "failed to create epoll");
+	ev.events = EPOLLIN;
+	ev.data.fd = good_fd;
+	if (epoll_ctl(epfd, EPOLL_CTL_ADD, good_fd, &ev))
+		error(1, errno, "failed to register good socket");
+	ev.data.fd = connected_fd;
+	if (epoll_ctl(epfd, EPOLL_CTL_ADD, connected_fd, &ev))
+		error(1, errno, "failed to register connected socket");
+
+	/* An unmatched BPF-selected socket must not replace the valid candidate. */
+	send_udp_packet(other_send_fd, dst, mismatch_payload);
+	expect_udp_socket(epfd, good_fd, connected_fd, good_fd,
+			  mismatch_payload);
+
+	/* A matching selected socket must still win the positive rescore path. */
+	send_udp_packet(match_send_fd, dst, match_payload);
+	expect_udp_socket(epfd, good_fd, connected_fd, connected_fd,
+			  match_payload);
+
+	close(epfd);
+	close(good_fd);
+	close(connected_fd);
+	close(match_send_fd);
+	close(other_send_fd);
+	free(good_addr);
+	free(match_src);
+	free(other_src);
+	free(peer_addr);
+	free(dst);
+}
+
 static void test_extra_filter(const struct test_params p)
 {
 	struct sockaddr * const addr =
@@ -469,6 +617,7 @@ int main(void)
 	setup_netns();
 
 	fprintf(stderr, "---- IPv4 UDP ----\n");
+	test_connected_reuseport_rescore(AF_INET);
 	/* NOTE: UDP socket lookups traverse a different code path when there
 	 * are > 10 sockets in a group.  Run the bpf test through both paths.
 	 */
@@ -510,6 +659,7 @@ int main(void)
 		.recv_port = 8008});
 
 	fprintf(stderr, "---- IPv6 UDP ----\n");
+	test_connected_reuseport_rescore(AF_INET6);
 	test_reuseport_ebpf((struct test_params) {
 		.recv_family = AF_INET6,
 		.send_family = AF_INET6,
