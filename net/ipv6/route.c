@@ -5814,6 +5814,7 @@ static int rt6_fill_node(struct net *net, struct sk_buff *skb,
 	struct nlmsghdr *nlh;
 	struct rtmsg *rtm;
 	long expires = 0;
+	int err = -EMSGSIZE;
 
 	nlh = nlmsg_put(skb, portid, seq, type, sizeof(*rtm), flags);
 	if (!nlh)
@@ -5874,12 +5875,14 @@ static int rt6_fill_node(struct net *net, struct sk_buff *skb,
 		    !(ipv6_addr_type(mc_dst) &
 		      (IPV6_ADDR_LOOPBACK | IPV6_ADDR_LINKLOCAL)) &&
 		    atomic_read(&net->ipv6.devconf_all->mc_forwarding)) {
-			int err = ip6mr_get_route(net, skb, rtm, portid);
+			int ret = ip6mr_get_route(net, skb, rtm, portid);
 
-			if (err == 0)
+			if (ret == 0)
 				return 0;
-			if (err < 0)
+			if (ret < 0) {
+				err = ret;
 				goto nla_put_failure;
+			}
 		} else
 #endif
 			if (nla_put_u32(skb, RTA_IIF, iif))
@@ -6002,7 +6005,7 @@ static int rt6_fill_node(struct net *net, struct sk_buff *skb,
 
 nla_put_failure:
 	nlmsg_cancel(skb, nlh);
-	return -EMSGSIZE;
+	return err;
 }
 
 static int fib6_info_nh_uses_dev(struct fib6_nh *nh, void *arg)
