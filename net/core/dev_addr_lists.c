@@ -104,6 +104,11 @@ __hw_addr_create(const unsigned char *addr, int addr_len,
 	if (!ha)
 		return NULL;
 	memcpy(ha->addr, addr, addr_len);
+	/* Entries are dumped with the current dev->addr_len, which can grow
+	 * after creation (e.g. tun TUNSETLINK), so never leave the tail
+	 * uninitialized.
+	 */
+	memset(ha->addr + addr_len, 0, MAX_ADDR_LEN - addr_len);
 	ha->type = addr_type;
 	ha->refcount = 1;
 	ha->global_use = global;
