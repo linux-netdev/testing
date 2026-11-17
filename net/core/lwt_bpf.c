@@ -13,6 +13,7 @@
 #include <net/gre.h>
 #include <net/ip.h>
 #include <net/ip6_route.h>
+#include <net/tcx.h>
 
 struct bpf_lwt_prog {
 	struct bpf_prog *prog;
@@ -327,6 +328,13 @@ static int bpf_xmit(struct sk_buff *skb)
 		__be16 proto = skb->protocol;
 		int ret;
 
+		/* The packet is on egress, but a forwarded one can still have
+		 * tc_at_ingress set by the tc ingress hook of the device it
+		 * came in on, until __dev_queue_xmit() clears it. Clear it
+		 * now, so that the redirect helpers see the direction of this
+		 * hook.
+		 */
+		tcx_set_ingress(skb, false);
 		ret = run_lwt_bpf(skb, &bpf->xmit, dst, CAN_REDIRECT);
 		switch (ret) {
 		case BPF_OK:
