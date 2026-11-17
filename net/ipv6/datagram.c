@@ -78,6 +78,7 @@ int ip6_datagram_dst_update(struct sock *sk, bool fix_sk_saddr)
 	struct in6_addr *final_p;
 	struct dst_entry *dst;
 	struct flowi6 *fl6;
+	u32 cookie;
 	int err = 0;
 
 	if (inet6_test_bit(SNDFLOW, sk) &&
@@ -94,7 +95,8 @@ int ip6_datagram_dst_update(struct sock *sk, bool fix_sk_saddr)
 	final_p = fl6_update_dst(fl6, opt, &np->final);
 	rcu_read_unlock();
 
-	dst = ip6_dst_lookup_flow(sock_net(sk), sk, fl6, final_p);
+	dst = ip6_dst_lookup_flow_cookie(sock_net(sk), sk, fl6, final_p,
+					 &cookie);
 	if (IS_ERR(dst)) {
 		err = PTR_ERR(dst);
 		goto out;
@@ -112,7 +114,7 @@ int ip6_datagram_dst_update(struct sock *sk, bool fix_sk_saddr)
 		}
 	}
 
-	ip6_sk_dst_store_flow(sk, dst, fl6);
+	ip6_sk_dst_store_flow(sk, dst, fl6, cookie);
 
 out:
 	fl6_sock_release(flowlabel);
