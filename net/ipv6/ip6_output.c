@@ -1279,8 +1279,7 @@ EXPORT_SYMBOL_GPL(ip6_dst_lookup);
  *
  *	This function performs a route lookup on the given flow.
  *
- *	It returns a valid dst pointer on success, or a pointer encoded
- *	error code.
+ *	Return: a valid dst pointer on success or a pointer encoded error code.
  */
 struct dst_entry *ip6_dst_lookup_flow(struct net *net, const struct sock *sk, struct flowi6 *fl6,
 				      const struct in6_addr *final_dst)
@@ -1299,6 +1298,54 @@ struct dst_entry *ip6_dst_lookup_flow(struct net *net, const struct sock *sk, st
 	return xfrm_lookup_route(net, dst, flowi6_to_flowi(fl6), sk, 0);
 }
 EXPORT_SYMBOL_GPL(ip6_dst_lookup_flow);
+
+/**
+ *	ip6_dst_lookup_flow_cookie - perform route lookup on flow with ipsec
+ *				     and return the matching dst cookie
+ *	@net: Network namespace to perform lookup in
+ *	@sk: socket which provides route info
+ *	@fl6: flow to lookup
+ *	@final_dst: final destination address for ipsec lookup
+ *	@cookie: where to store the cookie for the returned dst
+ *
+ *	Same as ip6_dst_lookup_flow, but also returns the cookie describing
+ *	the routing state the dst was obtained from. A caller caching the dst
+ *	should use this cookie when validating it with dst_check. If the
+ *	IPv6 FIB changed during the lookup, a route dst no longer validates
+ *	with it. An xfrm bundle is validated by xfrm and ignores the cookie.
+ *
+ *	Return: a valid dst pointer on success or a pointer encoded error code.
+ */
+struct dst_entry *ip6_dst_lookup_flow_cookie(struct net *net,
+					     const struct sock *sk,
+					     struct flowi6 *fl6,
+					     const struct in6_addr *final_dst,
+					     u32 *cookie)
+{
+	const struct rt6_info *rt;
+	struct dst_entry *dst;
+	int gen0, gen1;
+
+	gen0 = rt_genid_ipv6(net);
+	/* read the generation before looking at the FIB or xfrm policies */
+	smp_rmb();
+
+	dst = ip6_dst_lookup_flow(net, sk, fl6, final_dst);
+	if (IS_ERR(dst))
+		return dst;
+
+	rt = dst_rt6_info(dst);
+	*cookie = rt->sernum ? gen0 : rt6_get_cookie(rt);
+
+	/* keep the FIB and cookie reads before the final generation read */
+	smp_rmb();
+	gen1 = rt_genid_ipv6(net);
+	if (unlikely(gen0 != gen1))
+		*cookie = 0;
+
+	return dst;
+}
+EXPORT_SYMBOL_GPL(ip6_dst_lookup_flow_cookie);
 
 /**
  *	ip6_sk_dst_lookup_flow - perform socket cached route lookup on flow
