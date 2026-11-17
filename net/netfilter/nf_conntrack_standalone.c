@@ -314,6 +314,9 @@ static int ct_seq_show(struct seq_file *s, void *v)
 	/* load ->status after refcount increase */
 	smp_acquire__after_ctrl_dep();
 
+	if (!nf_ct_is_confirmed(ct))
+		goto release;
+
 	if (nf_ct_should_gc(ct)) {
 		struct ct_iter_state *st = s->private;
 
