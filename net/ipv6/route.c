@@ -2817,7 +2817,7 @@ INDIRECT_CALLABLE_SCOPE struct dst_entry *ip6_dst_check(struct dst_entry *dst,
 	rt = dst_rt6_info(dst);
 
 	if (rt->sernum)
-		return rt6_is_valid(rt) ? dst : NULL;
+		return (rt6_is_valid(rt) && cookie == rt->sernum) ? dst : NULL;
 
 	rcu_read_lock();
 
@@ -4911,8 +4911,8 @@ static int fib6_ifup(struct fib6_info *rt, void *p_arg)
 	if (rt != net->ipv6.fib6_null_entry && !rt->nh &&
 	    rt->fib6_nh->fib_nh_dev == arg->dev) {
 		rt->fib6_nh->fib_nh_flags &= ~arg->nh_flags;
-		fib6_update_sernum_upto_root(net, rt);
 		rt6_multipath_rebalance(rt);
+		fib6_update_sernum_upto_root(net, rt);
 	}
 
 	return 0;
@@ -5015,8 +5015,8 @@ static int fib6_ifdown(struct fib6_info *rt, void *p_arg)
 			}
 			rt6_multipath_nh_flags_set(rt, dev, RTNH_F_DEAD |
 						   RTNH_F_LINKDOWN);
-			fib6_update_sernum(net, rt);
 			rt6_multipath_rebalance(rt);
+			fib6_update_sernum(net, rt);
 		}
 		return -2;
 	case NETDEV_CHANGE:
@@ -5024,8 +5024,8 @@ static int fib6_ifdown(struct fib6_info *rt, void *p_arg)
 		    rt->fib6_flags & (RTF_LOCAL | RTF_ANYCAST))
 			break;
 		rt->fib6_nh->fib_nh_flags |= RTNH_F_LINKDOWN;
-		fib6_update_sernum(net, rt);
 		rt6_multipath_rebalance(rt);
+		fib6_update_sernum(net, rt);
 		break;
 	}
 
