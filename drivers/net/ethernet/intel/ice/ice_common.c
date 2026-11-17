@@ -3184,6 +3184,7 @@ void ice_set_safe_mode_caps(struct ice_hw *hw)
 	struct ice_hw_func_caps *func_caps = &hw->func_caps;
 	struct ice_hw_dev_caps *dev_caps = &hw->dev_caps;
 	struct ice_hw_common_caps cached_caps;
+	struct ice_nac_topology nac_topo;
 	u32 num_funcs;
 
 	/* cache some func_caps values that should be restored after memset */
@@ -3217,6 +3218,7 @@ void ice_set_safe_mode_caps(struct ice_hw *hw)
 	/* cache some dev_caps values that should be restored after memset */
 	cached_caps = dev_caps->common_cap;
 	num_funcs = dev_caps->num_funcs;
+	nac_topo = dev_caps->nac_topo;
 
 	/* unset dev capabilities */
 	memset(dev_caps, 0, sizeof(*dev_caps));
@@ -3235,6 +3237,7 @@ void ice_set_safe_mode_caps(struct ice_hw *hw)
 	ICE_RESTORE_DEV_CAP(nvm_update_pending_orom);
 	ICE_RESTORE_DEV_CAP(nvm_update_pending_netlist);
 	dev_caps->num_funcs = num_funcs;
+	dev_caps->nac_topo = nac_topo;
 
 	/* one Tx and one Rx queue per function in safe mode */
 	dev_caps->common_cap.num_rxq = num_funcs;
@@ -4450,7 +4453,7 @@ ice_aq_sff_eeprom(struct ice_hw *hw, u16 lport, u8 bus_addr,
 	return status;
 }
 
-static enum ice_lut_size ice_lut_type_to_size(enum ice_lut_type type)
+enum ice_lut_size ice_lut_type_to_size(enum ice_lut_type type)
 {
 	switch (type) {
 	case ICE_LUT_VSI:
