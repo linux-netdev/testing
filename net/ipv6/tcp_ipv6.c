@@ -410,9 +410,9 @@ static int tcp_v6_err(struct sk_buff *skb, struct inet6_skb_parm *opt,
 	const struct tcphdr *th = (struct tcphdr *)(skb->data+offset);
 	struct net *net = dev_net_rcu(skb->dev);
 	struct request_sock *fastopen;
+	__u32 seq, snd_una, snd_nxt;
 	struct ipv6_pinfo *np;
 	struct tcp_sock *tp;
-	__u32 seq, snd_una;
 	struct sock *sk;
 	bool fatal;
 	int err;
@@ -463,9 +463,12 @@ static int tcp_v6_err(struct sk_buff *skb, struct inet6_skb_parm *opt,
 	tp = tcp_sk(sk);
 	/* XXX (TFO) - tp->snd_una should be ISN (tcp_create_openreq_child() */
 	fastopen = rcu_dereference(tp->fastopen_rsk);
-	snd_una = fastopen ? tcp_rsk(fastopen)->snt_isn : tp->snd_una;
+	snd_una = fastopen ? tcp_rsk(fastopen)->snt_isn : READ_ONCE(tp->snd_una);
+	snd_nxt = READ_ONCE(tp->snd_nxt);
 	if (sk->sk_state != TCP_LISTEN &&
-	    !between(seq, snd_una, tp->snd_nxt)) {
+	    (!between(seq, snd_una, snd_nxt) ||
+	     (sk->sk_state == TCP_SYN_SENT &&
+	      seq != snd_una && seq == snd_nxt))) {
 		__NET_INC_STATS(net, LINUX_MIB_OUTOFWINDOWICMPS);
 		goto out;
 	}
