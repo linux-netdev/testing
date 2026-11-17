@@ -170,6 +170,7 @@ int iavf_send_vf_config_msg(struct iavf_adapter *adapter)
 	       VIRTCHNL_VF_OFFLOAD_VLAN_V2 |
 	       VIRTCHNL_VF_OFFLOAD_RX_FLEX_DESC |
 	       VIRTCHNL_VF_OFFLOAD_CRC |
+	       VIRTCHNL_VF_LARGE_NUM_QPAIRS |
 	       VIRTCHNL_VF_OFFLOAD_ENCAP_CSUM |
 	       VIRTCHNL_VF_OFFLOAD_REQ_QUEUES |
 	       VIRTCHNL_VF_CAP_PTP |
@@ -251,6 +252,18 @@ int iavf_send_vf_ptp_caps_msg(struct iavf_adapter *adapter)
 				(u8 *)&hw_caps, sizeof(hw_caps));
 }
 
+int iavf_send_max_rss_qregion(struct iavf_adapter *adapter)
+{
+	adapter->aq_required &= ~IAVF_FLAG_AQ_GET_MAX_RSS_QREGION;
+
+	if (!LARGE_NUM_QPAIRS_SUPPORT(adapter))
+		return -EOPNOTSUPP;
+
+	adapter->current_op = VIRTCHNL_OP_GET_MAX_RSS_QREGION;
+	iavf_send_pf_msg(adapter, VIRTCHNL_OP_GET_MAX_RSS_QREGION, NULL, 0);
+	return 0;
+}
+
 /**
  * iavf_validate_num_queues
  * @adapter: adapter structure
@@ -260,19 +273,24 @@ int iavf_send_vf_ptp_caps_msg(struct iavf_adapter *adapter)
  **/
 static void iavf_validate_num_queues(struct iavf_adapter *adapter)
 {
-	if (adapter->vf_res->num_queue_pairs > IAVF_MAX_REQ_QUEUES) {
+	u32 max_req_queues = IAVF_MAX_REQ_QUEUES;
+
+	if (!LARGE_NUM_QPAIRS_SUPPORT(adapter))
+		max_req_queues = IAVF_MAX_VSI_QP;
+
+	if (adapter->vf_res->num_queue_pairs > max_req_queues) {
 		struct virtchnl_vsi_resource *vsi_res;
 		int i;
 
 		dev_info(&adapter->pdev->dev, "Received %d queues, but can only have a max of %d\n",
 			 adapter->vf_res->num_queue_pairs,
-			 IAVF_MAX_REQ_QUEUES);
+			 max_req_queues);
 		dev_info(&adapter->pdev->dev, "Fixing by reducing queues to %d\n",
-			 IAVF_MAX_REQ_QUEUES);
-		adapter->vf_res->num_queue_pairs = IAVF_MAX_REQ_QUEUES;
+			 max_req_queues);
+		adapter->vf_res->num_queue_pairs = max_req_queues;
 		for (i = 0; i < adapter->vf_res->num_vsis; i++) {
 			vsi_res = &adapter->vf_res->vsi_res[i];
-			vsi_res->num_queue_pairs = IAVF_MAX_REQ_QUEUES;
+			vsi_res->num_queue_pairs = max_req_queues;
 		}
 	}
 }
@@ -371,6 +389,57 @@ int iavf_get_vf_ptp_caps(struct iavf_adapter *adapter)
 	return err;
 }
 
+int iavf_get_max_rss_qregion(struct iavf_adapter *adapter)
+{
+	struct iavf_arq_event_info event;
+	int err;
+	u16 len;
+
+	len = sizeof(struct virtchnl_max_rss_qregion);
+	event.buf_len = len;
+	event.msg_buf = kzalloc(len, GFP_KERNEL);
+	if (!event.msg_buf)
+		return -ENOMEM;
+
+	err = iavf_poll_virtchnl_msg(&adapter->hw, &event,
+				     VIRTCHNL_OP_GET_MAX_RSS_QREGION);
+	if (!err)
+		memcpy(&adapter->max_rss_qregion, event.msg_buf,
+		       min(event.msg_len, len));
+
+	adapter->current_op = VIRTCHNL_OP_UNKNOWN;
+
+	kfree(event.msg_buf);
+	return err;
+}
+
+/**
+ * iavf_get_req_queues_reply - poll for PF reply to our queue request
+ * @adapter: private adapter structure
+ *
+ * PF resets us when it grants the request, so a reply means a denial.
+ *
+ * Return: number of queues PF can give us, or negative error code.
+ */
+int iavf_get_req_queues_reply(struct iavf_adapter *adapter)
+{
+	/* poll looks for the reset event in the same buffer */
+	union {
+		struct virtchnl_vf_res_request vfres;
+		struct virtchnl_pf_event vpe;
+	} msg = {};
+	struct iavf_arq_event_info event = {
+		.buf_len = sizeof(msg),
+		.msg_buf = (u8 *)&msg,
+	};
+	int err;
+
+	err = iavf_poll_virtchnl_msg(&adapter->hw, &event,
+				     VIRTCHNL_OP_REQUEST_QUEUES);
+
+	return err ?: msg.vfres.num_queue_pairs;
+}
+
 /**
  * iavf_configure_queues
  * @adapter: adapter structure
@@ -439,6 +508,50 @@ void iavf_configure_queues(struct iavf_adapter *adapter)
 }
 
 /**
+ * iavf_enable_disable_queues_v2 - send V2 messages of ENABLE/DISABLE queues ops
+ * @adapter: private adapter structure
+ * @enable: true to enable and false to disable the queues
+ */
+static void iavf_enable_disable_queues_v2(struct iavf_adapter *adapter, bool enable)
+{
+	enum virtchnl_ops op = VIRTCHNL_OP_ENABLE_QUEUES_V2;
+	struct virtchnl_del_ena_dis_queues *msg;
+	u64 flag = IAVF_FLAG_AQ_ENABLE_QUEUES;
+	struct virtchnl_queue_chunk *chunk;
+	int len;
+
+	if (!enable) {
+		op = VIRTCHNL_OP_DISABLE_QUEUES_V2;
+		flag = IAVF_FLAG_AQ_DISABLE_QUEUES;
+	}
+
+	/* We need 2 chunks (one Tx and one Rx). */
+	len = virtchnl_struct_size(msg, chunks, 2);
+	msg = kzalloc(len, GFP_KERNEL);
+	if (!msg)
+		return;
+
+	adapter->current_op = op;
+
+	msg->vport_id = adapter->vsi_res->vsi_id;
+	msg->num_chunks = 2;
+
+	chunk = &msg->chunks[0];
+	chunk->type = VIRTCHNL_QUEUE_TYPE_RX;
+	chunk->start_queue_id = 0;
+	chunk->num_queues = adapter->num_active_queues;
+
+	chunk++;
+	chunk->type = VIRTCHNL_QUEUE_TYPE_TX;
+	chunk->start_queue_id = 0;
+	chunk->num_queues = adapter->num_active_queues;
+
+	adapter->aq_required &= ~flag;
+	iavf_send_pf_msg(adapter, op, (u8 *)msg, len);
+	kfree(msg);
+}
+
+/**
  * iavf_enable_queues
  * @adapter: adapter structure
  *
@@ -454,6 +567,12 @@ void iavf_enable_queues(struct iavf_adapter *adapter)
 			adapter->current_op);
 		return;
 	}
+
+	if (LARGE_NUM_QPAIRS_SUPPORT(adapter)) {
+		iavf_enable_disable_queues_v2(adapter, true);
+		return;
+	}
+
 	adapter->current_op = VIRTCHNL_OP_ENABLE_QUEUES;
 	vqs.vsi_id = adapter->vsi_res->vsi_id;
 	vqs.tx_queues = BIT(min(adapter->num_active_queues,
@@ -480,6 +599,12 @@ void iavf_disable_queues(struct iavf_adapter *adapter)
 			adapter->current_op);
 		return;
 	}
+
+	if (LARGE_NUM_QPAIRS_SUPPORT(adapter)) {
+		iavf_enable_disable_queues_v2(adapter, false);
+		return;
+	}
+
 	adapter->current_op = VIRTCHNL_OP_DISABLE_QUEUES;
 	vqs.vsi_id = adapter->vsi_res->vsi_id;
 	vqs.tx_queues = BIT(min(adapter->num_active_queues,
@@ -488,6 +613,50 @@ void iavf_disable_queues(struct iavf_adapter *adapter)
 	adapter->aq_required &= ~IAVF_FLAG_AQ_DISABLE_QUEUES;
 	iavf_send_pf_msg(adapter, VIRTCHNL_OP_DISABLE_QUEUES,
 			 (u8 *)&vqs, sizeof(vqs));
+}
+
+static void iavf_map_queue_vector(struct iavf_adapter *adapter)
+{
+	struct virtchnl_queue_vector_maps *qvmaps;
+	int first = adapter->map_qps_sent;
+	struct virtchnl_queue_vector *qv;
+	int len, qnum;
+
+	qnum = min_t(int, adapter->num_active_queues - first,
+		     iavf_max_vc_entries(qvmaps, qv_maps) / 2);
+	len = virtchnl_struct_size(qvmaps, qv_maps, 2 * qnum);
+	qvmaps = kzalloc(len, GFP_KERNEL);
+	if (!qvmaps)
+		return;
+
+	qvmaps->vport_id = adapter->vsi_res->vsi_id;
+	qvmaps->num_qv_maps = 2 * qnum;
+	qv = qvmaps->qv_maps;
+	for (int qid = first; qid < first + qnum; qid++) {
+		struct iavf_q_vector *q_vector;
+
+		q_vector = adapter->tx_rings[qid].q_vector;
+		qv->queue_id = qid;
+		qv->vector_id = NONQ_VECS + q_vector->v_idx;
+		qv->itr_idx = IAVF_TX_ITR;
+		qv->queue_type = VIRTCHNL_QUEUE_TYPE_TX;
+		qv++;
+
+		q_vector = adapter->rx_rings[qid].q_vector;
+		qv->queue_id = qid;
+		qv->vector_id = NONQ_VECS + q_vector->v_idx;
+		qv->itr_idx = IAVF_RX_ITR;
+		qv->queue_type = VIRTCHNL_QUEUE_TYPE_RX;
+		qv++;
+	}
+
+	adapter->current_op = VIRTCHNL_OP_MAP_QUEUE_VECTOR;
+	adapter->map_qps_sent += qnum;
+	if (adapter->map_qps_sent == adapter->num_active_queues)
+		adapter->aq_required &= ~IAVF_FLAG_AQ_MAP_VECTORS;
+	iavf_send_pf_msg(adapter, VIRTCHNL_OP_MAP_QUEUE_VECTOR,
+			 (u8 *)qvmaps, len);
+	kfree(qvmaps);
 }
 
 /**
@@ -511,6 +680,12 @@ void iavf_map_queues(struct iavf_adapter *adapter)
 			adapter->current_op);
 		return;
 	}
+
+	if (LARGE_NUM_QPAIRS_SUPPORT(adapter)) {
+		iavf_map_queue_vector(adapter);
+		return;
+	}
+
 	adapter->current_op = VIRTCHNL_OP_CONFIG_IRQ_MAP;
 
 	q_vectors = adapter->num_msix_vectors - NONQ_VECS;
@@ -545,6 +720,40 @@ void iavf_map_queues(struct iavf_adapter *adapter)
 	iavf_send_pf_msg(adapter, VIRTCHNL_OP_CONFIG_IRQ_MAP,
 			 (u8 *)vimi, len);
 	kfree(vimi);
+}
+
+/**
+ * iavf_request_queues - request queues via virtchnl
+ * @adapter: adapter structure
+ * @num: number of requested queues
+ *
+ * Return: 0 on success, negative on failure.
+ */
+int iavf_request_queues(struct iavf_adapter *adapter, int num)
+{
+	struct virtchnl_vf_res_request vfres = { num };
+	int err;
+
+	if (adapter->current_op != VIRTCHNL_OP_UNKNOWN) {
+		/* bail because we already have a command pending */
+		dev_err(&adapter->pdev->dev, "Cannot request queues, command %d pending\n",
+			adapter->current_op);
+		return -EBUSY;
+	}
+
+	adapter->current_op = VIRTCHNL_OP_REQUEST_QUEUES;
+	adapter->flags |= IAVF_FLAG_REINIT_ITR_NEEDED;
+	adapter->num_req_queues = num;
+
+	err = iavf_send_pf_msg(adapter, VIRTCHNL_OP_REQUEST_QUEUES,
+			       (u8 *)&vfres, sizeof(vfres));
+	if (err) {
+		adapter->current_op = VIRTCHNL_OP_UNKNOWN;
+		adapter->flags &= ~IAVF_FLAG_REINIT_ITR_NEEDED;
+		adapter->num_req_queues = 0;
+	}
+
+	return err;
 }
 
 /**
@@ -2567,6 +2776,18 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 			/* don't send the remaining queue pairs */
 			adapter->aq_required &= ~IAVF_FLAG_AQ_CONFIGURE_QUEUES;
 			break;
+		case VIRTCHNL_OP_MAP_QUEUE_VECTOR:
+			dev_err(&adapter->pdev->dev, "Failed to map queues to vectors, error %s\n",
+				iavf_stat_str(&adapter->hw, v_retval));
+			/* don't send the remaining queues */
+			adapter->aq_required &= ~IAVF_FLAG_AQ_MAP_VECTORS;
+			break;
+		case VIRTCHNL_OP_REQUEST_QUEUES:
+			dev_err(&adapter->pdev->dev, "Failed to request queues, error %s\n",
+				iavf_stat_str(&adapter->hw, v_retval));
+			adapter->num_req_queues = 0;
+			adapter->flags &= ~IAVF_FLAG_REINIT_ITR_NEEDED;
+			break;
 		default:
 			dev_err(&adapter->pdev->dev, "PF returned error %d (%s) to our request %d\n",
 				v_retval, iavf_stat_str(&adapter->hw, v_retval),
@@ -2638,7 +2859,9 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 
 		iavf_activate_fdir_filters(adapter);
 
-		iavf_parse_vf_resource_msg(adapter);
+		/* a reset is scheduled on error, it will configure us again */
+		if (iavf_parse_vf_resource_msg(adapter))
+			break;
 
 		/* negotiated VIRTCHNL_VF_OFFLOAD_VLAN_V2, so wait for the
 		 * response to VIRTCHNL_OP_GET_OFFLOAD_VLAN_V2_CAPS to finish
@@ -2709,6 +2932,20 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 			aq_required;
 		}
 		break;
+	case VIRTCHNL_OP_GET_MAX_RSS_QREGION: {
+		u16 width = adapter->max_rss_qregion.qregion_width;
+
+		if (v_retval)
+			break;
+		memcpy(&adapter->max_rss_qregion, msg,
+		       sizeof(adapter->max_rss_qregion));
+		/* LUT was filled before this reply, for the old region */
+		if (adapter->max_rss_qregion.qregion_width != width) {
+			iavf_fill_rss_lut(adapter);
+			iavf_config_rss(adapter);
+		}
+		break;
+	}
 	case VIRTCHNL_OP_GET_SUPPORTED_RXDIDS:
 		if (msglen != sizeof(u64))
 			return;
@@ -2729,11 +2966,13 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 		iavf_virtchnl_ptp_get_time(adapter, msg, msglen);
 		break;
 	case VIRTCHNL_OP_ENABLE_QUEUES:
+	case VIRTCHNL_OP_ENABLE_QUEUES_V2:
 		/* enable transmits */
 		iavf_irq_enable(adapter, true);
 		adapter->flags &= ~IAVF_FLAG_QUEUES_DISABLED;
 		break;
 	case VIRTCHNL_OP_DISABLE_QUEUES:
+	case VIRTCHNL_OP_DISABLE_QUEUES_V2:
 		iavf_free_all_tx_resources(adapter);
 		iavf_free_all_rx_resources(adapter);
 		if (adapter->state == __IAVF_DOWN_PENDING) {
@@ -2743,6 +2982,7 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 		break;
 	case VIRTCHNL_OP_VERSION:
 	case VIRTCHNL_OP_CONFIG_IRQ_MAP:
+	case VIRTCHNL_OP_MAP_QUEUE_VECTOR:
 		/* Don't display an error if we get these out of sequence.
 		 * If the firmware needed to get kicked, we'll get these and
 		 * it's no problem.
@@ -2765,7 +3005,8 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 		struct virtchnl_vf_res_request *vfres =
 			(struct virtchnl_vf_res_request *)msg;
 
-		if (vfres->num_queue_pairs != adapter->num_req_queues) {
+		if (!v_retval &&
+		    vfres->num_queue_pairs != adapter->num_req_queues) {
 			dev_info(&adapter->pdev->dev,
 				 "Requested %d queues, PF can support %d\n",
 				 adapter->num_req_queues,
