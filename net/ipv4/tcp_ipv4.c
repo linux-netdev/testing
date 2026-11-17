@@ -529,11 +529,8 @@ int tcp_v4_err(struct sk_buff *skb, u32 info)
 
 	seq = ntohl(th->seq);
 	if (sk->sk_state == TCP_NEW_SYN_RECV) {
-		tcp_req_err(sk, seq, type == ICMP_PARAMETERPROB ||
-				     type == ICMP_TIME_EXCEEDED ||
-				     (type == ICMP_DEST_UNREACH &&
-				      (code == ICMP_NET_UNREACH ||
-				       code == ICMP_HOST_UNREACH)));
+		tcp_req_err(sk, seq, (type == ICMP_DEST_UNREACH &&
+				      icmp_err_convert[code].fatal));
 		return 0;
 	}
 
