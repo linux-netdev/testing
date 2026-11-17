@@ -6,6 +6,7 @@
 
 #include <linux/rcupdate.h>
 #include <linux/rcupdate_wait.h>
+#include <linux/rwlock.h>
 #include <linux/jhash.h>
 #include <linux/types.h>
 #include <linux/seqlock.h>
@@ -33,9 +34,14 @@
  * Readers and resizing
  *
  * Resizing can be triggered by userspace command only, and those
- * are serialized by the nfnl mutex. During resizing the set is
- * read-locked, so the only possible concurrent operations are
- * the kernel side readers. Those must be protected by proper RCU locking.
+ * are serialized by the nfnl mutex. Packet-path writers and garbage
+ * collection hold resize_lock for reading from table selection through
+ * their last modification. They advance resize_seq before dropping it.
+ * Resize copies each source region under its lock, then takes resize_lock
+ * for writing and publishes only if resize_seq has not changed. A failed
+ * snapshot owns only private extension clones and can be discarded
+ * without replay or touching the source table.
+ * Lockless lookups continue to use RCU.
  */
 
 /* Number of elements to store in an initial array block */
@@ -45,6 +51,8 @@
 /* Max muber of elements in the array block when tuned */
 #define AHASH_MAX_TUNED			64
 #define AHASH_MAX(h)			((h)->bucketsize)
+/* Limit snapshot retries under sustained packet-path writes. */
+#define AHASH_RESIZE_RETRIES		3
 
 /* A hash bucket */
 struct hbucket {
@@ -76,17 +84,14 @@ struct hbucket {
 struct htable_gc {
 	struct delayed_work dwork;
 	struct ip_set *set;	/* Set the gc belongs to */
-	spinlock_t lock;	/* Lock to exclude gc and resize */
 	u32 region;		/* Last gc run position */
 };
 
 /* The hash table: the table size stored here in order to make resizing easy */
 struct htable {
-	bool resizing;		/* Mark ongoing resize */
-	atomic_t uref;		/* References for dumping and gc */
+	atomic_t uref;		/* Current-table ownership and dump references */
 	u8 htable_bits;		/* size of hash table == 2^htable_bits */
 	u32 maxelem;		/* Maxelem per region */
-	struct list_head ad;	/* Resize add|del backlist */
 	struct ip_set_region *hregion;	/* Region locks and ext sizes */
 	struct hbucket __rcu *bucket[]; /* hashtable buckets */
 };
@@ -217,6 +222,8 @@ static const union nf_inet_addr zeromask = {};
 
 #undef mtype_ahash_destroy
 #undef mtype_ext_cleanup
+#undef mtype_ext_clone
+#undef mtype_ext_clone_supported
 #undef mtype_add_cidr
 #undef mtype_del_cidr
 #undef mtype_del_cidr_all
@@ -236,7 +243,6 @@ static const union nf_inet_addr zeromask = {};
 #undef mtype_uref
 #undef mtype_resize
 #undef mtype_ext_size
-#undef mtype_resize_ad
 #undef mtype_head
 #undef mtype_list
 #undef mtype_gc_do
@@ -265,6 +271,8 @@ static const union nf_inet_addr zeromask = {};
 
 #define mtype_ahash_destroy	IPSET_TOKEN(MTYPE, _ahash_destroy)
 #define mtype_ext_cleanup	IPSET_TOKEN(MTYPE, _ext_cleanup)
+#define mtype_ext_clone	IPSET_TOKEN(MTYPE, _ext_clone)
+#define mtype_ext_clone_supported IPSET_TOKEN(MTYPE, _ext_clone_supported)
 #define mtype_add_cidr		IPSET_TOKEN(MTYPE, _add_cidr)
 #define mtype_del_cidr		IPSET_TOKEN(MTYPE, _del_cidr)
 #define mtype_del_cidr_all	IPSET_TOKEN(MTYPE, _del_cidr_all)
@@ -284,7 +292,6 @@ static const union nf_inet_addr zeromask = {};
 #define mtype_uref		IPSET_TOKEN(MTYPE, _uref)
 #define mtype_resize		IPSET_TOKEN(MTYPE, _resize)
 #define mtype_ext_size		IPSET_TOKEN(MTYPE, _ext_size)
-#define mtype_resize_ad		IPSET_TOKEN(MTYPE, _resize_ad)
 #define mtype_head		IPSET_TOKEN(MTYPE, _head)
 #define mtype_list		IPSET_TOKEN(MTYPE, _list)
 #define mtype_gc_do		IPSET_TOKEN(MTYPE, _gc_do)
@@ -315,6 +322,8 @@ struct htype {
 	struct htable __rcu *table; /* the hash table */
 	struct net_prefixes __rcu *rnets[IPSET_NET_COUNT]; /* cidr prefixes */
 	struct htable_gc gc;	/* gc workqueue */
+	rwlock_t resize_lock;	/* Exclude writers while publishing a snapshot */
+	atomic64_t resize_seq;	/* Completed writer operations */
 	u32 maxelem;		/* max elements in the hash */
 	u32 initval;		/* random jhash init value */
 #ifdef IP_SET_HASH_WITH_MARKMASK
@@ -329,16 +338,6 @@ struct htype {
 	 * structure and referred in create() may come after 'next'.
 	 */
 	struct mtype_elem next; /* temporary storage for uadd */
-};
-
-/* ADD|DEL entries saved during resize */
-struct mtype_resize_ad {
-	struct list_head list;
-	enum ipset_adt ad;	/* ADD|DEL element */
-	struct mtype_elem d;	/* Element value */
-	struct ip_set_ext ext;	/* Extensions for ADD */
-	struct ip_set_ext mext;	/* Target extensions for ADD */
-	u32 flags;		/* Flags for ADD */
 };
 
 #ifdef IP_SET_HASH_WITH_NETS
@@ -504,6 +503,62 @@ mtype_ext_cleanup(struct ip_set *set, struct hbucket *n)
 			ip_set_ext_destroy(set, ahash_data(n, i, set->dsize));
 }
 
+/* Fail closed if a future extension adds private allocations without teaching
+ * the resize snapshot how to acquire independent ownership of them.
+ */
+static bool
+mtype_ext_clone_supported(const struct ip_set *set)
+{
+	enum ip_set_ext_id id;
+
+	for (id = 0; id < IPSET_EXT_ID_MAX; id++) {
+		const struct ip_set_ext_type *ext = &ip_set_extensions[id];
+		u8 type = ext->type & ~IPSET_EXT_DESTROY;
+
+		if (!ext->destroy || !(set->extensions & type))
+			continue;
+		if (id != IPSET_EXT_ID_COMMENT)
+			return false;
+	}
+
+	return true;
+}
+
+/* Clone extension allocations so retired tables and the published table do
+ * not share destroyable objects. The caller holds the source region lock.
+ */
+static int
+mtype_ext_clone(struct ip_set *set, void *dst, const void *src,
+		spinlock_t *region_lock)
+{
+	const struct ip_set_comment *src_comment;
+	struct ip_set_comment *dst_comment;
+	struct ip_set_comment_rcu *comment, *clone;
+	size_t len;
+
+	lockdep_assert_held(region_lock);
+	if (!SET_WITH_COMMENT(set))
+		return 0;
+
+	src_comment = ext_comment(src, set);
+	dst_comment = ext_comment(dst, set);
+	RCU_INIT_POINTER(dst_comment->c, NULL);
+	comment = rcu_dereference_protected(src_comment->c,
+					    lockdep_is_held(region_lock));
+	if (!comment)
+		return 0;
+
+	len = strlen(comment->str) + 1;
+	clone = kmalloc(sizeof(*clone) + len, GFP_ATOMIC);
+	if (!clone)
+		return -ENOMEM;
+	memcpy(clone->str, comment->str, len);
+	atomic64_add(sizeof(*clone) + len, &set->ext_size);
+	RCU_INIT_POINTER(dst_comment->c, clone);
+
+	return 0;
+}
+
 /* Flush a hash type of set: destroy all elements */
 static void
 mtype_flush(struct ip_set *set)
@@ -553,9 +608,6 @@ mtype_flush(struct ip_set *set)
 static void
 mtype_ahash_destroy(struct ip_set *set, struct htable *t, bool ext_destroy)
 {
-#ifdef IP_SET_HASH_WITH_NETS
-	struct htype *h = set->data;
-#endif
 	struct hbucket *n;
 	u32 i;
 
@@ -569,11 +621,6 @@ mtype_ahash_destroy(struct ip_set *set, struct htable *t, bool ext_destroy)
 		kfree(n);
 	}
 
-#ifdef IP_SET_HASH_WITH_NETS
-	if (ext_destroy)
-		for (i = 0; i < IPSET_NET_COUNT; i++)
-			kfree(rcu_dereference_raw(h->rnets[i]));
-#endif
 	ip_set_free(t->hregion);
 	ip_set_free(t);
 }
@@ -584,13 +631,15 @@ mtype_destroy(struct ip_set *set)
 {
 	struct htype *h = set->data;
 	struct htable *t = (__force struct htable *)h->table;
-	struct list_head *l, *lt;
+#ifdef IP_SET_HASH_WITH_NETS
+	int i;
+#endif
 
-	list_for_each_safe(l, lt, &t->ad) {
-		list_del(l);
-		kfree(l);
-	}
 	mtype_ahash_destroy(set, t, true);
+#ifdef IP_SET_HASH_WITH_NETS
+	for (i = 0; i < IPSET_NET_COUNT; i++)
+		kfree(rcu_dereference_raw(h->rnets[i]));
+#endif
 	kfree(h);
 
 	set->data = NULL;
@@ -694,9 +743,9 @@ mtype_gc(struct work_struct *work)
 	set = gc->set;
 	h = set->data;
 
+	read_lock_bh(&h->resize_lock);
 	rcu_read_lock_bh();
 	t = rcu_dereference_bh(h->table);
-	atomic_inc(&t->uref);
 	rcu_read_unlock_bh();
 	numof_locks = ahash_numof_locks(t->htable_bits);
 	r = gc->region++;
@@ -707,15 +756,9 @@ mtype_gc(struct work_struct *work)
 	if (next_run < HZ/10)
 		next_run = HZ/10;
 
-	spin_lock_bh(&gc->lock);
-	if (!t->resizing)
-		mtype_gc_do(set, h, t, r);
-	spin_unlock_bh(&gc->lock);
-
-	if (atomic_dec_and_test(&t->uref) && t->resizing) {
-		pr_debug("Table destroy after resize by expire: %p\n", t);
-		mtype_ahash_destroy(set, t, false);
-	}
+	mtype_gc_do(set, h, t, r);
+	atomic64_inc(&h->resize_seq);
+	read_unlock_bh(&h->resize_lock);
 
 	queue_delayed_work(system_power_efficient_wq, &gc->dwork, next_run);
 
@@ -737,16 +780,9 @@ mtype_cancel_gc(struct ip_set *set)
 		disable_delayed_work_sync(&h->gc.dwork);
 }
 
-static int
-mtype_add(struct ip_set *set, void *value, const struct ip_set_ext *ext,
-	  struct ip_set_ext *mext, u32 flags);
-static int
-mtype_del(struct ip_set *set, void *value, const struct ip_set_ext *ext,
-	  struct ip_set_ext *mext, u32 flags);
-
 /* Resize a hash: create a new hash table with doubling the hashsize
- * and inserting the elements to it. Repeat until we succeed or
- * fail due to memory pressures.
+ * and inserting the elements to it. Failed snapshots own only private
+ * extension clones. Bound conflicts instead of draining an unbounded queue.
  */
 static int
 mtype_resize(struct ip_set *set, bool retried)
@@ -762,10 +798,13 @@ mtype_resize(struct ip_set *set, bool retried)
 	struct mtype_elem *data;
 	struct mtype_elem *d;
 	struct hbucket *n, *m;
-	struct list_head *l, *lt;
-	struct mtype_resize_ad *x;
 	u32 i, j, r, nr, key;
+	u64 seq;
+	unsigned int conflicts = 0;
 	int ret;
+
+	if (unlikely(!mtype_ext_clone_supported(set)))
+		return -EOPNOTSUPP;
 
 #ifdef IP_SET_HASH_WITH_NETS
 	tmp = kmalloc(dsize, GFP_KERNEL);
@@ -775,14 +814,15 @@ mtype_resize(struct ip_set *set, bool retried)
 	orig = ipset_dereference_bh_nfnl(h->table);
 	htable_bits = orig->htable_bits;
 
-retry:
-	ret = 0;
+grow:
 	htable_bits++;
 	if (!htable_bits)
 		goto hbwarn;
 	hsize = htable_size(htable_bits);
 	if (!hsize)
 		goto hbwarn;
+retry:
+	ret = 0;
 	t = ip_set_alloc(hsize);
 	if (!t) {
 		ret = -ENOMEM;
@@ -796,23 +836,19 @@ retry:
 	}
 	t->htable_bits = htable_bits;
 	t->maxelem = h->maxelem / ahash_numof_locks(htable_bits);
-	INIT_LIST_HEAD(&t->ad);
+	atomic_set(&t->uref, 1);
 	for (i = 0; i < ahash_numof_locks(htable_bits); i++)
 		spin_lock_init(&t->hregion[i].lock);
 
-	/* There can't be another parallel resizing,
-	 * but dumping and kernel side add/del are possible
+	/* A writer records completion before releasing resize_lock. The
+	 * final write lock waits for in-flight writers, including ones
+	 * which selected the source table before the first region copy.
 	 */
-	orig = ipset_dereference_bh_nfnl(h->table);
-	atomic_inc(&orig->uref);
-	spin_lock_bh(&h->gc.lock);
-	orig->resizing = true;
-	spin_unlock_bh(&h->gc.lock);
+	seq = atomic64_read_acquire(&h->resize_seq);
 	pr_debug("attempt to resize set %s from %u to %u, t %p\n",
 		 set->name, orig->htable_bits, htable_bits, orig);
 	for (r = 0; r < ahash_numof_locks(orig->htable_bits); r++) {
-		/* Expire may replace a hbucket with another one */
-		rcu_read_lock_bh();
+		spin_lock_bh(&orig->hregion[r].lock);
 		for (i = ahash_bucket_start(r, orig->htable_bits);
 		     i < ahash_bucket_end(r, orig->htable_bits); i++) {
 			n = __ipset_dereference(hbucket(orig, i));
@@ -823,8 +859,10 @@ retry:
 				if (!test_bit_acquire(j, n->used))
 					continue;
 				data = ahash_data(n, j, dsize);
-				if (SET_ELEM_EXPIRED(set, data))
-					continue;
+				/* Keep expired entries too: the new table takes
+				 * ownership of every used entry's extensions.
+				 * GC can reclaim them after publication.
+				 */
 #ifdef IP_SET_HASH_WITH_NETS
 				/* We have readers running parallel with us,
 				 * so the live data cannot be modified.
@@ -877,6 +915,10 @@ retry:
 				}
 				d = ahash_data(m, m->pos, dsize);
 				memcpy(d, data, dsize);
+				ret = mtype_ext_clone(set, d, data,
+						      &orig->hregion[r].lock);
+				if (ret < 0)
+					goto cleanup;
 				set_bit(m->pos++, m->used);
 				t->hregion[nr].elements++;
 #ifdef IP_SET_HASH_WITH_NETS
@@ -884,36 +926,35 @@ retry:
 #endif
 			}
 		}
-		rcu_read_unlock_bh();
+		spin_unlock_bh(&orig->hregion[r].lock);
+		cond_resched();
 	}
 
-	/* There can't be any other writer. */
-	rcu_assign_pointer(h->table, t);
-
-	/* Give time to other readers of the set */
-	synchronize_rcu();
-
-	pr_debug("set %s resized from %u (%p) to %u (%p)\n", set->name,
-		 orig->htable_bits, orig, t->htable_bits, t);
-	/* Add/delete elements processed by the SET target during resize.
-	 * Kernel-side add cannot trigger a resize and userspace actions
-	 * are serialized by the mutex.
+	/* No source writer may finish between validation and publication.
+	 * Writers selecting a table after this point select the new one.
 	 */
-	list_for_each_safe(l, lt, &orig->ad) {
-		x = list_entry(l, struct mtype_resize_ad, list);
-		if (x->ad == IPSET_ADD) {
-			mtype_add(set, &x->d, &x->ext, &x->mext, x->flags);
-		} else {
-			mtype_del(set, &x->d, NULL, NULL, 0);
+	write_lock_bh(&h->resize_lock);
+	if (atomic64_read(&h->resize_seq) != seq) {
+		write_unlock_bh(&h->resize_lock);
+		mtype_ahash_destroy(set, t, true);
+		if (++conflicts < AHASH_RESIZE_RETRIES) {
+			cond_resched();
+			goto retry;
 		}
-		list_del(l);
-		kfree(l);
+		ret = -EBUSY;
+		goto out;
 	}
-	/* If there's nobody else using the table, destroy it */
-	if (atomic_dec_and_test(&orig->uref)) {
-		pr_debug("Table destroy by resize %p\n", orig);
-		mtype_ahash_destroy(set, orig, false);
-	}
+	rcu_assign_pointer(h->table, t);
+	write_unlock_bh(&h->resize_lock);
+
+	/* Readers may still be using the old buckets. Drop its current-table
+	 * ownership only after they finish; dumps hold separate references.
+	 * Extensions are private to each table, so the last reference destroys
+	 * both retired buckets and their original extension allocations.
+	 */
+	synchronize_rcu();
+	if (atomic_dec_and_test(&orig->uref))
+		mtype_ahash_destroy(set, orig, true);
 
 out:
 #ifdef IP_SET_HASH_WITH_NETS
@@ -922,25 +963,13 @@ out:
 	return ret;
 
 cleanup:
-	rcu_read_unlock_bh();
-	spin_lock_bh(&h->gc.lock);
-	orig->resizing = false;
-	spin_unlock_bh(&h->gc.lock);
-	/* Make sure parallel readers see that orig->resizing is false
-	 * before we decrement uref */
-	synchronize_rcu();
-	atomic_dec(&orig->uref);
-	mtype_ahash_destroy(set, t, false);
-	if (ret == -EAGAIN)
-		goto retry;
-
-	/* Cleanup the backlog of ADD/DEL elements */
-	spin_lock_bh(&set->lock);
-	list_for_each_safe(l, lt, &orig->ad) {
-		list_del(l);
-		kfree(l);
+	spin_unlock_bh(&orig->hregion[r].lock);
+	/* The draft owns only its cloned extensions. */
+	mtype_ahash_destroy(set, t, true);
+	if (ret == -EAGAIN) {
+		cond_resched();
+		goto grow;
 	}
-	spin_unlock_bh(&set->lock);
 	goto out;
 
 hbwarn:
@@ -999,11 +1028,11 @@ mtype_add(struct ip_set *set, void *value, const struct ip_set_ext *ext,
 	u32 r, key, multi = 0, elements, maxelem;
 	u8 npos = 0;
 
+	read_lock_bh(&h->resize_lock);
 	rcu_read_lock_bh();
 	t = rcu_dereference_bh(h->table);
 	key = HKEY(value, h->initval, t->htable_bits);
 	r = ahash_region(key);
-	atomic_inc(&t->uref);
 	rcu_read_unlock_bh();
 	elements = t->hregion[r].elements;
 	maxelem = t->maxelem;
@@ -1143,23 +1172,6 @@ overwrite_extensions:
 	ret = 0;
 resize:
 	spin_unlock_bh(&t->hregion[r].lock);
-	if (t->resizing && ext && ext->target) {
-		/* Resize is in process and kernel side add, save values */
-		struct mtype_resize_ad *x;
-
-		x = kzalloc_obj(struct mtype_resize_ad, GFP_ATOMIC);
-		if (!x)
-			/* Don't bother */
-			goto out;
-		x->ad = IPSET_ADD;
-		memcpy(&x->d, value, sizeof(struct mtype_elem));
-		memcpy(&x->ext, ext, sizeof(struct ip_set_ext));
-		memcpy(&x->mext, mext, sizeof(struct ip_set_ext));
-		x->flags = flags;
-		spin_lock_bh(&set->lock);
-		list_add_tail(&x->list, &t->ad);
-		spin_unlock_bh(&set->lock);
-	}
 	goto out;
 
 set_full:
@@ -1170,10 +1182,8 @@ set_full:
 unlock:
 	spin_unlock_bh(&t->hregion[r].lock);
 out:
-	if (atomic_dec_and_test(&t->uref) && t->resizing) {
-		pr_debug("Table destroy after resize by add: %p\n", t);
-		mtype_ahash_destroy(set, t, false);
-	}
+	atomic64_inc(&h->resize_seq);
+	read_unlock_bh(&h->resize_lock);
 	return ret;
 }
 
@@ -1188,7 +1198,6 @@ mtype_del(struct ip_set *set, void *value, const struct ip_set_ext *ext,
 	const struct mtype_elem *d = value;
 	struct mtype_elem *data;
 	struct hbucket *n;
-	struct mtype_resize_ad *x = NULL;
 	int i, j, k, r, ret = -IPSET_ERR_EXIST;
 	u32 key, multi = 0;
 	size_t dsize = set->dsize;
@@ -1197,11 +1206,11 @@ mtype_del(struct ip_set *set, void *value, const struct ip_set_ext *ext,
 	/* Userspace add and resize is excluded by the mutex.
 	 * Kernespace add does not trigger resize.
 	 */
+	read_lock_bh(&h->resize_lock);
 	rcu_read_lock_bh();
 	t = rcu_dereference_bh(h->table);
 	key = HKEY(value, h->initval, t->htable_bits);
 	r = ahash_region(key);
-	atomic_inc(&t->uref);
 	rcu_read_unlock_bh();
 
 	spin_lock_bh(&t->hregion[r].lock);
@@ -1229,18 +1238,6 @@ mtype_del(struct ip_set *set, void *value, const struct ip_set_ext *ext,
 		mtype_del_cidr_all(set, h, d);
 		ip_set_ext_destroy(set, data);
 
-		if (t->resizing && ext && ext->target) {
-			/* Resize is in process and kernel side del,
-			 * save values
-			 */
-			x = kzalloc_obj(struct mtype_resize_ad, GFP_ATOMIC);
-			if (x) {
-				x->ad = IPSET_DEL;
-				memcpy(&x->d, value,
-				       sizeof(struct mtype_elem));
-				x->flags = flags;
-			}
-		}
 		for (; i < pos; i++) {
 			if (!test_bit(i, n->used))
 				k++;
@@ -1275,15 +1272,8 @@ mtype_del(struct ip_set *set, void *value, const struct ip_set_ext *ext,
 
 out:
 	spin_unlock_bh(&t->hregion[r].lock);
-	if (x) {
-		spin_lock_bh(&set->lock);
-		list_add(&x->list, &t->ad);
-		spin_unlock_bh(&set->lock);
-	}
-	if (atomic_dec_and_test(&t->uref) && t->resizing) {
-		pr_debug("Table destroy after resize by del: %p\n", t);
-		mtype_ahash_destroy(set, t, false);
-	}
+	atomic64_inc(&h->resize_seq);
+	read_unlock_bh(&h->resize_lock);
 	return ret;
 }
 
@@ -1535,10 +1525,10 @@ mtype_uref(struct ip_set *set, struct netlink_callback *cb, bool start)
 		rcu_read_unlock_bh();
 	} else if (cb->args[IPSET_CB_PRIVATE]) {
 		t = (struct htable *)cb->args[IPSET_CB_PRIVATE];
-		if (atomic_dec_and_test(&t->uref) && t->resizing) {
+		if (atomic_dec_and_test(&t->uref)) {
 			pr_debug("Table destroy after resize "
 				 " by dump: %p\n", t);
-			mtype_ahash_destroy(set, t, false);
+			mtype_ahash_destroy(set, t, true);
 		}
 		cb->args[IPSET_CB_PRIVATE] = 0;
 	}
@@ -1789,7 +1779,8 @@ IPSET_TOKEN(HTYPE, _create)(struct net *net, struct ip_set *set,
 	}
 #endif
 	h->gc.set = set;
-	spin_lock_init(&h->gc.lock);
+	rwlock_init(&h->resize_lock);
+	atomic64_set(&h->resize_seq, 0);
 	for (i = 0; i < ahash_numof_locks(hbits); i++)
 		spin_lock_init(&t->hregion[i].lock);
 	h->maxelem = maxelem;
@@ -1816,7 +1807,7 @@ IPSET_TOKEN(HTYPE, _create)(struct net *net, struct ip_set *set,
 	}
 	t->htable_bits = hbits;
 	t->maxelem = h->maxelem / ahash_numof_locks(hbits);
-	INIT_LIST_HEAD(&t->ad);
+	atomic_set(&t->uref, 1);
 	RCU_INIT_POINTER(h->table, t);
 	set->data = h;
 
