@@ -456,7 +456,8 @@ au1000_adjust_link(struct net_device *dev)
 		/* link state changed */
 
 		if (!phydev->link) {
-			/* link went down */
+			/* Stop the MAC before the PHY can remove its clocks. */
+			au1000_hard_stop(dev);
 			aup->old_speed = 0;
 			aup->old_duplex = -1;
 		}
@@ -688,13 +689,11 @@ static const struct ethtool_ops au1000_ethtool_ops = {
 static u32 au1000_rx_mode(struct net_device *dev, u32 reg);
 
 /*
- * Initialize the interface.
+ * Reset and initialize the interface.
  *
- * When the device powers up, the clocks are disabled and the
- * mac is in reset state.  When the interface is closed, we
- * do the same -- reset the device and disable the clocks to
- * conserve power. Thus, whenever au1000_init() is called,
- * the device should already be in reset state.
+ * The PHY must be resumed before initializing the MAC. MDIO accesses
+ * during PHY resume may have already enabled the MAC clocks and released
+ * reset; au1000_enable_mac(dev, 1) forces a reset regardless of that state.
  */
 static int au1000_init(struct net_device *dev)
 {
@@ -729,12 +728,12 @@ static int au1000_init(struct net_device *dev)
 
 	wmb(); /* drain writebuffer */
 
-	control = MAC_RX_ENABLE | MAC_TX_ENABLE;
+	control = 0;
 #ifndef CONFIG_CPU_LITTLE_ENDIAN
 	control |= MAC_BIG_ENDIAN;
 #endif
 	if (dev->phydev) {
-		if (dev->phydev->link && (DUPLEX_FULL == dev->phydev->duplex))
+		if (aup->old_link && aup->old_duplex == DUPLEX_FULL)
 			control |= MAC_FULL_DUPLEX;
 		else
 			control |= MAC_DISABLE_RX_OWN;
@@ -743,6 +742,10 @@ static int au1000_init(struct net_device *dev)
 	}
 
 	control = au1000_rx_mode(dev, control);
+
+	/* Only use link state acknowledged by au1000_adjust_link(). */
+	if (!dev->phydev || aup->old_link)
+		control |= MAC_RX_ENABLE | MAC_TX_ENABLE;
 
 	writel(control, &aup->mac->control);
 	writel(0x8100, &aup->mac->vlan1_tag); /* activate vlan support */
@@ -918,6 +921,7 @@ static irqreturn_t au1000_interrupt(int irq, void *dev_id)
 
 static int au1000_open(struct net_device *dev)
 {
+	unsigned long flags;
 	int retval;
 	struct au1000_private *aup = netdev_priv(dev);
 
@@ -930,12 +934,20 @@ static int au1000_open(struct net_device *dev)
 		return retval;
 	}
 
-	retval = au1000_init(dev);
-	if (retval) {
-		netdev_err(dev, "error in au1000_init\n");
-		free_irq(dev->irq, dev);
-		return retval;
+	spin_lock_irqsave(&aup->lock, flags);
+	aup->old_link = 0;
+	aup->old_speed = 0;
+	aup->old_duplex = -1;
+	spin_unlock_irqrestore(&aup->lock, flags);
+
+	/* Restore the MII clocks without starting the PHY state machine. */
+	if (dev->phydev) {
+		retval = phy_resume(dev->phydev);
+		if (retval)
+			goto err_reset;
 	}
+
+	au1000_init(dev);
 
 	if (dev->phydev)
 		phy_start(dev->phydev);
@@ -945,6 +957,11 @@ static int au1000_open(struct net_device *dev)
 	netif_dbg(aup, drv, dev, "open: Initialization done.\n");
 
 	return 0;
+
+err_reset:
+	au1000_reset_mac(dev);
+	free_irq(dev->irq, dev);
+	return retval;
 }
 
 static int au1000_close(struct net_device *dev)
@@ -1306,8 +1323,8 @@ static int au1000_probe(struct platform_device *pdev)
 	dev->watchdog_timeo = ETH_TX_TIMEOUT;
 
 	/*
-	 * The boot code uses the ethernet controller, so reset it to start
-	 * fresh.  au1000_init() expects that the device is in reset state.
+	 * The boot code uses the ethernet controller, so stop it and gate
+	 * its clock until the driver needs it.
 	 */
 	au1000_reset_mac(dev);
 
