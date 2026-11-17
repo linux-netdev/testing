@@ -38,6 +38,7 @@ TEST_PROGS := \
 	nft_offload.sh \
 	nft_queue.sh \
 	nft_synproxy.sh \
+	nft_table_dormant_adopt.sh \
 	nft_tproxy_tcp.sh \
 	nft_tproxy_udp.sh \
 	nft_zones_many.sh \
