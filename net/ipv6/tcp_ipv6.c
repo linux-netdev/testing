@@ -447,7 +447,8 @@ static int tcp_v6_err(struct sk_buff *skb, struct inet6_skb_parm *opt,
 	seq = ntohl(th->seq);
 	fatal = icmpv6_err_convert(type, code, &err);
 	if (sk->sk_state == TCP_NEW_SYN_RECV) {
-		tcp_req_err(sk, seq, fatal);
+		tcp_req_err(sk, seq, type == ICMPV6_PARAMPROB ?
+			    code == ICMPV6_UNK_NEXTHDR : fatal);
 		return 0;
 	}
 
