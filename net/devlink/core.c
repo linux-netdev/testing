@@ -532,6 +532,30 @@ struct devlink *devlink_alloc_ns(const struct devlink_ops *ops,
 EXPORT_SYMBOL_GPL(devlink_alloc_ns);
 
 /**
+ * devlink_alloc_drv - Allocate new devlink instance resources for given driver
+ * @ops: ops
+ * @priv_size: size of user private data
+ * @dev: parent device
+ * @drv: driver that owns the instance
+ *
+ * Variant of devlink_alloc() for a driver that creates an instance for
+ * a device bound to another (or no) driver, e.g. a PF driver for its VFs.
+ *
+ * @drv must not be NULL and must outlive the instance, only a pointer to it
+ * is kept. Operations that take the device lock, like reload, lock @dev,
+ * not a device bound to @drv.
+ *
+ * Return: new devlink instance, NULL on failure.
+ */
+struct devlink *devlink_alloc_drv(const struct devlink_ops *ops,
+				  size_t priv_size, struct device *dev,
+				  const struct device_driver *drv)
+{
+	return __devlink_alloc(ops, priv_size, &init_net, dev, drv);
+}
+EXPORT_SYMBOL_GPL(devlink_alloc_drv);
+
+/**
  *	devlink_free - Free devlink instance resources
  *
  *	@devlink: devlink
