@@ -145,6 +145,7 @@ static int tcp_v6_connect(struct sock *sk, struct sockaddr_unsized *uaddr,
 	struct dst_entry *dst;
 	struct flowi6 *fl6;
 	int addr_type;
+	u32 cookie;
 	int err;
 
 	if (addr_len < SIN6_LEN_RFC2133)
@@ -288,7 +289,7 @@ static int tcp_v6_connect(struct sock *sk, struct sockaddr_unsized *uaddr,
 	 */
 	ip6_ecmp_set_mp_hash(net, fl6, sk->sk_txhash);
 
-	dst = ip6_dst_lookup_flow(net, sk, fl6, final_p);
+	dst = ip6_dst_lookup_flow_cookie(net, sk, fl6, final_p, &cookie);
 	if (IS_ERR(dst)) {
 		err = PTR_ERR(dst);
 		goto failure;
@@ -312,7 +313,7 @@ static int tcp_v6_connect(struct sock *sk, struct sockaddr_unsized *uaddr,
 	inet->inet_rcv_saddr = LOOPBACK4_IPV6;
 
 	sk->sk_gso_type = SKB_GSO_TCPV6;
-	ip6_dst_store(sk, dst, false, false);
+	ip6_dst_store_cookie(sk, dst, cookie, false, false);
 
 	icsk->icsk_ext_hdr_len = 0;
 	if (opt)
