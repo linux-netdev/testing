@@ -1062,10 +1062,23 @@ int ip6_dst_lookup(struct net *net, struct sock *sk, struct dst_entry **dst,
 #if IS_ENABLED(CONFIG_IPV6)
 struct dst_entry *ip6_dst_lookup_flow(struct net *net, const struct sock *sk, struct flowi6 *fl6,
 				      const struct in6_addr *final_dst);
+struct dst_entry *ip6_dst_lookup_flow_cookie(struct net *net,
+					     const struct sock *sk,
+					     struct flowi6 *fl6,
+					     const struct in6_addr *final_dst,
+					     u32 *cookie);
 #else
 static inline struct dst_entry *ip6_dst_lookup_flow(struct net *net, const struct sock *sk,
 						    struct flowi6 *fl6,
 						    const struct in6_addr *final_dst)
+{
+	return ERR_PTR(-EAFNOSUPPORT);
+}
+
+static inline struct dst_entry *
+ip6_dst_lookup_flow_cookie(struct net *net, const struct sock *sk,
+			   struct flowi6 *fl6, const struct in6_addr *final_dst,
+			   u32 *cookie)
 {
 	return ERR_PTR(-EAFNOSUPPORT);
 }
