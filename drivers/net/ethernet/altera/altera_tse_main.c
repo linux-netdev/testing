@@ -1461,8 +1461,8 @@ static void altera_tse_remove(struct platform_device *pdev)
 	struct altera_tse_private *priv = netdev_priv(ndev);
 
 	platform_set_drvdata(pdev, NULL);
-	altera_tse_mdio_destroy(ndev);
 	unregister_netdev(ndev);
+	altera_tse_mdio_destroy(ndev);
 	phylink_destroy(priv->phylink);
 	lynx_pcs_destroy(priv->pcs);
 
