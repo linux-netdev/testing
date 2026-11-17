@@ -3892,6 +3892,9 @@ alloc_branch_attr(struct mlx5e_tc_flow *flow,
 		attr->action |= MLX5_FLOW_CONTEXT_ACTION_DROP;
 		break;
 	case FLOW_ACTION_ACCEPT:
+		attr->action |= MLX5_FLOW_CONTEXT_ACTION_FWD_DEST;
+		attr->flags |= MLX5_ATTR_FLAG_ACCEPT;
+		break;
 	case FLOW_ACTION_PIPE:
 		err = set_branch_dest_ft(flow->priv, attr);
 		if (err)
