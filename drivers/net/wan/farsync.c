@@ -2325,7 +2325,6 @@ static const struct net_device_ops fst_ops = {
 static int
 fst_add_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 {
-	static int no_of_cards_added;
 	struct fst_card_info *card;
 	int err = 0;
 	int i;
@@ -2466,13 +2465,17 @@ fst_add_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 	pci_set_drvdata(pdev, card);
 
 	/* Remainder of card setup */
-	if (no_of_cards_added >= FST_MAX_CARDS) {
+	for (i = 0; i < FST_MAX_CARDS; i++) {
+		if (!fst_card_array[i])
+			break;
+	}
+	if (i == FST_MAX_CARDS) {
 		pr_err("FarSync: too many cards\n");
 		err = -ENOMEM;
 		goto card_array_fail;
 	}
-	fst_card_array[no_of_cards_added] = card;
-	card->card_no = no_of_cards_added++;	/* Record instance and bump it */
+	fst_card_array[i] = card;
+	card->card_no = i;
 	err = fst_init_card(card);
 	if (err)
 		goto init_card_fail;
