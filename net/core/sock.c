@@ -2534,6 +2534,10 @@ struct sock *sk_clone(const struct sock *sk, const gfp_t priority,
 
 	sk_node_init(&newsk->sk_node);
 	sock_lock_init(newsk);
+	/* sock_copy() copies the parent's sk_peer_lock verbatim, including a
+	 * held state, so the clone must start with a fresh lock.
+	 */
+	spin_lock_init(&newsk->sk_peer_lock);
 
 	if (lock)
 		bh_lock_sock(newsk);
