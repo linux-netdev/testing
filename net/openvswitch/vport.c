@@ -53,7 +53,10 @@ void ovs_vport_exit(void)
 
 static struct hlist_head *hash_bucket(const struct net *net, const char *name)
 {
-	unsigned int hash = jhash(name, strlen(name), (unsigned long) net);
+	u32 seed = jhash_2words(lower_32_bits(net->net_cookie),
+				upper_32_bits(net->net_cookie), 0);
+	unsigned int hash = jhash(name, strlen(name), seed);
+
 	return &dev_table[hash & (VPORT_HASH_BUCKETS - 1)];
 }
 
