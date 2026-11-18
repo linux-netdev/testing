@@ -192,7 +192,7 @@ static void mana_hwc_init_event_handler(void *ctx, struct gdma_queue *q_self,
 
 		switch (type) {
 		case HWC_DATA_CFG_HWC_TIMEOUT:
-			hwc->hwc_timeout = val;
+			WRITE_ONCE(hwc->hwc_timeout, val);
 			break;
 
 		case HWC_DATA_HW_LINK_CONNECT:
@@ -816,10 +816,16 @@ void mana_hwc_destroy_channel(struct gdma_context *gc)
 		return;
 
 	/* gc->max_num_cqs is set in mana_hwc_init_event_handler(). If it's
-	 * non-zero, the HWC worked and we should tear down the HWC here.
+	 * non-zero, the HWC worked and we should tear down the HWC here,
+	 * unless device reset has already marked it dead: the device then
+	 * no longer holds the HWC state and the handshake would only spin.
 	 */
 	if (gc->max_num_cqs > 0) {
-		mana_smc_teardown_hwc(&gc->shm_channel, false);
+		if (READ_ONCE(hwc->hwc_dead))
+			dev_warn(hwc->dev,
+				 "HWC unavailable, skip SHM teardown handshake\n");
+		else
+			mana_smc_teardown_hwc(&gc->shm_channel, false);
 		WRITE_ONCE(gc->max_num_cqs, 0);
 	}
 
@@ -867,8 +873,16 @@ int mana_hwc_send_request(struct hw_channel_context *hwc, u32 req_len,
 	u32 dest_vrcq;
 	u32 dest_vrq;
 	u32 command;
+	u32 timeout;
 	u16 msg_id;
 	int err;
+
+	/* Fail fast before taking the HWC slot. After a device reset, requests
+	 * already holding slots will release them once their own timeout
+	 * expires.
+	 */
+	if (READ_ONCE(hwc->hwc_dead))
+		return -ETIMEDOUT;
 
 	mana_hwc_get_msg_index(hwc, &msg_id);
 
@@ -902,21 +916,31 @@ int mana_hwc_send_request(struct hw_channel_context *hwc, u32 req_len,
 	dest_vrq = hwc->dest_vrq_id;
 	dest_vrcq = hwc->dest_vrcq_id;
 
+	/* If the HWC is unavailable after device reset, do not post the WQE:
+	 * the hardware cannot respond, so fail fast instead of waiting for
+	 * the full timeout.
+	 */
+	if (READ_ONCE(hwc->hwc_dead)) {
+		err = -ETIMEDOUT;
+		goto out;
+	}
+
 	err = mana_hwc_post_tx_wqe(txq, tx_wr, dest_vrq, dest_vrcq, false);
 	if (err) {
 		dev_err(hwc->dev, "HWC: Failed to post send WQE: %d\n", err);
 		goto out;
 	}
 
+	timeout = READ_ONCE(hwc->hwc_timeout);
 	if (!wait_for_completion_timeout(&ctx->comp_event,
-					 (msecs_to_jiffies(hwc->hwc_timeout)))) {
-		if (hwc->hwc_timeout != 0)
+					 (msecs_to_jiffies(timeout)))) {
+		if (timeout)
 			dev_err(hwc->dev, "Command 0x%x timed out: %u ms\n",
-				command, hwc->hwc_timeout);
+				command, timeout);
 
 		/* Reduce further waiting if HWC no response */
-		if (hwc->hwc_timeout > 1)
-			hwc->hwc_timeout = 1;
+		if (timeout > 1)
+			cmpxchg(&hwc->hwc_timeout, timeout, 1);
 
 		err = -ETIMEDOUT;
 		goto out;

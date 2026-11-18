@@ -2086,7 +2086,9 @@ static void mana_poll_tx_cq(struct mana_cq *cq)
 	if (atomic_sub_return(pkt_transmitted, &txq->pending_sends) < 0)
 		WARN_ON_ONCE(1);
 
-	/* Feed DIM with the completion rate observed here, in NAPI context. */
+	/* Feed DIM with the completion rate observed here, in NAPI context
+	 * or in the TX drain of mana_dealloc_queues() after NAPI is disabled.
+	 */
 	cq->tx_dim_pkts += pkt_transmitted;
 	cq->tx_dim_bytes += tx_bytes;
 
@@ -2605,6 +2607,8 @@ static void mana_update_tx_dim(struct mana_cq *cq)
 	/* cq->tx_dim_pkts/bytes are accumulated in mana_poll_tx_cq(), in the
 	 * same NAPI context as this read, so they track the hardware
 	 * completion rate and need no u64_stats_sync protection.
+	 * The TX drain in mana_dealloc_queues() also adds to them,
+	 * but only after NAPI is disabled, so not concurrently with this read.
 	 */
 	dim_update_sample(READ_ONCE(cq->dim_event_ctr), cq->tx_dim_pkts,
 			  cq->tx_dim_bytes, &dim_sample);
@@ -2711,16 +2715,17 @@ static void mana_destroy_txq(struct mana_port_context *apc)
 		apc->tx_qp[i]->mana_tx_debugfs = NULL;
 
 		napi = &apc->tx_qp[i]->tx_cq.napi;
-		if (apc->tx_qp[i]->txq.napi_initialized) {
+		if (apc->tx_qp[i]->txq.napi_initialized &&
+		    !apc->tx_qp[i]->txq.napi_disabled) {
 			napi_synchronize(napi);
 			napi_disable_locked(napi);
 			cancel_work_sync(&apc->tx_qp[i]->tx_cq.dim.work);
 		}
 
-		/* Forget the SKBs freed without being completed after a drain
-		 * timeout, now that NAPI can't complete any. Doing it here also
-		 * covers the queues that a lower channel count won't recreate,
-		 * which could otherwise stay stopped.
+		/* Forget the SKBs freed in mana_dealloc_queues() without
+		 * completion, now that NAPI can't complete any. Doing it
+		 * here also covers the queues that a lower channel count
+		 * won't recreate, which could otherwise stay stopped.
 		 */
 		netdev_tx_reset_queue(apc->tx_qp[i]->txq.net_txq);
 
@@ -2737,6 +2742,7 @@ static void mana_destroy_txq(struct mana_port_context *apc)
 			mana_gd_detach_cq(gc, apc->tx_qp[i]->tx_cq.gdma_cq);
 			netif_napi_del_locked(napi);
 			apc->tx_qp[i]->txq.napi_initialized = false;
+			apc->tx_qp[i]->txq.napi_disabled = false;
 		}
 
 		mana_deinit_cq(apc, &apc->tx_qp[i]->tx_cq);
@@ -3777,18 +3783,23 @@ int mana_attach(struct net_device *ndev)
 	return 0;
 }
 
+#define MANA_TX_DRAIN_RETRIES	3
+
 static int mana_dealloc_queues(struct net_device *ndev)
 {
 	struct mana_port_context *apc = netdev_priv(ndev);
-	unsigned long timeout = jiffies + 120 * HZ;
 	struct gdma_dev *gd = apc->ac->gdma_dev;
+	struct hw_channel_context *hwc;
+	int flr_pending, i, err, retry;
+	bool trigger_flr = false;
 	struct mana_txq *txq;
 	struct sk_buff *skb;
-	int i, err;
-	u32 tsleep;
+	u32 flr_txq_id = 0;
 
 	if (apc->port_is_up)
 		return -EINVAL;
+
+	hwc = gd->gdma_context->hwc.driver_data;
 
 	if (apc->rxqs)
 		mana_chn_setxdp(apc, NULL);
@@ -3802,31 +3813,79 @@ static int mana_dealloc_queues(struct net_device *ndev)
 	 * to false, but it doesn't matter since mana_start_xmit() drops any
 	 * new packets due to apc->port_is_up being false.
 	 *
-	 * Drain all the in-flight TX packets.
-	 * A timeout of 120 seconds for all the queues is used.
-	 * This will break the while loop when h/w is not responding.
-	 * This value of 120 has been decided here considering max
-	 * number of queues.
+	 * Drain the in-flight TX completions for each queue. TX is already
+	 * stopped, so pending_sends can no longer grow. For each queue,
+	 * disable NAPI so it cannot run at the same time as this drain,
+	 * then poll its CQ for up to 300 ms. If sends are still missing,
+	 * the hardware is not responding: reset the device and mark the
+	 * HWC dead so that later HWC commands fail fast.
 	 */
 
 	if (apc->tx_qp) {
 		for (i = 0; i < apc->num_queues; i++) {
+			struct napi_struct *napi;
+			struct mana_cq *tx_cq;
+			int pending;
+
+			tx_cq = &apc->tx_qp[i]->tx_cq;
 			txq = &apc->tx_qp[i]->txq;
-			tsleep = 1000;
-			while (atomic_read(&txq->pending_sends) > 0 &&
-			       time_before(jiffies, timeout)) {
-				usleep_range(tsleep, tsleep + 1000);
-				tsleep <<= 1;
-			}
-			if (atomic_read(&txq->pending_sends)) {
-				err = mana_gd_dev_reset(gd->gdma_context);
-				if (err) {
-					netdev_err(ndev, "device reset failed %d with %d pkts pending in txq %u\n",
-						   err,
-					    atomic_read(&txq->pending_sends),
-					    txq->gdma_txq_id);
+			napi = &tx_cq->napi;
+
+			if (txq->napi_initialized) {
+				/* Stop the NAPI poll so it cannot run
+				 * concurrently with the synchronous drain.
+				 */
+				napi_synchronize(napi);
+				napi_disable_locked(napi);
+				cancel_work_sync(&tx_cq->dim.work);
+				txq->napi_disabled = true;
+
+				/* Poll the CQ until no sends are outstanding,
+				 * sleeping 100 ms between polls. Poll only
+				 * once if earlier queue was stuck or device
+				 * has already been reset.
+				 * A zero budget frees skbs via the non-NAPI
+				 * path, which is required outside softirq.
+				 */
+				tx_cq->budget = 0;
+				for (retry = 0; retry <= MANA_TX_DRAIN_RETRIES;
+				     retry++) {
+					do {
+						tx_cq->work_done = 0;
+						mana_poll_tx_cq(tx_cq);
+					} while (tx_cq->work_done);
+
+					if (!atomic_read(&txq->pending_sends) ||
+					    trigger_flr ||
+					    READ_ONCE(hwc->hwc_dead))
+						break;
+					if (retry < MANA_TX_DRAIN_RETRIES)
+						msleep(100);
 				}
-				break;
+			}
+
+			pending = atomic_read(&txq->pending_sends);
+
+			if (!trigger_flr && pending > 0) {
+				trigger_flr = true;
+				flr_txq_id = txq->gdma_txq_id;
+				flr_pending = pending;
+			}
+		}
+
+		if (trigger_flr && !READ_ONCE(hwc->hwc_dead)) {
+			/* Completions never arrived: the device is
+			 * unresponsive. Issue device reset and
+			 * mark the HWC dead so subsequent HWC commands
+			 * fail fast instead of each waiting the full
+			 * hwc_timeout.
+			 */
+			err = mana_gd_dev_reset(gd->gdma_context);
+			if (err) {
+				netdev_err(ndev, "device reset failed %d with %d pkts pending in txq %u\n",
+					   err, flr_pending, flr_txq_id);
+			} else {
+				WRITE_ONCE(hwc->hwc_dead, true);
 			}
 		}
 
@@ -3849,7 +3908,8 @@ static int mana_dealloc_queues(struct net_device *ndev)
 	if (err && mana_en_need_log(apc, err))
 		netdev_err(ndev, "Failed to disable vPort: %d\n", err);
 
-	mana_fence_rqs(apc);
+	if (!READ_ONCE(hwc->hwc_dead))
+		mana_fence_rqs(apc);
 
 	/* Even in err case, still need to cleanup the vPort */
 	mana_destroy_rxqs(apc);
