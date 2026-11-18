@@ -2494,6 +2494,11 @@ struct bnxt {
 	 * rather than being our own default placement.
 	 */
 	unsigned long		*ring_affinity_set;
+	/* Node of the first online CPU in the mask configured from
+	 * the outside, NUMA_NO_NODE if none. Written by the affinity
+	 * notifier, read locklessly by the allocation paths.
+	 */
+	int			*ring_nid;
 	int			max_irqs;
 	int			total_irqs;
 	int			ulp_num_msix_want;
