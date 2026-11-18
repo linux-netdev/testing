@@ -394,6 +394,10 @@ static void __bnxt_queue_sp_work(struct bnxt *bp)
 
 static void bnxt_queue_sp_work(struct bnxt *bp, unsigned int event)
 {
+	/* Make the data the event carries visible before the event bit,
+	 * pairs with test_and_clear_bit() in bnxt_sp_task().
+	 */
+	smp_mb__before_atomic();
 	set_bit(event, &bp->sp_event);
 	__bnxt_queue_sp_work(bp);
 }
