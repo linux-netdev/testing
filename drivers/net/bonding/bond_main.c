@@ -1963,13 +1963,13 @@ int bond_enslave(struct net_device *bond_dev, struct net_device *slave_dev,
 	 * ether type (eg ARPHRD_ETHER and ARPHRD_INFINIBAND) share the same bond
 	 */
 	if (!bond_has_slaves(bond)) {
+		if (slave_dev->type != ARPHRD_ETHER &&
+		    BOND_MODE(bond) == BOND_MODE_8023AD) {
+			SLAVE_NL_ERR(bond_dev, slave_dev, extack,
+				     "8023AD mode requires Ethernet devices");
+			return -EINVAL;
+		}
 		if (bond_dev->type != slave_dev->type) {
-			if (slave_dev->type != ARPHRD_ETHER &&
-			    BOND_MODE(bond) == BOND_MODE_8023AD) {
-				SLAVE_NL_ERR(bond_dev, slave_dev, extack,
-					     "8023AD mode requires Ethernet devices");
-				return -EINVAL;
-			}
 			slave_dbg(bond_dev, slave_dev, "change device type from %d to %d\n",
 				  bond_dev->type, slave_dev->type);
 
