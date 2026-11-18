@@ -189,9 +189,8 @@ static void gve_free_flow_rule_caches(struct gve_priv *priv)
 	struct gve_flow_rules_cache *flow_rules_cache = &priv->flow_rules_cache;
 
 	kvfree(flow_rules_cache->rule_ids_cache);
-	flow_rules_cache->rule_ids_cache = NULL;
 	kvfree(flow_rules_cache->rules_cache);
-	flow_rules_cache->rules_cache = NULL;
+	memset(flow_rules_cache, 0, sizeof(*flow_rules_cache));
 }
 
 static int gve_alloc_rss_config_cache(struct gve_priv *priv)
