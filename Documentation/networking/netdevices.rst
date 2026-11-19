@@ -460,6 +460,7 @@ values:
 * ``XDP_PACKET_HEADROOM`` (256 bytes) minus ``needed_headroom``, when the
   peer of a veth or netkit device has an XDP program
 * the headroom that the programs at tcx egress of the device declare
+* ``VETH_INFO_TX_EXTRA_HEADROOM`` of a veth device
 
 When the peer has an XDP program, locally generated UDP, raw and
 AF_PACKET packets and AF_XDP packets in copy mode have enough headroom
@@ -479,6 +480,10 @@ The tag of the attached program covers the whole tail call chain. Tags on
 tail call targets, freplace programs and programs at tcx ingress are
 ignored. Loading a program whose tag is above 512 or does not parse fails
 with ``-EINVAL``.
+
+``VETH_INFO_TX_EXTRA_HEADROOM`` is for headers that are pushed on another
+device, for example at TC egress of the uplink. It is set for both
+devices of a veth pair when the pair is created.
 
 NETDEV_INTERNAL symbol namespace
 ================================

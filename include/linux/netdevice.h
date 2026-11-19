@@ -1416,6 +1416,9 @@ struct netdev_net_notifier {
  *	appropriate rx headroom value allows avoiding skb head copy on
  *	forward. Setting a negative value resets the rx headroom to the
  *	default value.
+ * unsigned int (*ndo_get_tx_extra_headroom)(const struct net_device *dev);
+ *	Return the headroom that the device adds to tx_extra_headroom.
+ *	The caller must hold RTNL and be under RCU read context.
  * int (*ndo_bpf)(struct net_device *dev, struct netdev_bpf *bpf);
  *	This function is used to set or query state related to XDP on the
  *	netdevice and manage BPF offload. See definition of
@@ -1688,6 +1691,8 @@ struct net_device_ops {
 						       struct sk_buff *skb);
 	void			(*ndo_set_rx_headroom)(struct net_device *dev,
 						       int needed_headroom);
+	unsigned int		(*ndo_get_tx_extra_headroom)(
+					const struct net_device *dev);
 	int			(*ndo_bpf)(struct net_device *dev,
 					   struct netdev_bpf *bpf);
 	int			(*ndo_xdp_xmit)(struct net_device *dev, int n,

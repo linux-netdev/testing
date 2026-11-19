@@ -77,6 +77,7 @@ struct veth_priv {
 	struct bpf_prog		*_xdp_prog;
 	struct veth_rq		*rq;
 	unsigned int		requested_headroom;
+	unsigned int		tx_extra_headroom;
 	netdevice_tracker	peer_tracker;
 };
 
@@ -1548,6 +1549,13 @@ out:
 	rcu_read_unlock();
 }
 
+static unsigned int veth_get_tx_extra_headroom(const struct net_device *dev)
+{
+	const struct veth_priv *priv = netdev_priv(dev);
+
+	return priv->tx_extra_headroom;
+}
+
 static int veth_xdp_set(struct net_device *dev, struct bpf_prog *prog,
 			struct netlink_ext_ack *extack)
 {
@@ -1699,6 +1707,7 @@ static const struct net_device_ops veth_netdev_ops = {
 	.ndo_set_features	= veth_set_features,
 	.ndo_features_check	= passthru_features_check,
 	.ndo_set_rx_headroom	= veth_set_rx_headroom,
+	.ndo_get_tx_extra_headroom = veth_get_tx_extra_headroom,
 	.ndo_bpf		= veth_xdp,
 	.ndo_xdp_xmit		= veth_ndo_xdp_xmit,
 	.ndo_get_peer_dev	= veth_peer_dev,
@@ -1800,6 +1809,7 @@ static int veth_newlink(struct net_device *dev,
 	struct net *peer_net = rtnl_newlink_peer_net(params);
 	struct nlattr **data = params->data;
 	struct nlattr **tb = params->tb;
+	unsigned int tx_extra_headroom = 0;
 	int err;
 	struct net_device *peer;
 	struct veth_priv *priv;
@@ -1822,6 +1832,10 @@ static int veth_newlink(struct net_device *dev,
 		tbp = tb;
 	}
 
+	if (data && data[VETH_INFO_TX_EXTRA_HEADROOM])
+		tx_extra_headroom =
+			nla_get_uint(data[VETH_INFO_TX_EXTRA_HEADROOM]);
+
 	if (ifmp && tbp[IFLA_IFNAME]) {
 		nla_strscpy(ifname, tbp[IFLA_IFNAME], IFNAMSIZ);
 		name_assign_type = NET_NAME_USER;
@@ -1842,6 +1856,9 @@ static int veth_newlink(struct net_device *dev,
 		peer->ifindex = ifmp->ifi_index;
 
 	netif_inherit_tso_max(peer, dev);
+
+	priv = netdev_priv(peer);
+	priv->tx_extra_headroom = tx_extra_headroom;
 
 	err = veth_init_queues(peer, tbp);
 	if (err)
@@ -1876,6 +1893,9 @@ static int veth_newlink(struct net_device *dev,
 	else
 		snprintf(dev->name, IFNAMSIZ, DRV_NAME "%%d");
 
+	priv = netdev_priv(dev);
+	priv->tx_extra_headroom = tx_extra_headroom;
+
 	err = veth_init_queues(dev, tb);
 	if (err)
 		goto err_register_dev;
@@ -1897,6 +1917,8 @@ static int veth_newlink(struct net_device *dev,
 	priv = netdev_priv(peer);
 	rcu_assign_pointer(priv->peer, dev);
 	netdev_hold(dev, &priv->peer_tracker, GFP_KERNEL);
+
+	netdev_update_tx_extra_headroom(dev);
 
 	veth_disable_gro(dev);
 	/* update XDP supported features */
@@ -1940,8 +1962,28 @@ static void veth_dellink(struct net_device *dev, struct list_head *head)
 }
 
 static const struct nla_policy veth_policy[VETH_INFO_MAX + 1] = {
+	[VETH_INFO_UNSPEC]	= { .strict_start_type =
+				  VETH_INFO_TX_EXTRA_HEADROOM },
 	[VETH_INFO_PEER]	= { .len = sizeof(struct ifinfomsg) },
+	[VETH_INFO_TX_EXTRA_HEADROOM] =
+		NLA_POLICY_MAX(NLA_UINT, NETDEV_TX_EXTRA_HEADROOM_MAX),
 };
+
+static size_t veth_get_size(const struct net_device *dev)
+{
+	return nla_total_size(sizeof(u64)); /* VETH_INFO_TX_EXTRA_HEADROOM */
+}
+
+static int veth_fill_info(struct sk_buff *skb, const struct net_device *dev)
+{
+	const struct veth_priv *priv = netdev_priv(dev);
+
+	if (nla_put_uint(skb, VETH_INFO_TX_EXTRA_HEADROOM,
+			 priv->tx_extra_headroom))
+		return -EMSGSIZE;
+
+	return 0;
+}
 
 static struct net *veth_get_link_net(const struct net_device *dev)
 {
@@ -1971,6 +2013,8 @@ static struct rtnl_link_ops veth_link_ops = {
 	.policy		= veth_policy,
 	.peer_type	= VETH_INFO_PEER,
 	.maxtype	= VETH_INFO_MAX,
+	.get_size	= veth_get_size,
+	.fill_info	= veth_fill_info,
 	.get_link_net	= veth_get_link_net,
 	.get_num_tx_queues	= veth_get_num_queues,
 	.get_num_rx_queues	= veth_get_num_queues,
