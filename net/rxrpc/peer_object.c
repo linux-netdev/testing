@@ -156,6 +156,8 @@ void rxrpc_assess_MTU_size(struct rxrpc_local *local, struct rxrpc_peer *peer)
 	struct rtable *rt;
 	struct flowi fl;
 	struct flowi4 *fl4 = &fl.u.ip4;
+	unsigned int max_mtu, kvec_limit;
+
 #ifdef CONFIG_AF_RXRPC_IPV6
 	struct flowi6 *fl6 = &fl.u.ip6;
 #endif
@@ -207,11 +209,24 @@ void rxrpc_assess_MTU_size(struct rxrpc_local *local, struct rxrpc_peer *peer)
 	peer->tx_seg_max = dst->dev->gso_max_segs;
 	dst_release(dst);
 
-	peer->max_data		= umin(RXRPC_JUMBO(1), peer->if_mtu - peer->hdrsize);
+	/*
+	 * Avoid unsigned underflow if the interface MTU is smaller than the
+	 * transport header size (e.g., on virtual interfaces with MTU 0).
+	 * Also cap the PMTUD upper bound to what local->kvec can hold when
+	 * padding probes with PAGE_SIZE zero pages (3 header/SACK/trailer
+	 * kvecs are reserved before the zero-page padding loop).
+	 */
+
+	max_mtu = peer->if_mtu > peer->hdrsize ? peer->if_mtu - peer->hdrsize : 0;
+	kvec_limit = (ARRAY_SIZE(local->kvec) - 3) * PAGE_SIZE -
+		     sizeof(struct rxrpc_wire_header);
+	max_mtu = umin(max_mtu, kvec_limit);
+
+	peer->max_data		= umin(RXRPC_JUMBO(1), max_mtu);
 	peer->pmtud_good	= 500;
-	peer->pmtud_bad		= peer->if_mtu - peer->hdrsize + 1;
+	peer->pmtud_bad		= max_mtu + 1;
 	peer->pmtud_trial	= umin(peer->max_data, peer->pmtud_bad - 1);
-	peer->pmtud_pending	= true;
+	peer->pmtud_pending	= max_mtu > peer->pmtud_good;
 
 	_leave(" [if_mtu %u]", peer->if_mtu);
 }
