@@ -11,6 +11,36 @@
 #define CREATE_TRACE_POINTS
 #include "trace-events-sample.h"
 
+/* functions for the dynamic __print_sym() example */
+static const struct {
+	unsigned long val;
+	char *name;
+} print_sym_dynamic_names[] = {
+	{ 0, "zero" },
+	{ TRACE_SAMPLE_FOO, "TWO" },
+	{ TRACE_SAMPLE_BAR, "FOUR" },
+	{ TRACE_SAMPLE_ZOO, "EIGHT" },
+	{ 10, "TEN" }
+};
+
+const char *sample_names_dynamic_lookup(unsigned long long value)
+{
+	for (int i = 0; i < ARRAY_SIZE(print_sym_dynamic_names); i++) {
+		if (print_sym_dynamic_names[i].val == value)
+			return print_sym_dynamic_names[i].name;
+	}
+
+	return NULL;
+}
+
+void sample_names_dynamic_show(struct seq_file *m)
+{
+	for (int i = 0; i < ARRAY_SIZE(print_sym_dynamic_names); i++)
+		seq_printf(m, ", { %lu, \"%s\" }",
+			   print_sym_dynamic_names[i].val,
+			   print_sym_dynamic_names[i].name);
+}
+
 static const char *random_strings[] = {
 	"Mother Goose",
 	"Snoopy",
