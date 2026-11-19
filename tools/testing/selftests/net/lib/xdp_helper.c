@@ -80,7 +80,7 @@ static int send_frame(int sock_fd, __u32 len)
  * through the TX ring and exits.
  *
  * it is used by queues.py to ensure the xsk netlinux attribute is set
- * correctly.
+ * correctly, and by tx_extra_headroom.py to send a frame.
  */
 int main(int argc, char **argv)
 {
