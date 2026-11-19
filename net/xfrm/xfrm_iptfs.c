@@ -875,6 +875,20 @@ static u32 iptfs_reassem_cont(struct xfrm_iptfs_data *xtfs, u64 seq,
 		}
 		fraglen = min(blkoff, remaining);
 		copylen = min(fraglen, iphremain);
+		/* copylen is bounded only by the length the inner header
+		 * claims, which says nothing about the size of the buffer being
+		 * reassembled into: iptfs_input_ordered() prefers
+		 * iptfs_pskb_add_frags(), whose capacity is the bytes that
+		 * arrived, over iptfs_pskb_extract_seq(), which allocates the
+		 * claimed length. Cast because copylen is u32 and skb_tailroom()
+		 * returns int, so the comparison must not promote a negative
+		 * tailroom into a large unsigned.
+		 */
+		if (skb_tailroom(newskb) < (int)copylen) {
+			XFRM_INC_STATS(xs_net(xtfs->x),
+				       LINUX_MIB_XFRMINBUFFERERROR);
+			goto abandon;
+		}
 		if (skb_copy_seq_read(st, data, skb_put(newskb, copylen),
 				      copylen)) {
 			XFRM_INC_STATS(xs_net(xtfs->x),
@@ -910,6 +924,15 @@ static u32 iptfs_reassem_cont(struct xfrm_iptfs_data *xtfs, u64 seq,
 		iptfs_skb_add_frags(newskb, fragwalk, data, copylen);
 	} else {
 		if (skb_linearize(newskb)) {
+			XFRM_INC_STATS(xs_net(xtfs->x),
+				       LINUX_MIB_XFRMINBUFFERERROR);
+			goto abandon;
+		}
+
+		/* Re-checked after skb_linearize(), which may reallocate and so
+		 * change the tailroom this copy has to fit in.
+		 */
+		if (skb_tailroom(newskb) < (int)copylen) {
 			XFRM_INC_STATS(xs_net(xtfs->x),
 				       LINUX_MIB_XFRMINBUFFERERROR);
 			goto abandon;
