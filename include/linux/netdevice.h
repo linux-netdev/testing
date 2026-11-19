@@ -4493,6 +4493,7 @@ int netif_xdp_propagate(struct net_device *dev, struct netdev_bpf *bpf);
 int dev_xdp_propagate(struct net_device *dev, struct netdev_bpf *bpf);
 u8 dev_xdp_sb_prog_count(struct net_device *dev);
 u32 dev_xdp_prog_id(struct net_device *dev, enum bpf_xdp_mode mode);
+void netdev_update_tx_extra_headroom(struct net_device *dev);
 
 u32 dev_get_min_mp_channel_count(const struct net_device *dev);
 

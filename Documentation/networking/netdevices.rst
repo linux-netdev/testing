@@ -454,6 +454,17 @@ devices do not inherit it. It is not part of ``LL_RESERVED_SPACE()``, so a
 packet that reaches the device with less headroom, such as a forwarded
 packet, is not reallocated because of it.
 
+The kernel sets ``tx_extra_headroom`` of a device to the sum of these
+values:
+
+* ``XDP_PACKET_HEADROOM`` (256 bytes) minus ``needed_headroom``, when the
+  peer of a veth or netkit device has an XDP program
+
+When the peer has an XDP program, locally generated UDP, raw and
+AF_PACKET packets and AF_XDP packets in copy mode have enough headroom
+for it. ``tx_extra_headroom`` is not recalculated when a bridge or
+openvswitch changes ``needed_headroom`` later.
+
 NETDEV_INTERNAL symbol namespace
 ================================
 

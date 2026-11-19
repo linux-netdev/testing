@@ -10672,6 +10672,7 @@ int netif_xdp_propagate(struct net_device *dev, struct netdev_bpf *bpf)
 	if (old_prog)
 		bpf_prog_put(old_prog);
 
+	netdev_update_tx_extra_headroom(dev);
 	return 0;
 }
 EXPORT_SYMBOL_GPL(netif_xdp_propagate);
@@ -10682,6 +10683,41 @@ u32 dev_xdp_prog_id(struct net_device *dev, enum bpf_xdp_mode mode)
 
 	return prog ? prog->aux->id : 0;
 }
+
+static void __netdev_update_tx_extra_headroom(struct net_device *dev,
+					      struct net_device *peer)
+{
+	unsigned int needed_headroom = READ_ONCE(dev->needed_headroom);
+	unsigned int tx_extra_headroom = 0;
+
+	if (peer && dev_xdp_prog_count(peer) &&
+	    needed_headroom < XDP_PACKET_HEADROOM)
+		tx_extra_headroom = XDP_PACKET_HEADROOM - needed_headroom;
+
+	WRITE_ONCE(dev->tx_extra_headroom, tx_extra_headroom);
+}
+
+/**
+ *	netdev_update_tx_extra_headroom - recalculate tx_extra_headroom
+ *	@dev: the device to check
+ *
+ *	Recalculate tx_extra_headroom of @dev and its peer. Should be called
+ *	after conditions that influence tx_extra_headroom might have changed.
+ *	The caller must hold the RTNL lock.
+ */
+void netdev_update_tx_extra_headroom(struct net_device *dev)
+{
+	struct net_device *peer = NULL;
+
+	rcu_read_lock();
+	if (dev->netdev_ops->ndo_get_peer_dev)
+		peer = dev->netdev_ops->ndo_get_peer_dev(dev);
+	__netdev_update_tx_extra_headroom(dev, peer);
+	if (peer)
+		__netdev_update_tx_extra_headroom(peer, dev);
+	rcu_read_unlock();
+}
+EXPORT_SYMBOL_GPL(netdev_update_tx_extra_headroom);
 
 static int dev_xdp_install(struct net_device *dev, enum bpf_xdp_mode mode,
 			   bpf_op_t bpf_op, struct netlink_ext_ack *extack,
@@ -10893,6 +10929,7 @@ static int dev_xdp_attach(struct net_device *dev, struct netlink_ext_ack *extack
 	if (cur_prog)
 		bpf_prog_put(cur_prog);
 
+	netdev_update_tx_extra_headroom(dev);
 	return 0;
 }
 
@@ -10919,6 +10956,7 @@ static int dev_xdp_detach_link(struct net_device *dev,
 	bpf_op = dev_xdp_bpf_op(dev, mode);
 	WARN_ON(dev_xdp_install(dev, mode, bpf_op, NULL, 0, NULL));
 	dev_xdp_set_link(dev, mode, NULL);
+	netdev_update_tx_extra_headroom(dev);
 	return 0;
 }
 
