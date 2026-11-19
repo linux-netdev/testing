@@ -164,6 +164,7 @@ int tcx_prog_attach(const union bpf_attr *attr, struct bpf_prog *prog);
 int tcx_link_attach(const union bpf_attr *attr, struct bpf_prog *prog);
 int tcx_prog_detach(const union bpf_attr *attr, struct bpf_prog *prog);
 void tcx_uninstall(struct net_device *dev, bool ingress);
+unsigned int tcx_tx_extra_headroom(struct net_device *dev);
 
 int tcx_prog_query(const union bpf_attr *attr,
 		   union bpf_attr __user *uattr);
@@ -191,6 +192,11 @@ static inline int tcx_prog_detach(const union bpf_attr *attr,
 				  struct bpf_prog *prog)
 {
 	return -EINVAL;
+}
+
+static inline unsigned int tcx_tx_extra_headroom(struct net_device *dev)
+{
+	return 0;
 }
 
 static inline int tcx_prog_query(const union bpf_attr *attr,
