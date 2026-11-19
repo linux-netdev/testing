@@ -100,7 +100,8 @@ static struct rxgk_context *rxgk_rekey(struct rxrpc_connection *conn,
 	} else {
 		if (*specific_key_number == (u16)current_key)
 			key_number = current_key;
-		else if (*specific_key_number == (u16)(current_key - 1))
+		else if (current_key > 0 &&
+			 *specific_key_number == (u16)(current_key - 1))
 			key_number = current_key - 1;
 		else if (*specific_key_number == (u16)(current_key + 1))
 			goto crank_window;
@@ -185,7 +186,8 @@ static struct rxgk_context *rxgk_get_key(struct rxrpc_connection *conn,
 		 */
 		if (*specific_key_number == (u16)current_key)
 			key_number = current_key;
-		else if (*specific_key_number == (u16)(current_key - 1))
+		else if (current_key > 0 &&
+			 *specific_key_number == (u16)(current_key - 1))
 			key_number = current_key - 1;
 		else if (*specific_key_number == (u16)(current_key + 1))
 			goto rekey;
