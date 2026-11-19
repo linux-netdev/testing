@@ -174,7 +174,7 @@ struct channel {
 	struct ppp_file	file;		/* stuff for read/write/poll */
 	struct list_head list;		/* link in all/new_channels list */
 	struct ppp_channel *chan;	/* public channel data structure */
-	struct mutex chan_sem;		/* protects `chan' during chan ioctl */
+	struct mutex chan_sem;		/* protects chan in ioctls; serializes with unregister */
 	spinlock_t	downl;		/* protects `chan', file.xq dequeue */
 	struct ppp __rcu *ppp;		/* ppp unit we're connected to */
 	struct net	*chan_net;	/* the net channel belongs to */
@@ -639,11 +639,30 @@ static struct bpf_prog *compat_ppp_get_filter(struct sock_fprog32 __user *p)
  */
 static int ppp_bridge_channels(struct channel *pch, struct channel *pchb)
 {
+	struct channel *first, *second, *bridge;
+	bool pch_first;
+	int ret = -EALREADY;
+
+	if (pch == pchb)
+		return -EALREADY;
+
+	/* Use a stable order to avoid deadlock with reverse bridge requests. */
+	pch_first = (unsigned long)pch < (unsigned long)pchb;
+	first = pch_first ? pch : pchb;
+	second = pch_first ? pchb : pch;
+	mutex_lock(&first->chan_sem);
+	mutex_lock_nested(&second->chan_sem, SINGLE_DEPTH_NESTING);
+
+	if (first->file.dead || second->file.dead) {
+		ret = -ENODEV;
+		goto out_unlock;
+	}
+
 	spin_lock(&pch->upl);
 	if (rcu_dereference_protected(pch->ppp, lockdep_is_held(&pch->upl)) ||
 	    rcu_dereference_protected(pch->bridge, lockdep_is_held(&pch->upl))) {
 		spin_unlock(&pch->upl);
-		return -EALREADY;
+		goto out_unlock;
 	}
 	refcount_inc(&pchb->file.refcnt);
 	rcu_assign_pointer(pch->bridge, pchb);
@@ -659,20 +678,22 @@ static int ppp_bridge_channels(struct channel *pch, struct channel *pchb)
 	rcu_assign_pointer(pchb->bridge, pch);
 	spin_unlock(&pchb->upl);
 
-	return 0;
-
+	ret = 0;
+	goto out_unlock;
 err_unset:
 	spin_lock(&pch->upl);
-	/* Re-read pch->bridge with upl held in case it was modified concurrently */
-	pchb = rcu_dereference_protected(pch->bridge, lockdep_is_held(&pch->upl));
+	bridge = rcu_dereference_protected(pch->bridge,
+					   lockdep_is_held(&pch->upl));
 	RCU_INIT_POINTER(pch->bridge, NULL);
 	spin_unlock(&pch->upl);
 	synchronize_rcu();
 
-	if (pchb)
-		ppp_release_channel(pchb);
-
-	return -EALREADY;
+	if (bridge)
+		ppp_release_channel(bridge);
+out_unlock:
+	mutex_unlock(&second->chan_sem);
+	mutex_unlock(&first->chan_sem);
+	return ret;
 }
 
 static int ppp_unbridge_channels(struct channel *pch)
@@ -754,11 +775,15 @@ static long ppp_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		case PPPIOCCONNECT:
 			if (get_user(unit, p))
 				break;
+			mutex_lock(&pch->chan_sem);
 			err = ppp_connect_channel(pch, unit);
+			mutex_unlock(&pch->chan_sem);
 			break;
 
 		case PPPIOCDISCONN:
+			mutex_lock(&pch->chan_sem);
 			err = ppp_disconnect_channel(pch);
+			mutex_unlock(&pch->chan_sem);
 			break;
 
 		case PPPIOCBRIDGECHAN:
@@ -782,7 +807,9 @@ static long ppp_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 			break;
 
 		case PPPIOCUNBRIDGECHAN:
+			mutex_lock(&pch->chan_sem);
 			err = ppp_unbridge_channels(pch);
+			mutex_unlock(&pch->chan_sem);
 			break;
 
 		default:
@@ -3077,17 +3104,15 @@ ppp_unregister_channel(struct ppp_channel *chan)
 		return;		/* should never happen */
 
 	chan->ppp = NULL;
-
+	mutex_lock(&pch->chan_sem);
 	/*
-	 * This ensures that we have returned from any calls into
-	 * the channel's start_xmit or ioctl routine before we proceed.
+	 * chan_sem waits for channel ioctl callbacks. Disconnect first;
+	 * ppp_disconnect_channel() waits for network readers after unlinking.
 	 */
 	ppp_disconnect_channel(pch);
-	mutex_lock(&pch->chan_sem);
 	spin_lock_bh(&pch->downl);
 	pch->chan = NULL;
 	spin_unlock_bh(&pch->downl);
-	mutex_unlock(&pch->chan_sem);
 
 	pn = ppp_pernet(pch->chan_net);
 	spin_lock_bh(&pn->all_channels_lock);
@@ -3098,6 +3123,7 @@ ppp_unregister_channel(struct ppp_channel *chan)
 
 	pch->file.dead = 1;
 	wake_up_interruptible(&pch->file.rwait);
+	mutex_unlock(&pch->chan_sem);
 
 	ppp_release_channel(pch);
 }
