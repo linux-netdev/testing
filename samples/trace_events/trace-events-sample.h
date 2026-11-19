@@ -297,6 +297,33 @@ TRACE_DEFINE_ENUM(TRACE_SAMPLE_FOO);
 TRACE_DEFINE_ENUM(TRACE_SAMPLE_BAR);
 TRACE_DEFINE_ENUM(TRACE_SAMPLE_ZOO);
 
+/*
+ * define the names as { value, "name" } tuples for __print_sym() below,
+ * same as the inline list for __print_dynamic()
+ */
+TRACE_DEFINE_SYM_LIST(sample_names_static,
+	{ 0, "zero" },
+	{ TRACE_SAMPLE_FOO, "TWO" },
+	{ TRACE_SAMPLE_BAR, "FOUR" },
+	{ TRACE_SAMPLE_ZOO, "EIGHT" },
+	{ 10, "TEN" }
+);
+
+/*
+ * Alternatively, you could define a function for the names:
+ *
+ * The _lookup() function returns the string for the given value.
+ *
+ * The _show() function must
+ *	seq_printf(m, ", { %u, \"%s\" }", value, name);
+ * for each value that userspace should be able to parse.
+ */
+const char *sample_names_dynamic_lookup(unsigned long long value);
+void sample_names_dynamic_show(struct seq_file *m);
+TRACE_DEFINE_SYM_FNS(sample_names_dynamic,
+		     sample_names_dynamic_lookup,
+		     sample_names_dynamic_show);
+
 TRACE_EVENT(foo_bar,
 
 	TP_PROTO(const char *foo, int bar, const int *lst,
@@ -328,7 +355,7 @@ TRACE_EVENT(foo_bar,
 		__assign_cpumask(cpum, cpumask_bits(mask));
 	),
 
-	TP_printk("foo %s %d %s %s %s %s %s %s (%s) (%s) %s [%d] %*pbl",
+	TP_printk("foo %s %d %s %s %s %s %s %s %s %s (%s) (%s) %s [%d] %*pbl",
 		  __entry->foo, __entry->bar,
 
 /*
@@ -340,6 +367,9 @@ TRACE_EVENT(foo_bar,
  *    the variable matches one of the values, then it will print the
  *    string in that pair. If non are matched, it returns a string
  *    version of the number (if __entry->bar == 7 then "7" is returned).
+ *
+ * NOTE: This variant is deprecated, it uses more space than the below
+ *	 __print_sym() which is identical to this for userspace.
  */
 		  __print_symbolic(__entry->bar,
 				   { 0, "zero" },
@@ -348,6 +378,21 @@ TRACE_EVENT(foo_bar,
 				   { TRACE_SAMPLE_ZOO, "EIGHT" },
 				   { 10, "TEN" }
 			  ),
+
+/*
+ *  __print_sym( variable, symbol_list_definition ),
+ *
+ *    The variable is tested against each value of the symbol list.
+ *    The symbol list can be built statically (sample_names_static) or
+ *    dynamically (sample_names_dynamic). If the variable matches one
+ *    of the values, then it will print the string in that pair. If
+ *    no entry matches, the number itself is printed (e.g. here if
+ *    if __entry->bar == 7 then "7" is shown).
+ *
+ *    See above for the declaration of sample_names_{static,dynamic}.
+ */
+		  __print_sym(__entry->bar, sample_names_static),
+		  __print_sym(__entry->bar, sample_names_dynamic),
 
 /*
  *  __print_flags( variable, "delim", { value, "flag" }, ... ),
