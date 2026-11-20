@@ -412,6 +412,8 @@ struct stmmac_ops {
 	int (*fpe_map_preemption_class)(struct net_device *ndev,
 					struct netlink_ext_ack *extack,
 					u32 pclass);
+	/* L2 header split, MAC-global part of split header */
+	void (*config_l2_split)(struct mac_device_info *hw, bool en);
 };
 
 #define stmmac_mac_pcs_init(__priv) \
@@ -494,6 +496,8 @@ struct stmmac_ops {
 	stmmac_do_callback(__priv, mac, config_l4_filter, __args)
 #define stmmac_fpe_map_preemption_class(__priv, __args...) \
 	stmmac_do_callback(__priv, mac, fpe_map_preemption_class, __args)
+#define stmmac_config_l2_split(__priv, __args...) \
+	stmmac_do_void_callback(__priv, mac, config_l2_split, __args)
 
 struct ptp_system_timestamp;
 
