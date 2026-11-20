@@ -3832,6 +3832,8 @@ static int stmmac_hw_setup(struct net_device *dev)
 
 	/* Enable Split Header */
 	sph_en = (priv->hw->rx_csum > 0) && priv->sph_active;
+	if (priv->sph_capable)
+		stmmac_config_l2_split(priv, priv->hw, sph_en);
 	for (chan = 0; chan < rx_cnt; chan++)
 		stmmac_enable_sph(priv, priv->ioaddr, sph_en, chan);
 
@@ -6458,6 +6460,7 @@ static int stmmac_set_features(struct net_device *netdev,
 		bool sph_en = (priv->hw->rx_csum > 0) && priv->sph_active;
 		u8 chan;
 
+		stmmac_config_l2_split(priv, priv->hw, sph_en);
 		for (chan = 0; chan < priv->plat->rx_queues_to_use; chan++)
 			stmmac_enable_sph(priv, priv->ioaddr, sph_en, chan);
 	}
@@ -7421,6 +7424,8 @@ int stmmac_xdp_open(struct net_device *dev)
 
 	/* Adjust Split header */
 	sph_en = (priv->hw->rx_csum > 0) && priv->sph_active;
+	if (priv->sph_capable)
+		stmmac_config_l2_split(priv, priv->hw, sph_en);
 
 	/* DMA RX Channel Configuration */
 	for (chan = 0; chan < rx_cnt; chan++) {

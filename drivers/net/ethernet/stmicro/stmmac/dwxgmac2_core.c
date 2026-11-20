@@ -1412,6 +1412,25 @@ static int dwxgmac2_config_l4_filter(struct mac_device_info *hw, u32 filter_no,
 	return 0;
 }
 
+static void dwxgmac2_config_l2_split(struct mac_device_info *hw, bool en)
+{
+	void __iomem *ioaddr = hw->pcsr;
+	u32 value;
+
+	/* L2 split is not supported for packets with variable preamble */
+	if (en) {
+		value = readl(ioaddr + XGMAC_EXT_CFG0);
+		value &= ~XGMAC_EXT_CFG0_VPRE;
+		writel(value, ioaddr + XGMAC_EXT_CFG0);
+	}
+
+	value = readl(ioaddr + XGMAC_EXT_CFG1);
+	value &= ~(XGMAC_CONFIG1_SPLM_MASK | XGMAC_CONFIG1_SAVE_EN);
+	if (en)
+		value |= XGMAC_CONFIG1_SPLM(1) | XGMAC_CONFIG1_SAVE_EN;
+	writel(value, ioaddr + XGMAC_EXT_CFG1);
+}
+
 const struct stmmac_ops dwxgmac210_ops = {
 	.core_init = dwxgmac2_core_init,
 	.irq_modify = dwxgmac2_irq_modify,
@@ -1451,6 +1470,7 @@ const struct stmmac_ops dwxgmac210_ops = {
 	.config_l3_filter = dwxgmac2_config_l3_filter,
 	.config_l4_filter = dwxgmac2_config_l4_filter,
 	.fpe_map_preemption_class = dwxgmac3_fpe_map_preemption_class,
+	.config_l2_split = dwxgmac2_config_l2_split,
 };
 
 static void dwxlgmac2_rx_queue_enable(struct mac_device_info *hw, u8 mode,
