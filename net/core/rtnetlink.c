@@ -406,6 +406,9 @@ static struct rtnl_link *rtnl_get_link(int protocol, int msgtype)
 	if (!tab)
 		tab = rcu_dereference_rtnl(rtnl_msg_handlers[PF_UNSPEC]);
 
+	if (!tab)
+		return NULL;
+
 	return rcu_dereference_rtnl(tab[msgtype]);
 }
 
