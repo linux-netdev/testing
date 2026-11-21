@@ -823,8 +823,19 @@ retry:
 				if (!test_bit_acquire(j, n->used))
 					continue;
 				data = ahash_data(n, j, dsize);
-				if (SET_ELEM_EXPIRED(set, data))
+				if (SET_ELEM_EXPIRED(set, data)) {
+					struct hbucket *cur;
+
+					spin_lock_bh(&orig->hregion[r].lock);
+					cur = __ipset_dereference(hbucket(orig, i));
+					if (cur && test_bit(j, cur->used)) {
+						data = ahash_data(cur, j, dsize);
+						if (SET_ELEM_EXPIRED(set, data))
+							ip_set_ext_destroy(set, data);
+					}
+					spin_unlock_bh(&orig->hregion[r].lock);
 					continue;
+				}
 #ifdef IP_SET_HASH_WITH_NETS
 				/* We have readers running parallel with us,
 				 * so the live data cannot be modified.
