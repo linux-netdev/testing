@@ -589,6 +589,15 @@ static int taprio_enqueue_one(struct sk_buff *skb, struct Qdisc *sch,
 			      struct Qdisc *child, struct sk_buff **to_free)
 {
 	struct taprio_sched *q = qdisc_priv(sch);
+	u32 backlog;
+	int qlen;
+	int ret;
+
+	if (unlikely(qdisc_backlog_overflow(sch, skb))) {
+		qdisc_qstats_overlimit(sch);
+		return qdisc_drop_reason(skb, sch, to_free,
+					 QDISC_DROP_OVERLIMIT);
+	}
 
 	/* sk_flags are only safe to use on full sockets. */
 	if (skb->sk && sk_fullsock(skb->sk) && sock_flag(skb->sk, SOCK_TXTIME)) {
@@ -600,10 +609,20 @@ static int taprio_enqueue_one(struct sk_buff *skb, struct Qdisc *sch,
 			return qdisc_drop(skb, sch, to_free);
 	}
 
-	qdisc_qstats_backlog_inc(sch, skb);
-	qdisc_qlen_inc(sch);
+	/* A child may free skb (tbf_segment(), cake's split path) or evict
+	 * another packet before returning, so take everything this function
+	 * needs before the handoff and mirror the child's net change.  A
+	 * child that evicts cannot reach us through
+	 * qdisc_tree_reduce_backlog() because taprio_graft() marks it
+	 * TCQ_F_NOPARENT.
+	 */
+	backlog = READ_ONCE(child->qstats.backlog);
+	qlen = qdisc_qlen(child);
+	ret = qdisc_enqueue(skb, child, to_free);
+	qstats_backlog_add(sch, READ_ONCE(child->qstats.backlog) - backlog);
+	WRITE_ONCE(sch->q.qlen, sch->q.qlen + qdisc_qlen(child) - qlen);
 
-	return qdisc_enqueue(skb, child, to_free);
+	return ret;
 }
 
 static int taprio_enqueue_segmented(struct sk_buff *skb, struct Qdisc *sch,
@@ -620,10 +639,11 @@ static int taprio_enqueue_segmented(struct sk_buff *skb, struct Qdisc *sch,
 		return qdisc_drop(skb, sch, to_free);
 
 	skb_list_walk_safe(segs, segs, nskb) {
+		unsigned int seg_len = segs->len;
+
 		skb_mark_not_on_list(segs);
-		qdisc_skb_cb(segs)->pkt_len = segs->len;
+		qdisc_skb_cb(segs)->pkt_len = seg_len;
 		qdisc_skb_cb(segs)->pkt_segs = 1;
-		slen += segs->len;
 
 		/* FIXME: we should be segmenting to a smaller size
 		 * rather than dropping these
@@ -633,10 +653,12 @@ static int taprio_enqueue_segmented(struct sk_buff *skb, struct Qdisc *sch,
 		else
 			ret = taprio_enqueue_one(segs, sch, child, to_free);
 
-		if (ret != NET_XMIT_SUCCESS) {
-			if (net_xmit_drop_count(ret))
-				qdisc_qstats_drop(sch);
-		} else {
+		/* Every drop above is already counted by the site that
+		 * performs it; only keep track of the admitted segments
+		 * here.
+		 */
+		if (ret == NET_XMIT_SUCCESS) {
+			slen += seg_len;
 			numsegs++;
 		}
 	}
