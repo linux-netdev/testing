@@ -1591,7 +1591,7 @@ out_reject:
 						     &nhsel);
 			if (nhc)
 				goto set_result;
-			goto miss;
+			continue;
 		}
 
 		for (nhsel = 0; nhsel < fib_info_num_path(fi); nhsel++) {
@@ -1622,7 +1622,6 @@ set_result:
 			return err;
 		}
 	}
-miss:
 #ifdef CONFIG_IP_FIB_TRIE_STATS
 	this_cpu_inc(stats->semantic_match_miss);
 #endif
