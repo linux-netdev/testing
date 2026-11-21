@@ -22,6 +22,7 @@ ksft_skip=4
 # all tests in this script. Can be overridden with -t option
 IPV4_TESTS="
 	ipv4_fcnal
+	ipv4_oif_fallback
 	ipv4_grp_fcnal
 	ipv4_res_grp_fcnal
 	ipv4_withv6_fcnal
@@ -1533,6 +1534,28 @@ ipv6_res_torture()
 
 	# if we did not crash, success
 	log_test 0 0 "IPv6 resilient nexthop group torture test"
+}
+
+ipv4_oif_fallback()
+{
+	local out
+
+	run_cmd "$IP nexthop add id 12 via 172.16.1.2 dev veth1"
+	run_cmd "$IP route add 10.0.0.0/24 nhid 12"
+	run_cmd "$IP route add 10.0.0.0/16 via 172.16.2.2 dev veth3"
+
+	out=$($IP -o route get fibmatch 10.0.0.1 oif veth1)
+	check_output "$out" "10.0.0.0/24 nhid 12 via 172.16.1.2 dev veth1"
+	log_test $? 0 "Lookup bound to nexthop device"
+
+	out=$($IP -o route get fibmatch 10.0.0.1 oif veth3)
+	check_output "$out" "10.0.0.0/16 via 172.16.2.2 dev veth3"
+	log_test $? 0 "Fallback to shorter prefix in the same leaf"
+
+	run_cmd "$IP route add 10.0.0.0/24 via 172.16.2.2 dev veth3 metric 20"
+	out=$($IP -o route get fibmatch 10.0.0.1 oif veth3)
+	check_output "$out" "10.0.0.0/24 via 172.16.2.2 dev veth3 metric 20"
+	log_test $? 0 "Fallback to higher metric for the same prefix"
 }
 
 ipv4_fcnal()
