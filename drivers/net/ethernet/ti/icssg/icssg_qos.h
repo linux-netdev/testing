@@ -14,6 +14,7 @@
 #define ICSSG_IET_MAX_VERIFY_TIME		128
 #define ICSSG_IET_MIN_VERIFY_TIME		1
 #define ICSSG_IET_VERIFY_ATTEMPTS		3
+#define ICSSG_IET_MAX_TX_MIN_FRAG_SIZE		252
 
 /**
  * enum icssg_ietfpe_verify_states - status of MM Verify returned by firmware
@@ -59,6 +60,35 @@ struct prueth_qos {
 	struct prueth_qos_iet iet;
 	struct prueth_qos_mqprio mqprio;
 };
+
+static inline int icssg_qos_validate_tx_min_frag_size(u32 min_frag_size,
+						      struct netlink_ext_ack *extack)
+{
+	/* Firmware takes min_frag_size including FCS length.
+	 * The firmware requires the fragment size (including FCS) to be
+	 * a multiple of 64 bytes. Since 64 bytes = ETH_ZLEN + ETH_FCS_LEN,
+	 * valid user-facing values are: 60, 124, 188, 252.
+	 */
+	if (min_frag_size < ETH_ZLEN) {
+		NL_SET_ERR_MSG_MOD(extack,
+				   "tx_min_frag_size must be at least 60 bytes");
+		return -EINVAL;
+	}
+
+	if (min_frag_size > ICSSG_IET_MAX_TX_MIN_FRAG_SIZE) {
+		NL_SET_ERR_MSG_MOD(extack,
+				   "tx_min_frag_size must not exceed 252 bytes");
+		return -EINVAL;
+	}
+
+	if ((min_frag_size + ETH_FCS_LEN) % (ETH_ZLEN + ETH_FCS_LEN)) {
+		NL_SET_ERR_MSG_MOD(extack,
+				   "tx_min_frag_size must be a multiple of 64 bytes minus 4");
+		return -EINVAL;
+	}
+
+	return 0;
+}
 
 void icssg_qos_init(struct net_device *ndev);
 void icssg_qos_exit(struct net_device *ndev);
