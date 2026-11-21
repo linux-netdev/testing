@@ -177,6 +177,7 @@ void icssg_qos_init(struct net_device *ndev)
 	/* Set default values to prevent garbage values during .get_mm() */
 	iet->verify_time_ms = ICSSG_IET_MAX_VERIFY_TIME;
 	iet->tx_min_frag_size = ETH_ZLEN;
+	iet->verify_status = ICSSG_IETFPE_STATE_DISABLED;
 }
 EXPORT_SYMBOL_GPL(icssg_qos_init);
 
