@@ -915,6 +915,29 @@ static inline unsigned int qdisc_pkt_len(const struct sk_buff *skb)
 	return qdisc_skb_cb(skb)->pkt_len;
 }
 
+#define QDISC_PKT_LEN_MAX	(1 << 20)	/* 1 MiB */
+
+/* Largest backlog that still has room for a 1 MiB packet and a netem
+ * duplicate of it, so that a single enqueue can never run out of
+ * headroom before it is accounted.
+ */
+#define QDISC_MAX_BACKLOG	(U32_MAX - 2 * QDISC_PKT_LEN_MAX)
+
+/* Would this packet's accounted length wrap sch->qstats.backlog?
+ * Packets up to QDISC_PKT_LEN_MAX fit below QDISC_MAX_BACKLOG; GSO
+ * can make the length larger, so compare against the real headroom.
+ */
+static inline bool qdisc_backlog_overflow(const struct Qdisc *sch,
+					  const struct sk_buff *skb)
+{
+	u32 backlog = READ_ONCE(sch->qstats.backlog);
+	u32 len = qdisc_pkt_len(skb);
+
+	if (likely(len <= QDISC_PKT_LEN_MAX))
+		return backlog > QDISC_MAX_BACKLOG;
+	return (u64)backlog + len + QDISC_PKT_LEN_MAX > U32_MAX;
+}
+
 static inline unsigned int qdisc_pkt_segs(const struct sk_buff *skb)
 {
 	u32 pkt_segs = qdisc_skb_cb(skb)->pkt_segs;
@@ -997,7 +1020,15 @@ static inline void qstats_backlog_sub(struct Qdisc *sch, u32 val)
 static inline void qdisc_qstats_backlog_dec(struct Qdisc *sch,
 					    const struct sk_buff *skb)
 {
-	qstats_backlog_sub(sch, qdisc_pkt_len(skb));
+	u32 backlog = READ_ONCE(sch->qstats.backlog);
+	u32 len = qdisc_pkt_len(skb);
+
+	/* An offload driver can update the counter from the dump path
+	 * while the packet is in flight, so a lost increment can leave
+	 * the backlog below the length being removed.  Do not let that
+	 * wrap: the enqueue guard would then drop every packet for good.
+	 */
+	WRITE_ONCE(sch->qstats.backlog, backlog > len ? backlog - len : 0);
 }
 
 static inline void qdisc_qstats_cpu_backlog_dec(struct Qdisc *sch,
