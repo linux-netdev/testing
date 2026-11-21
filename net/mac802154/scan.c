@@ -879,19 +879,23 @@ int mac802154_process_association_req(struct ieee802154_sub_if_data *sdata,
 		"Successful association with new child %8phC\n", &ceaddr);
 
 	/* Ensure this child is not already associated (might happen due to
-	 * retransmissions), in this case drop the ex structure.
+	 * retransmissions), in this case replace the ex structure.  The ASSOC
+	 * REQ source is always an extended address, so look the child up by it
+	 * regardless of the short address mode chosen for the new entry.
 	 */
-	tmp.mode = child->mode;
+	tmp.mode = IEEE802154_EXTENDED_ADDRESSING;
 	tmp.extended_addr = child->extended_addr;
 	exchild = cfg802154_device_is_child(wpan_dev, &tmp);
 	if (exchild) {
 		dev_dbg(&sdata->dev->dev,
 			"Child %8phC was already known\n", &ceaddr);
 		list_del(&exchild->node);
+		kfree(exchild);
+	} else {
+		wpan_dev->nchildren++;
 	}
 
 	list_add(&child->node, &wpan_dev->children);
-	wpan_dev->nchildren++;
 
 unlock:
 	mutex_unlock(&wpan_dev->association_lock);
