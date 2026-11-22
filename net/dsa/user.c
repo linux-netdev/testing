@@ -43,6 +43,7 @@ struct dsa_switchdev_event_work {
 	unsigned char addr[ETH_ALEN];
 	u16 vid;
 	bool host_addr;
+	bool replayed;
 };
 
 enum dsa_standalone_event {
@@ -3628,13 +3629,14 @@ static int dsa_user_netdevice_event(struct notifier_block *nb,
 }
 
 static void
-dsa_fdb_offload_notify(struct dsa_switchdev_event_work *switchdev_work)
+dsa_fdb_offload_notify(struct dsa_switchdev_event_work *switchdev_work,
+		       bool offloaded)
 {
 	struct switchdev_notifier_fdb_info info = {};
 
 	info.addr = switchdev_work->addr;
 	info.vid = switchdev_work->vid;
-	info.offloaded = true;
+	info.offloaded = offloaded;
 	call_switchdev_notifiers(SWITCHDEV_FDB_OFFLOADED,
 				 switchdev_work->orig_dev, &info.info, NULL);
 }
@@ -3676,7 +3678,7 @@ static void dsa_user_switchdev_event_work(struct work_struct *work)
 				dp->index, addr, vid, err);
 			break;
 		}
-		dsa_fdb_offload_notify(switchdev_work);
+		dsa_fdb_offload_notify(switchdev_work, true);
 		break;
 
 	case SWITCHDEV_FDB_DEL_TO_DEVICE:
@@ -3691,8 +3693,13 @@ static void dsa_user_switchdev_event_work(struct work_struct *work)
 			dev_err(ds->dev,
 				"port %d failed to delete %pM vid %d from fdb: %d\n",
 				dp->index, addr, vid, err);
+			break;
 		}
-
+		/* A deletion replayed for this port alone, as it leaves the
+		 * bridge or a LAG, can leave the entry held for other ports
+		 */
+		if (!switchdev_work->replayed)
+			dsa_fdb_offload_notify(switchdev_work, false);
 		break;
 	}
 
@@ -3779,6 +3786,7 @@ static int dsa_user_fdb_event(struct net_device *dev,
 	ether_addr_copy(switchdev_work->addr, fdb_info->addr);
 	switchdev_work->vid = fdb_info->vid;
 	switchdev_work->host_addr = host_addr;
+	switchdev_work->replayed = !!ctx;
 
 	dsa_schedule_work(&switchdev_work->work);
 
