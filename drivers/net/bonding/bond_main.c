@@ -3996,6 +3996,10 @@ static int bond_slave_netdev_event(unsigned long event,
 	slave_dbg(bond_dev, slave_dev, "%s called\n", __func__);
 
 	switch (event) {
+	case NETDEV_PRE_TYPE_CHANGE:
+		if (BOND_MODE(bond) == BOND_MODE_8023AD)
+			return NOTIFY_BAD;
+		break;
 	case NETDEV_UNREGISTER:
 		if (bond_dev->type != ARPHRD_ETHER)
 			bond_release_and_destroy(bond_dev, slave_dev);
