@@ -392,6 +392,11 @@ struct amt_dev {
 #define AMT_GC_KICK		2048
 #define AMT_MAX_GROUP		32
 #define AMT_MAX_SOURCE		128
+/* Upper bounds for IFLA_AMT_MAX_GROUPS and IFLA_AMT_MAX_SOURCES. Gateways
+ * drive these allocations, so keep one tunnel's worst case to a few MiB.
+ */
+#define AMT_MAX_GROUP_LIMIT	512
+#define AMT_MAX_SOURCE_LIMIT	4096
 /* Per group record, the most passes the mode handlers plus
  * amt_cleanup_srcs() make over a group's sources, and the most hash
  * lookups they make per record source.  See amt_rec_cost().
@@ -400,6 +405,8 @@ struct amt_dev {
 #define AMT_REC_LOOKUPS		8
 #define AMT_HSIZE_SHIFT		8
 #define AMT_HSIZE		(1 << AMT_HSIZE_SHIFT)
+/* hash_buckets grows with max_sources up to this, see amt_newlink(). */
+#define AMT_HSIZE_MAX		512
 
 #define AMT_DISCOVERY_TIMEOUT	5000
 #define AMT_INIT_REQ_TIMEOUT	1
