@@ -18,10 +18,15 @@
 #include <net/ieee8021q.h>
 
 #include "realtek.h"
+#include "rtl8365mb.h"
 #include "rtl8365mb_qos.h"
 
-/* The chip's eight internal priorities carry 802.1Q traffic types, one
- * internal priority per traffic type.
+/* The shared rtl83xx-qos.c layer hands this backend internal priorities
+ * that are 802.1Q traffic types, one per traffic type. Family C stores them
+ * as they are. Family D numbers its internal priorities like PCP values, as
+ * its vendor API does, and takes the PCP of a newly inserted 802.1Q tag from
+ * the internal priority, so it is converted at the register boundary (see
+ * rtl8365mb_qos_iprio_to_hw()).
  */
 static_assert(RTL8365MB_NUM_INTERNAL_PRIOS == IEEE8021Q_TT_MAX);
 
@@ -65,7 +70,9 @@ static_assert(RTL8365MB_QOS_QMAP_DEFAULT < RTL8365MB_QOS_NUM_QMAPS);
 #define RTL8365MB_QOS_1Q_REMAP_REG(_pcp) \
 	(0x0865 + (_pcp) / RTL8365MB_QOS_SELS_PER_REG)
 
-/* PCP given to untagged frames, one 3-bit field per port */
+/* PCP given to untagged frames, one 3-bit field per port (family C only;
+ * family D has no such register, see rtl8365mb_qos_set_port_prio())
+ */
 #define RTL8365MB_QOS_PORT_UNTAG_PCP_REG(_p) \
 	(0x0851 + (_p) / RTL8365MB_QOS_SELS_PER_REG)
 
@@ -218,11 +225,37 @@ static int rtl8365mb_qos_check_port(struct realtek_priv *priv, int port)
 	return 0;
 }
 
+/* Convert an internal priority (an 802.1Q traffic type) to the value the
+ * chip uses. Return the value or a negative errno.
+ */
+static int rtl8365mb_qos_iprio_to_hw(struct realtek_priv *priv, u8 iprio)
+{
+	if (rtl8365mb_is_d(priv))
+		return ieee8021q_tt_to_pcp(iprio);
+
+	return iprio;
+}
+
+/* Convert a chip priority back to an internal priority (a traffic type) */
+static int rtl8365mb_qos_hw_to_iprio(struct realtek_priv *priv, u8 hw)
+{
+	if (rtl8365mb_is_d(priv))
+		return ieee8021q_pcp_to_tt(hw);
+
+	return hw;
+}
+
 int rtl8365mb_qos_get_port_prio(struct realtek_priv *priv, int port)
 {
-	return rtl8365mb_qos_regmap_read_field(priv,
-					       RTL8365MB_QOS_PORT_PRI_REG(port),
-					       rtl8365mb_qos_sel_mask(port));
+	int val;
+
+	val = rtl8365mb_qos_regmap_read_field(priv,
+					      RTL8365MB_QOS_PORT_PRI_REG(port),
+					      rtl8365mb_qos_sel_mask(port));
+	if (val < 0)
+		return val;
+
+	return rtl8365mb_qos_hw_to_iprio(priv, val);
 }
 
 int rtl8365mb_qos_set_port_prio(struct realtek_priv *priv, int port, u8 iprio,
@@ -231,41 +264,69 @@ int rtl8365mb_qos_set_port_prio(struct realtek_priv *priv, int port, u8 iprio,
 	u32 untag_reg = RTL8365MB_QOS_PORT_UNTAG_PCP_REG(port);
 	u32 reg = RTL8365MB_QOS_PORT_PRI_REG(port);
 	u32 mask = rtl8365mb_qos_sel_mask(port);
-	int ret;
+	int hw, ret;
 
 	ret = rtl8365mb_qos_check_port(priv, port);
 	if (ret)
 		return ret;
 
-	ret = rtl8365mb_qos_regmap_update_field(priv, untag_reg, mask,
-						untag_pcp);
-	if (ret)
-		return ret;
+	hw = rtl8365mb_qos_iprio_to_hw(priv, iprio);
+	if (hw < 0)
+		return hw;
 
-	return rtl8365mb_qos_regmap_update_field(priv, reg, mask, iprio);
+	if (rtl8365mb_is_d(priv)) {
+		/* No separate PCP for untagged frames: it is the one the
+		 * port priority implies, so a different one cannot be set.
+		 */
+		if (untag_pcp != hw)
+			return -EOPNOTSUPP;
+	} else {
+		ret = rtl8365mb_qos_regmap_update_field(priv, untag_reg, mask,
+							untag_pcp);
+		if (ret)
+			return ret;
+	}
+
+	return rtl8365mb_qos_regmap_update_field(priv, reg, mask, hw);
 }
 
 int rtl8365mb_qos_set_pcp_prio(struct realtek_priv *priv, u8 pcp, u8 iprio)
 {
 	u32 reg = RTL8365MB_QOS_1Q_REMAP_REG(pcp);
 	u32 mask = rtl8365mb_qos_sel_mask(pcp);
+	int hw;
 
-	return rtl8365mb_qos_regmap_update_field(priv, reg, mask, iprio);
+	hw = rtl8365mb_qos_iprio_to_hw(priv, iprio);
+	if (hw < 0)
+		return hw;
+
+	return rtl8365mb_qos_regmap_update_field(priv, reg, mask, hw);
 }
 
 int rtl8365mb_qos_get_dscp_prio(struct realtek_priv *priv, u8 dscp)
 {
-	return rtl8365mb_qos_regmap_read_field(priv,
-					       RTL8365MB_QOS_DSCP_PRI_REG(dscp),
-					       rtl8365mb_qos_sel_mask(dscp));
+	int val;
+
+	val = rtl8365mb_qos_regmap_read_field(priv,
+					      RTL8365MB_QOS_DSCP_PRI_REG(dscp),
+					      rtl8365mb_qos_sel_mask(dscp));
+	if (val < 0)
+		return val;
+
+	return rtl8365mb_qos_hw_to_iprio(priv, val);
 }
 
 int rtl8365mb_qos_set_dscp_prio(struct realtek_priv *priv, u8 dscp, u8 iprio)
 {
 	u32 reg = RTL8365MB_QOS_DSCP_PRI_REG(dscp);
 	u32 mask = rtl8365mb_qos_sel_mask(dscp);
+	int hw;
 
-	return rtl8365mb_qos_regmap_update_field(priv, reg, mask, iprio);
+	hw = rtl8365mb_qos_iprio_to_hw(priv, iprio);
+	if (hw < 0)
+		return hw;
+
+	return rtl8365mb_qos_regmap_update_field(priv, reg, mask, hw);
 }
 
 static int rtl8365mb_qos_set_port_qmap(struct realtek_priv *priv, int port,
@@ -306,19 +367,27 @@ int rtl8365mb_qos_qmap_init(struct realtek_priv *priv)
 {
 	unsigned int nq = priv->ds.num_tx_queues;
 	struct dsa_port *dp;
-	int iprio, ret;
+	int prio, ret;
 
-	for (iprio = 0; iprio < RTL8365MB_NUM_INTERNAL_PRIOS; iprio++) {
-		int tc = ieee8021q_tt_to_tc(iprio, nq);
+	/* The table is indexed by the chip's priority, which is the traffic
+	 * type on family C and the PCP on family D.
+	 */
+	for (prio = 0; prio < RTL8365MB_NUM_INTERNAL_PRIOS; prio++) {
+		int tt = rtl8365mb_qos_hw_to_iprio(priv, prio);
+		int tc;
 		u8 qid;
 
+		if (tt < 0)
+			return tt;
+
+		tc = ieee8021q_tt_to_tc(tt, nq);
 		if (tc < 0)
 			return tc;
 
 		qid = rtl8365mb_qos_tc_to_qid(nq, tc);
 		ret = rtl8365mb_qos_set_qmap_qid(priv,
 						 RTL8365MB_QOS_QMAP_DEFAULT,
-						 iprio, qid);
+						 prio, qid);
 		if (ret)
 			return ret;
 	}
