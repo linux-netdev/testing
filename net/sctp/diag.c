@@ -455,11 +455,13 @@ static int sctp_diag_dump_one(struct netlink_callback *cb,
 		memcpy(&laddr.v6.sin6_addr, req->id.idiag_src,
 		       sizeof(laddr.v6.sin6_addr));
 		laddr.v6.sin6_family = AF_INET6;
+		laddr.v6.sin6_scope_id = req->id.idiag_if;
 
 		paddr.v6.sin6_port = req->id.idiag_dport;
 		memcpy(&paddr.v6.sin6_addr, req->id.idiag_dst,
 		       sizeof(paddr.v6.sin6_addr));
 		paddr.v6.sin6_family = AF_INET6;
+		paddr.v6.sin6_scope_id = req->id.idiag_if;
 	}
 
 	return sctp_transport_lookup_process(sctp_sock_dump_one,
