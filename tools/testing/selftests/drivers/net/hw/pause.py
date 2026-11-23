@@ -90,8 +90,8 @@ def controllable_lp(cfg):
     For low level ethtool tests, we need to have the remote directly connected
     to the local host (i.e. not through a switch).
 
-    This is tested by taking triggering a link renegotiation and checking the
-    carrier_changes counter on the partner.
+    This is tested by triggering a link renegotiation on the remote and
+    checking that the local link flaps.
 
     :returns: True if the remote is our link partner
     """
@@ -99,17 +99,17 @@ def controllable_lp(cfg):
     if controllable is not None:
         return controllable
 
-    before = int(cmd(f"cat /sys/class/net/{cfg.remote_ifname}/carrier_changes",
-                     host=cfg.remote).stdout)
-
-    ret, _ = ethtool_ret(f"-r {cfg.ifname}", is_get=False)
+    ret, _ = ethtool_ret(f"-r {cfg.remote_ifname}", is_get=False,
+                         host=cfg.remote)
     if ret != 0:
-        raise KsftSkipEx(f"ethtool -r {cfg.ifname} failed: {errno.errorcode.get(ret, ret)}")
+        raise KsftSkipEx(f"ethtool -r {cfg.remote_ifname} failed: {errno.errorcode.get(ret, ret)}")
 
-    wait_for_aneg(cfg, link_drop=True)
+    try:
+        wait_for_aneg(cfg, link_drop=True)
+        cfg.lp_controllable = True
+    except TimeoutError:
+        cfg.lp_controllable = False
 
-    cfg.lp_controllable = int(cmd(f"cat /sys/class/net/{cfg.remote_ifname}/carrier_changes",
-                                  host=cfg.remote).stdout) > before
     return cfg.lp_controllable
 
 def require_controllable_lp(cfg):
