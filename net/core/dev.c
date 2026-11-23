@@ -7048,6 +7048,19 @@ void __napi_schedule_irqoff(struct napi_struct *n)
 }
 EXPORT_SYMBOL(__napi_schedule_irqoff);
 
+/* Callers do not own @n, which can be deleted concurrently. */
+static void napi_timer_start(struct napi_struct *n, unsigned long timeout)
+{
+	hrtimer_start(&n->timer, ns_to_ktime(timeout),
+		      HRTIMER_MODE_REL_PINNED);
+	/* Pairs with test_and_clear_bit(NAPI_STATE_LISTED)
+	 * in __netif_napi_del_locked().
+	 */
+	smp_mb();
+	if (unlikely(!test_bit(NAPI_STATE_LISTED, &n->state)))
+		hrtimer_cancel(&n->timer);
+}
+
 bool napi_complete_done(struct napi_struct *n, int work_done)
 {
 	unsigned long flags, val, new, timeout = 0;
@@ -7112,8 +7125,7 @@ bool napi_complete_done(struct napi_struct *n, int work_done)
 	}
 
 	if (timeout)
-		hrtimer_start(&n->timer, ns_to_ktime(timeout),
-			      HRTIMER_MODE_REL_PINNED);
+		napi_timer_start(n, timeout);
 	return ret;
 }
 EXPORT_SYMBOL(napi_complete_done);
@@ -7200,8 +7212,7 @@ static void busy_poll_stop(struct napi_struct *napi, void *have_poll_lock,
 		gro_flush_normal(&napi->gro, HZ >= 1000);
 
 		clear_bit(NAPI_STATE_SCHED, &napi->state);
-		hrtimer_start(&napi->timer, ns_to_ktime(timeout),
-			      HRTIMER_MODE_REL_PINNED);
+		napi_timer_start(napi, timeout);
 	} else {
 		/* Use driver poll to re-enable device interrupts. */
 		rc = napi->poll(napi, budget);
@@ -7338,8 +7349,7 @@ void napi_suspend_irqs(unsigned int napi_id)
 		unsigned long timeout = napi_get_irq_suspend_timeout(napi);
 
 		if (timeout)
-			hrtimer_start(&napi->timer, ns_to_ktime(timeout),
-				      HRTIMER_MODE_REL_PINNED);
+			napi_timer_start(napi, timeout);
 	}
 	rcu_read_unlock();
 }
@@ -7991,6 +8001,11 @@ void __netif_napi_del_locked(struct napi_struct *napi)
 
 	if (!test_and_clear_bit(NAPI_STATE_LISTED, &napi->state))
 		return;
+
+	/* Full barrier implied by test_and_clear_bit()
+	 * pairs with napi_timer_start().
+	 */
+	hrtimer_cancel(&napi->timer);
 
 	/* Make sure NAPI is disabled (or was never enabled). */
 	WARN_ON(!test_bit(NAPI_STATE_SCHED, &napi->state));
