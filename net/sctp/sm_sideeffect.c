@@ -697,32 +697,6 @@ static void sctp_cmd_assoc_failed(struct sctp_cmd_seq *commands,
 	sctp_add_cmd_sf(commands, SCTP_CMD_DELETE_TCB, SCTP_NULL());
 }
 
-/* Process an init chunk (may be real INIT/INIT-ACK or an embedded INIT
- * inside the cookie.  In reality, this is only used for INIT-ACK processing
- * since all other cases use "temporary" associations and can do all
- * their work in statefuns directly.
- */
-static int sctp_cmd_process_init(struct sctp_cmd_seq *commands,
-				 struct sctp_association *asoc,
-				 struct sctp_chunk *chunk,
-				 struct sctp_init_chunk *peer_init,
-				 gfp_t gfp)
-{
-	int error;
-
-	/* We only process the init as a sideeffect in a single
-	 * case.   This is when we process the INIT-ACK.   If we
-	 * fail during INIT processing (due to malloc problems),
-	 * just return the error and stop processing the stack.
-	 */
-	if (!sctp_process_init(asoc, chunk, sctp_source(chunk), peer_init, gfp))
-		error = -ENOMEM;
-	else
-		error = 0;
-
-	return error;
-}
-
 /* Helper function to break out starting up of heartbeat timers.  */
 static void sctp_cmd_hb_timers_start(struct sctp_cmd_seq *cmds,
 				     struct sctp_association *asoc)
@@ -1396,16 +1370,6 @@ static int sctp_cmd_interpreter(enum sctp_event_type event_type,
 					SCTP_CHUNK(new_obj));
 			break;
 
-		case SCTP_CMD_PEER_INIT:
-			/* Process a unified INIT from the peer.
-			 * Note: Only used during INIT-ACK processing.  If
-			 * there is an error just return to the outter
-			 * layer which will bail.
-			 */
-			error = sctp_cmd_process_init(commands, asoc, chunk,
-						      cmd->obj.init, gfp);
-			break;
-
 		case SCTP_CMD_GEN_COOKIE_ECHO:
 			/* Generate a COOKIE ECHO chunk.  */
 			new_obj = sctp_make_cookie_echo(asoc, chunk);
@@ -1771,10 +1735,6 @@ static int sctp_cmd_interpreter(enum sctp_event_type event_type,
 			sctp_cmd_peer_no_auth(commands, asoc);
 			break;
 
-		case SCTP_CMD_ASSOC_SHKEY:
-			error = sctp_auth_asoc_init_active_key(asoc,
-						GFP_ATOMIC);
-			break;
 		case SCTP_CMD_UPDATE_INITTAG:
 			asoc->peer.i.init_tag = cmd->obj.u32;
 			break;
