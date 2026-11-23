@@ -1412,7 +1412,7 @@ static const struct net_device_ops gre_tap_netdev_ops = {
 	.ndo_fill_metadata_dst	= gre_fill_metadata_dst,
 };
 
-static int erspan_tunnel_init(struct net_device *dev)
+static void erspan_calc_hlen(struct net_device *dev)
 {
 	struct ip_tunnel *tunnel = netdev_priv(dev);
 
@@ -1421,9 +1421,16 @@ static int erspan_tunnel_init(struct net_device *dev)
 	else
 		tunnel->tun_hlen = 8; /* 8-byte GRE hdr. */
 
-	tunnel->parms.iph.protocol = IPPROTO_GRE;
 	tunnel->hlen = tunnel->tun_hlen + tunnel->encap_hlen +
 		       erspan_hdr_len(tunnel->erspan_ver);
+}
+
+static int erspan_tunnel_init(struct net_device *dev)
+{
+	struct ip_tunnel *tunnel = netdev_priv(dev);
+
+	erspan_calc_hlen(dev);
+	tunnel->parms.iph.protocol = IPPROTO_GRE;
 
 	dev->features		|= GRE_FEATURES;
 	dev->hw_features	|= GRE_FEATURES;
@@ -1560,6 +1567,7 @@ static int erspan_changelink(struct net_device *dev, struct nlattr *tb[],
 	struct ip_tunnel_parm_kern p;
 	__u32 fwmark = t->fwmark;
 	int err;
+	int hlen;
 
 	if (!rtnl_dev_link_net_capable(dev, t->net))
 		return -EPERM;
@@ -1569,6 +1577,8 @@ static int erspan_changelink(struct net_device *dev, struct nlattr *tb[],
 			       "Enabling collect_md on an existing device is not supported");
 		return -EOPNOTSUPP;
 	}
+
+	hlen = t->hlen;
 
 	err = ipgre_newlink_encap_setup(dev, data);
 	if (err)
@@ -1584,6 +1594,14 @@ static int erspan_changelink(struct net_device *dev, struct nlattr *tb[],
 
 	ip_tunnel_flags_copy(t->parms.i_flags, p.i_flags);
 	ip_tunnel_flags_copy(t->parms.o_flags, p.o_flags);
+
+	erspan_calc_hlen(dev);
+	hlen = t->hlen - hlen;
+	if (hlen) {
+		dev->needed_headroom += hlen;
+		if (!tb[IFLA_MTU])
+			WRITE_ONCE(dev->mtu, max_t(int, dev->mtu - hlen, 68));
+	}
 
 	return 0;
 }
