@@ -603,13 +603,22 @@ enum sctp_disposition sctp_sf_do_5_1C_ack(struct net *net,
 
 	initchunk = (struct sctp_init_chunk *)chunk->chunk_hdr;
 
-	sctp_add_cmd_sf(commands, SCTP_CMD_PEER_INIT,
-			SCTP_PEER_INIT(initchunk));
+	if (!sctp_process_init((struct sctp_association *)asoc, chunk,
+			       sctp_source(chunk), initchunk, GFP_ATOMIC)) {
+		sctp_add_cmd_sf(commands, SCTP_CMD_INIT_FAILED,
+				SCTP_PERR(SCTP_ERROR_NO_RESOURCE));
+		return SCTP_DISPOSITION_CONSUME;
+	}
 
 	/* SCTP-AUTH: generate the association shared keys so that
 	 * we can potentially sign the COOKIE-ECHO.
 	 */
-	sctp_add_cmd_sf(commands, SCTP_CMD_ASSOC_SHKEY, SCTP_NULL());
+	if (sctp_auth_asoc_init_active_key((struct sctp_association *)asoc,
+					   GFP_ATOMIC)) {
+		sctp_add_cmd_sf(commands, SCTP_CMD_INIT_FAILED,
+				SCTP_PERR(SCTP_ERROR_NO_RESOURCE));
+		return SCTP_DISPOSITION_CONSUME;
+	}
 
 	/* Reset init error count upon receipt of INIT-ACK.  */
 	sctp_add_cmd_sf(commands, SCTP_CMD_INIT_COUNTER_RESET, SCTP_NULL());
