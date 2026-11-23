@@ -66,11 +66,9 @@ vmxnet3_xdp_set(struct net_device *netdev, struct netdev_bpf *bpf,
 		vmxnet3_quiesce_dev(adapter);
 
 	vmxnet3_xdp_exchange_program(adapter, new_bpf_prog);
-	if (old_bpf_prog)
-		bpf_prog_put(old_bpf_prog);
 
 	if (!running || !need_update)
-		return 0;
+		goto out;
 
 	if (new_bpf_prog)
 		xdp_features_set_redirect_target(netdev, false);
@@ -84,17 +82,31 @@ vmxnet3_xdp_set(struct net_device *netdev, struct netdev_bpf *bpf,
 	if (err) {
 		NL_SET_ERR_MSG_MOD(extack,
 				   "failed to re-create rx queues for XDP.");
-		return -EOPNOTSUPP;
+		goto err_restore;
 	}
 	err = vmxnet3_activate_dev(adapter);
 	if (err) {
 		NL_SET_ERR_MSG_MOD(extack,
 				   "failed to activate device for XDP.");
-		return -EOPNOTSUPP;
+		goto err_restore;
 	}
 	clear_bit(VMXNET3_STATE_BIT_RESETTING, &adapter->state);
 
+out:
+	if (old_bpf_prog)
+		bpf_prog_put(old_bpf_prog);
 	return 0;
+
+err_restore:
+	/* On error the core drops its reference to the new program and
+	 * keeps the old one attached: the driver must keep the old one.
+	 */
+	vmxnet3_xdp_exchange_program(adapter, old_bpf_prog);
+	if (old_bpf_prog)
+		xdp_features_set_redirect_target(netdev, false);
+	else
+		xdp_features_clear_redirect_target(netdev);
+	return -EOPNOTSUPP;
 }
 
 /* This is the main xdp call used by kernel to set/unset eBPF program. */
