@@ -12900,4 +12900,153 @@ struct mpc_cmpl_hdr {
 	__le32	opaque;
 };
 
+/* queue_adptv_qos_rx_info (size:960b/120B) */
+struct queue_adptv_qos_rx_info {
+	__le16	rx_shared_pool_cells;
+	__le16	rx_total_cells;
+	u8	rx_cell_size;
+	u8	rx_enabled_cos;
+	#define QUEUE_ADPTV_QOS_RX_INFO_RX_ENABLED_COS0     0x1UL
+	#define QUEUE_ADPTV_QOS_RX_INFO_RX_ENABLED_COS1     0x2UL
+	#define QUEUE_ADPTV_QOS_RX_INFO_RX_ENABLED_COS2     0x4UL
+	#define QUEUE_ADPTV_QOS_RX_INFO_RX_ENABLED_COS3     0x8UL
+	#define QUEUE_ADPTV_QOS_RX_INFO_RX_ENABLED_COS4     0x10UL
+	#define QUEUE_ADPTV_QOS_RX_INFO_RX_ENABLED_COS5     0x20UL
+	#define QUEUE_ADPTV_QOS_RX_INFO_RX_ENABLED_COS6     0x40UL
+	#define QUEUE_ADPTV_QOS_RX_INFO_RX_ENABLED_COS7     0x80UL
+	u8	rx_llfc_enabled;
+	u8	rx_pfc_enabled_cos;
+	#define QUEUE_ADPTV_QOS_RX_INFO_RX_PFC_ENABLED_COS0     0x1UL
+	#define QUEUE_ADPTV_QOS_RX_INFO_RX_PFC_ENABLED_COS1     0x2UL
+	#define QUEUE_ADPTV_QOS_RX_INFO_RX_PFC_ENABLED_COS2     0x4UL
+	#define QUEUE_ADPTV_QOS_RX_INFO_RX_PFC_ENABLED_COS3     0x8UL
+	#define QUEUE_ADPTV_QOS_RX_INFO_RX_PFC_ENABLED_COS4     0x10UL
+	#define QUEUE_ADPTV_QOS_RX_INFO_RX_PFC_ENABLED_COS5     0x20UL
+	#define QUEUE_ADPTV_QOS_RX_INFO_RX_PFC_ENABLED_COS6     0x40UL
+	#define QUEUE_ADPTV_QOS_RX_INFO_RX_PFC_ENABLED_COS7     0x80UL
+	__le16	rx_reserved_cells_cos[8];
+	__le16	rx_shared_cells_cos[8];
+	__le16	rx_shared_combined_cells_cos[8];
+	__le16	rx_headroom_cells_cos[8];
+	__le16	rx_headroom_combined_cells_cos[8];
+	u8	rx_shared_pool_index_cos[8];
+	u8	rx_roce_enabled_cos;
+	#define QUEUE_ADPTV_QOS_RX_INFO_RX_ROCE_ENABLED_COS0     0x1UL
+	#define QUEUE_ADPTV_QOS_RX_INFO_RX_ROCE_ENABLED_COS1     0x2UL
+	#define QUEUE_ADPTV_QOS_RX_INFO_RX_ROCE_ENABLED_COS2     0x4UL
+	#define QUEUE_ADPTV_QOS_RX_INFO_RX_ROCE_ENABLED_COS3     0x8UL
+	#define QUEUE_ADPTV_QOS_RX_INFO_RX_ROCE_ENABLED_COS4     0x10UL
+	#define QUEUE_ADPTV_QOS_RX_INFO_RX_ROCE_ENABLED_COS5     0x20UL
+	#define QUEUE_ADPTV_QOS_RX_INFO_RX_ROCE_ENABLED_COS6     0x40UL
+	#define QUEUE_ADPTV_QOS_RX_INFO_RX_ROCE_ENABLED_COS7     0x80UL
+	u8	unused_0[7];
+	__le16	rx_cos_allocate[8];
+};
+
+/* queue_adptv_qos_tx_info (size:640b/80B) */
+struct queue_adptv_qos_tx_info {
+	__le16	tx_shared_pool_cells;
+	__le16	tx_total_cells;
+	u8	tx_cell_size;
+	u8	tx_enabled_cos;
+	#define QUEUE_ADPTV_QOS_TX_INFO_TX_ENABLED_COS0     0x1UL
+	#define QUEUE_ADPTV_QOS_TX_INFO_TX_ENABLED_COS1     0x2UL
+	#define QUEUE_ADPTV_QOS_TX_INFO_TX_ENABLED_COS2     0x4UL
+	#define QUEUE_ADPTV_QOS_TX_INFO_TX_ENABLED_COS3     0x8UL
+	#define QUEUE_ADPTV_QOS_TX_INFO_TX_ENABLED_COS4     0x10UL
+	#define QUEUE_ADPTV_QOS_TX_INFO_TX_ENABLED_COS5     0x20UL
+	#define QUEUE_ADPTV_QOS_TX_INFO_TX_ENABLED_COS6     0x40UL
+	#define QUEUE_ADPTV_QOS_TX_INFO_TX_ENABLED_COS7     0x80UL
+	u8	tx_roce_enabled_cos;
+	#define QUEUE_ADPTV_QOS_TX_INFO_TX_ROCE_ENABLED_COS0     0x1UL
+	#define QUEUE_ADPTV_QOS_TX_INFO_TX_ROCE_ENABLED_COS1     0x2UL
+	#define QUEUE_ADPTV_QOS_TX_INFO_TX_ROCE_ENABLED_COS2     0x4UL
+	#define QUEUE_ADPTV_QOS_TX_INFO_TX_ROCE_ENABLED_COS3     0x8UL
+	#define QUEUE_ADPTV_QOS_TX_INFO_TX_ROCE_ENABLED_COS4     0x10UL
+	#define QUEUE_ADPTV_QOS_TX_INFO_TX_ROCE_ENABLED_COS5     0x20UL
+	#define QUEUE_ADPTV_QOS_TX_INFO_TX_ROCE_ENABLED_COS6     0x40UL
+	#define QUEUE_ADPTV_QOS_TX_INFO_TX_ROCE_ENABLED_COS7     0x80UL
+	u8	unused_0;
+	__le16	tx_reserved_cells_cos[8];
+	__le16	tx_shared_cells_cos[8];
+	__le16	tx_shared_combined_cells_cos[8];
+	u8	tx_shared_pool_index_cos[8];
+	__le16	tx_cos_allocate[8];
+};
+
+/* hwrm_queue_adptv_qos_rx_qcfg_input (size:256b/32B) */
+struct hwrm_queue_adptv_qos_rx_qcfg_input {
+	__le16	req_type;
+	__le16	cmpl_ring;
+	__le16	seq_id;
+	__le16	target_id;
+	__le64	resp_addr;
+	__le64	rx_qcfg_host_addr;
+	__le16	rx_qcfg_size;
+	u8	port_id;
+	u8	flags;
+	#define QUEUE_ADPTV_QOS_RX_QCFG_REQ_FLAGS_COUNTER_MASK     0x1UL
+	u8	unused_0[4];
+};
+
+/* hwrm_queue_adptv_qos_rx_qcfg_output (size:128b/16B) */
+struct hwrm_queue_adptv_qos_rx_qcfg_output {
+	__le16	error_code;
+	__le16	req_type;
+	__le16	seq_id;
+	__le16	resp_len;
+	__le16	rx_qcfg_size;
+	u8	unused_0[5];
+	u8	valid;
+};
+
+/* hwrm_queue_adptv_qos_tx_qcfg_input (size:256b/32B) */
+struct hwrm_queue_adptv_qos_tx_qcfg_input {
+	__le16	req_type;
+	__le16	cmpl_ring;
+	__le16	seq_id;
+	__le16	target_id;
+	__le64	resp_addr;
+	__le64	tx_qcfg_host_addr;
+	__le16	tx_qcfg_size;
+	u8	port_id;
+	u8	flags;
+	#define QUEUE_ADPTV_QOS_TX_QCFG_REQ_FLAGS_COUNTER_MASK     0x1UL
+	u8	unused_0[4];
+};
+
+/* hwrm_queue_adptv_qos_tx_qcfg_output (size:128b/16B) */
+struct hwrm_queue_adptv_qos_tx_qcfg_output {
+	__le16	error_code;
+	__le16	req_type;
+	__le16	seq_id;
+	__le16	resp_len;
+	__le16	tx_qcfg_size;
+	u8	unused_0[5];
+	u8	valid;
+};
+
+/* hwrm_dbg_read_direct_input (size:256b/32B) */
+struct hwrm_dbg_read_direct_input {
+	__le16	req_type;
+	__le16	cmpl_ring;
+	__le16	seq_id;
+	__le16	target_id;
+	__le64	resp_addr;
+	__le64	host_dest_addr;
+	__le32	read_addr;
+	__le32	read_len32;
+};
+
+/* hwrm_dbg_read_direct_output (size:128b/16B) */
+struct hwrm_dbg_read_direct_output {
+	__le16	error_code;
+	__le16	req_type;
+	__le16	seq_id;
+	__le16	resp_len;
+	__le32	crc32;
+	u8	unused_0[3];
+	u8	valid;
+};
+
 #endif /* _BNGE_HSI_H_ */
