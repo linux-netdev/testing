@@ -347,5 +347,194 @@
         "teardown": [
             "$TC action flush action gate"
         ]
+    },
+    {
+        "id": "c873",
+        "name": "Add gate action with the minimum schedule entry interval",
+        "category": [
+            "actions",
+            "gate"
+        ],
+        "plugins": {
+           "requires": "nsPlugin"
+        },
+        "setup": [
+            [
+                "$TC actions flush action gate",
+                0,
+                1,
+                255
+            ]
+        ],
+        "cmdUnderTest": "$TC action add action gate sched-entry close 10000ns index 100",
+        "expExitCode": "0",
+        "verifyCmd": "$TC action get action gate index 100",
+        "matchPattern": "interval 10us",
+        "matchCount": "1",
+        "teardown": [
+            "$TC actions flush action gate"
+        ]
+    },
+    {
+        "id": "2c35",
+        "name": "Reject gate action with a schedule entry below the minimum interval",
+        "category": [
+            "actions",
+            "gate"
+        ],
+        "plugins": {
+           "requires": "nsPlugin"
+        },
+        "setup": [
+            [
+                "$TC actions flush action gate",
+                0,
+                1,
+                255
+            ]
+        ],
+        "cmdUnderTest": "$TC action add action gate sched-entry close 9999ns index 100",
+        "expExitCode": "255",
+        "verifyCmd": "$TC action add action gate sched-entry close 9999ns index 100 2>&1",
+        "matchPattern": "RTNETLINK answers: Invalid argument",
+        "matchCount": "1",
+        "teardown": [
+            "$TC actions flush action gate"
+        ]
+    },
+    {
+        "id": "92b8",
+        "name": "Reject gate action with a base time above S64_MAX",
+        "category": [
+            "actions",
+            "gate"
+        ],
+        "plugins": {
+           "requires": "nsPlugin"
+        },
+        "setup": [
+            [
+                "$TC actions flush action gate",
+                0,
+                1,
+                255
+            ]
+        ],
+        "cmdUnderTest": "$TC action add action gate base-time 9223372036854775808 sched-entry close 10000ns index 200",
+        "expExitCode": "255",
+        "verifyCmd": "$TC action add action gate base-time 9223372036854775808 sched-entry close 10000ns index 200 2>&1",
+        "matchPattern": "RTNETLINK answers: Numerical result out of range",
+        "matchCount": "1",
+        "teardown": [
+            "$TC actions flush action gate"
+        ]
+    },
+    {
+        "id": "8265",
+        "name": "Reject gate action with a cycle time above S64_MAX",
+        "category": [
+            "actions",
+            "gate"
+        ],
+        "plugins": {
+           "requires": "nsPlugin"
+        },
+        "setup": [
+            [
+                "$TC actions flush action gate",
+                0,
+                1,
+                255
+            ]
+        ],
+        "cmdUnderTest": "$TC action add action gate cycle-time 9223372036854775808 sched-entry close 10000ns index 300",
+        "expExitCode": "255",
+        "verifyCmd": "$TC action add action gate cycle-time 9223372036854775808 sched-entry close 10000ns index 300 2>&1",
+        "matchPattern": "RTNETLINK answers: Numerical result out of range",
+        "matchCount": "1",
+        "teardown": [
+            "$TC actions flush action gate"
+        ]
+    },
+    {
+        "id": "7d1f",
+        "name": "Add gate action with the maximum base time",
+        "category": [
+            "actions",
+            "gate"
+        ],
+        "plugins": {
+            "requires": "nsPlugin"
+        },
+        "setup": [
+            [
+                "$TC actions flush action gate",
+                0,
+                1,
+                255
+            ]
+        ],
+        "cmdUnderTest": "$TC action add action gate base-time 9223372036854775807 sched-entry close 10000ns index 201",
+        "expExitCode": "0",
+        "verifyCmd": "$TC action get action gate index 201",
+        "matchPattern": "index 201",
+        "matchCount": "1",
+        "teardown": [
+            "$TC actions flush action gate"
+        ]
+    },
+    {
+        "id": "9f10",
+        "name": "Add gate action with the maximum cycle time",
+        "category": [
+            "actions",
+            "gate"
+        ],
+        "plugins": {
+            "requires": "nsPlugin"
+        },
+        "setup": [
+            [
+                "$TC actions flush action gate",
+                0,
+                1,
+                255
+            ]
+        ],
+        "cmdUnderTest": "$TC action add action gate cycle-time 9223372036854775807 sched-entry close 10000ns index 301",
+        "expExitCode": "0",
+        "verifyCmd": "$TC action get action gate index 301",
+        "matchPattern": "index 301",
+        "matchCount": "1",
+        "teardown": [
+            "$TC actions flush action gate"
+        ]
+    },
+    {
+        "id": "5c47",
+        "name": "Reject gate action with a negative base time",
+        "category": [
+            "actions",
+            "gate"
+        ],
+        "plugins": {
+            "requires": "nsPlugin"
+        },
+        "setup": [
+            [
+                "$TC actions flush action gate",
+                0,
+                1,
+                255
+            ]
+        ],
+        "cmdUnderTest": "$TC action add action gate base-time -1 sched-entry close 10000ns index 401",
+        "expExitCode": "255",
+        "verifyCmd": "$TC action add action gate base-time -1 sched-entry close 10000ns index 401 2>&1",
+        "matchPattern": "RTNETLINK answers: Numerical result out of range",
+        "matchCount": "1",
+        "teardown": [
+            "$TC actions flush action gate"
+        ]
     }
 ]
