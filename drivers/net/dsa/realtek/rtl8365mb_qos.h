@@ -19,6 +19,7 @@ struct realtek_priv;
 
 int rtl8365mb_qos_pridec_init(struct realtek_priv *priv);
 int rtl8365mb_qos_qmap_init(struct realtek_priv *priv);
+int rtl8365mb_qos_sched_init(struct realtek_priv *priv);
 int rtl8365mb_qos_get_port_prio(struct realtek_priv *priv, int port);
 int rtl8365mb_qos_set_port_prio(struct realtek_priv *priv, int port, u8 iprio,
 				u8 untag_pcp);

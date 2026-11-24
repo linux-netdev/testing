@@ -3763,6 +3763,10 @@ static int rtl8365mb_setup(struct dsa_switch *ds)
 	if (ret)
 		goto out_teardown_irq;
 
+	ret = rtl8365mb_qos_sched_init(priv);
+	if (ret)
+		goto out_teardown_irq;
+
 	/* Start with all ports blocked, including unused ports */
 	dsa_switch_for_each_port(dp, ds) {
 		struct rtl8365mb_port *p = &mb->ports[dp->index];
