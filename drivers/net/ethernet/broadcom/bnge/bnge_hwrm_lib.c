@@ -15,6 +15,7 @@
 #include "bnge_rmem.h"
 #include "bnge_resc.h"
 #include "bnge_netdev.h"
+#include "bnge_ethtool.h"
 
 static const u16 bnge_async_events_arr[] = {
 	ASYNC_EVENT_CMPL_EVENT_ID_LINK_STATUS_CHANGE,
@@ -597,12 +598,45 @@ hwrm_func_resc_qcaps_exit:
 	return rc;
 }
 
+void bnge_hwrm_dbg_qcaps(struct bnge_dev *bd)
+{
+	struct hwrm_dbg_qcaps_output *resp;
+	struct hwrm_dbg_qcaps_input *req;
+	int rc;
+
+	bd->fw_dbg_cap = 0;
+	if (!(bd->fw_cap & BNGE_FW_CAP_DBG_QCAPS))
+		return;
+
+	/* Discovery failure is treated as restricted so we never attempt
+	 * direct register reads without confirmation from firmware.
+	 */
+	rc = bnge_hwrm_req_init(bd, req, HWRM_DBG_QCAPS);
+	if (rc) {
+		bd->fw_dbg_cap = DBG_QCAPS_RESP_FLAGS_REG_ACCESS_RESTRICTED;
+		return;
+	}
+
+	req->fid = cpu_to_le16(0xffff);
+	resp = bnge_hwrm_req_hold(bd, req);
+	rc = bnge_hwrm_req_send(bd, req);
+	if (rc) {
+		bd->fw_dbg_cap = DBG_QCAPS_RESP_FLAGS_REG_ACCESS_RESTRICTED;
+		goto hwrm_dbg_qcaps_exit;
+	}
+
+	bd->fw_dbg_cap = le32_to_cpu(resp->flags);
+
+hwrm_dbg_qcaps_exit:
+	bnge_hwrm_req_drop(bd, req);
+}
+
 int bnge_hwrm_func_qcaps(struct bnge_dev *bd)
 {
 	struct hwrm_func_qcaps_output *resp;
 	struct hwrm_func_qcaps_input *req;
 	struct bnge_pf_info *pf = &bd->pf;
-	u32 flags, flags_ext;
+	u32 flags, flags_ext, flags_ext3;
 	int rc;
 
 	rc = bnge_hwrm_req_init(bd, req, HWRM_FUNC_QCAPS);
@@ -622,10 +656,18 @@ int bnge_hwrm_func_qcaps(struct bnge_dev *bd)
 		bd->flags |= BNGE_EN_ROCE_V2;
 	if (flags & FUNC_QCAPS_RESP_FLAGS_EXT_STATS_SUPPORTED)
 		bd->fw_cap |= BNGE_FW_CAP_EXT_STATS_SUPPORTED;
+	if (flags & FUNC_QCAPS_RESP_FLAGS_PCIE_STATS_SUPPORTED)
+		bd->stats_cap |= BNGE_STATS_CAP_PCIE;
+	if (flags & FUNC_QCAPS_RESP_FLAGS_DBG_QCAPS_CMD_SUPPORTED)
+		bd->fw_cap |= BNGE_FW_CAP_DBG_QCAPS;
 
 	flags_ext = le32_to_cpu(resp->flags_ext);
 	if (flags_ext & FUNC_QCAPS_RESP_FLAGS_EXT_EXT_HW_STATS_SUPPORTED)
 		bd->fw_cap |= BNGE_FW_CAP_EXT_HW_STATS_SUPPORTED;
+
+	flags_ext3 = le32_to_cpu(resp->flags_ext3);
+	if (flags_ext3 & FUNC_QCAPS_RESP_FLAGS_EXT3_MBUF_DATA_SUPPORTED)
+		bd->fw_cap |= BNGE_FW_CAP_MBUF_DATA;
 
 	pf->fw_fid = le16_to_cpu(resp->fid);
 	pf->port_id = le16_to_cpu(resp->port_id);
@@ -1636,4 +1678,138 @@ int bnge_hwrm_port_qstats(struct bnge_dev *bd, u8 flags)
 	req->rx_stat_host_addr = cpu_to_le64(bn->port_stats.hw_stats_map);
 
 	return bnge_hwrm_req_send(bd, req);
+}
+
+#define BNGE_RX_MBUF_REG_SIZE(reg)		\
+	sizeof_field(struct queue_adptv_qos_rx_info, rx_##reg)
+
+static const struct bnge_reg_desc bnge_rx_mbuf_reg[] = {
+	{ BNGE_RX_MBUF_REG_SIZE(shared_pool_cells), 2 },
+	{ BNGE_RX_MBUF_REG_SIZE(cell_size), 4 },
+	{ BNGE_RX_MBUF_REG_SIZE(reserved_cells_cos[0]), 40 },
+	/* Spans rx_shared_pool_index_cos[8] (8B), rx_roce_enabled_cos (1B),
+	 * and unused_0[7] (7B) to sum to 16B.
+	 */
+	{ BNGE_RX_MBUF_REG_SIZE(shared_pool_index_cos[0]), 16 },
+	{ BNGE_RX_MBUF_REG_SIZE(cos_allocate[0]), 8 },
+};
+
+#define BNGE_TX_MBUF_REG_SIZE(reg)		\
+	sizeof_field(struct queue_adptv_qos_tx_info, tx_##reg)
+
+static const struct bnge_reg_desc bnge_tx_mbuf_reg[] = {
+	{ BNGE_TX_MBUF_REG_SIZE(shared_pool_cells), 2 },
+	{ BNGE_TX_MBUF_REG_SIZE(cell_size), 4 },
+	{ BNGE_TX_MBUF_REG_SIZE(reserved_cells_cos[0]), 24 },
+	{ BNGE_TX_MBUF_REG_SIZE(shared_pool_index_cos[0]), 8 },
+	{ BNGE_TX_MBUF_REG_SIZE(cos_allocate[0]), 8 },
+};
+
+int bnge_hwrm_rx_mbuf_data(struct bnge_dev *bd, u8 *reg_buf)
+{
+	struct hwrm_queue_adptv_qos_rx_qcfg_output *resp;
+	struct hwrm_queue_adptv_qos_rx_qcfg_input *req;
+	struct queue_adptv_qos_rx_info *rx_mbuf_reg;
+	dma_addr_t rx_mbuf_reg_addr;
+	int rc;
+
+	rc = bnge_hwrm_req_init(bd, req, HWRM_QUEUE_ADPTV_QOS_RX_QCFG);
+	if (rc)
+		return rc;
+
+	resp = bnge_hwrm_req_hold(bd, req);
+	rx_mbuf_reg = bnge_hwrm_req_dma_slice(bd, req, sizeof(*rx_mbuf_reg),
+					      &rx_mbuf_reg_addr);
+	if (!rx_mbuf_reg) {
+		rc = -ENOMEM;
+		goto hwrm_rx_mbuf_data_exit;
+	}
+
+	req->rx_qcfg_size = cpu_to_le16(sizeof(*rx_mbuf_reg));
+	req->port_id = (u8)bd->pf.port_id;
+	req->rx_qcfg_host_addr = cpu_to_le64(rx_mbuf_reg_addr);
+
+	rc = bnge_hwrm_req_send(bd, req);
+	if (!rc)
+		bnge_copy_regs((u8 *)rx_mbuf_reg, reg_buf, bnge_rx_mbuf_reg,
+			       ARRAY_SIZE(bnge_rx_mbuf_reg),
+			       le16_to_cpu(resp->rx_qcfg_size));
+hwrm_rx_mbuf_data_exit:
+	bnge_hwrm_req_drop(bd, req);
+	return rc;
+}
+
+int bnge_hwrm_tx_mbuf_data(struct bnge_dev *bd, u8 *reg_buf)
+{
+	struct hwrm_queue_adptv_qos_tx_qcfg_output *resp;
+	struct hwrm_queue_adptv_qos_tx_qcfg_input *req;
+	struct queue_adptv_qos_tx_info *tx_mbuf_reg;
+	dma_addr_t tx_mbuf_reg_addr;
+	int rc;
+
+	rc = bnge_hwrm_req_init(bd, req, HWRM_QUEUE_ADPTV_QOS_TX_QCFG);
+	if (rc)
+		return rc;
+
+	resp = bnge_hwrm_req_hold(bd, req);
+	tx_mbuf_reg = bnge_hwrm_req_dma_slice(bd, req, sizeof(*tx_mbuf_reg),
+					      &tx_mbuf_reg_addr);
+	if (!tx_mbuf_reg) {
+		rc = -ENOMEM;
+		goto hwrm_tx_mbuf_data_exit;
+	}
+
+	req->tx_qcfg_size = cpu_to_le16(sizeof(*tx_mbuf_reg));
+	req->port_id = (u8)bd->pf.port_id;
+	req->tx_qcfg_host_addr = cpu_to_le64(tx_mbuf_reg_addr);
+
+	rc = bnge_hwrm_req_send(bd, req);
+	if (!rc)
+		bnge_copy_regs((u8 *)tx_mbuf_reg, reg_buf, bnge_tx_mbuf_reg,
+			       ARRAY_SIZE(bnge_tx_mbuf_reg),
+			       le16_to_cpu(resp->tx_qcfg_size));
+hwrm_tx_mbuf_data_exit:
+	bnge_hwrm_req_drop(bd, req);
+	return rc;
+}
+
+int bnge_dbg_hwrm_rd_reg(struct bnge_dev *bd, u32 reg_off, u16 num_words,
+			 u32 *reg_buf)
+{
+	struct hwrm_dbg_read_direct_output *resp;
+	struct hwrm_dbg_read_direct_input *req;
+	__le32 *dbg_reg_buf;
+	dma_addr_t mapping;
+	int rc, i;
+
+	rc = bnge_hwrm_req_init(bd, req, HWRM_DBG_READ_DIRECT);
+	if (rc)
+		return rc;
+
+	dbg_reg_buf = bnge_hwrm_req_dma_slice(bd, req, num_words * 4,
+					      &mapping);
+	if (!dbg_reg_buf) {
+		rc = -ENOMEM;
+		goto dbg_hwrm_rd_reg_exit;
+	}
+
+	req->host_dest_addr = cpu_to_le64(mapping);
+
+	resp = bnge_hwrm_req_hold(bd, req);
+	req->read_addr = cpu_to_le32(reg_off + CHIMP_REG_VIEW_ADDR);
+	req->read_len32 = cpu_to_le32(num_words);
+
+	rc = bnge_hwrm_req_send(bd, req);
+	if (rc)
+		goto dbg_hwrm_rd_reg_exit;
+	if (resp->error_code) {
+		rc = -EIO;
+		goto dbg_hwrm_rd_reg_exit;
+	}
+	for (i = 0; i < num_words; i++)
+		reg_buf[i] = le32_to_cpu(dbg_reg_buf[i]);
+
+dbg_hwrm_rd_reg_exit:
+	bnge_hwrm_req_drop(bd, req);
+	return rc;
 }
