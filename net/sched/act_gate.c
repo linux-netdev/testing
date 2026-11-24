@@ -25,6 +25,11 @@ static struct tc_action_ops act_gate_ops;
  */
 #define GATE_ENTRIES_MAX	1024U
 
+/* An entry shorter than this lets the next expiry land before the softirq
+ * servicing the current one can finish, so the timer stays permanently behind.
+ */
+#define GATE_MIN_INTERVAL_NSEC	10000U
+
 static ktime_t gate_get_time(struct tcf_gate *gact)
 {
 	ktime_t mono = ktime_get();
@@ -199,8 +204,10 @@ static int fill_gate_entry(struct nlattr **tb, struct tcfg_gate_entry *entry,
 	if (tb[TCA_GATE_ENTRY_INTERVAL])
 		interval = nla_get_u32(tb[TCA_GATE_ENTRY_INTERVAL]);
 
-	if (interval == 0) {
-		NL_SET_ERR_MSG(extack, "Invalid interval for schedule entry");
+	if (interval < GATE_MIN_INTERVAL_NSEC) {
+		NL_SET_ERR_MSG_FMT(extack,
+				   "Entry interval must be at least %u ns",
+				   GATE_MIN_INTERVAL_NSEC);
 		return -EINVAL;
 	}
 
