@@ -341,14 +341,48 @@ static void smc_cdc_msg_recv_action(struct smc_sock *smc,
 {
 	union smc_host_cursor cons_old, prod_old;
 	struct smc_connection *conn = &smc->conn;
-	int diff_cons, diff_prod, diff_tx;
+	struct smc_host_cdc_msg rx_ctrl = {};
+	int diff_cons, diff_prod, diff_tx = 0;
 
 	smc_curs_copy(&prod_old, &conn->local_rx_ctrl.prod, conn);
 	smc_curs_copy(&cons_old, &conn->local_rx_ctrl.cons, conn);
-	smc_cdc_msg_to_host(&conn->local_rx_ctrl, cdc, conn);
+	rx_ctrl.prod = prod_old;
+	rx_ctrl.cons = cons_old;
+	smc_cdc_msg_to_host(&rx_ctrl, cdc, conn);
+
+	if (rx_ctrl.prod.count >= conn->rmb_desc->len ||
+	    rx_ctrl.cons.count >= conn->peer_rmbe_size)
+		return;
 
 	diff_cons = smc_curs_diff(conn->peer_rmbe_size, &cons_old,
-				  &conn->local_rx_ctrl.cons);
+				  &rx_ctrl.cons);
+	if (diff_cons > conn->peer_rmbe_size - atomic_read(&conn->peer_rmbe_space))
+		return;
+
+	if (diff_cons && conn->lgr->is_smcd &&
+	    smc_ism_support_dmb_nocopy(conn->lgr->smcd)) {
+		if (rx_ctrl.cons.count >= conn->sndbuf_desc->len)
+			return;
+		diff_tx = smc_curs_diff(conn->sndbuf_desc->len,
+					&conn->tx_curs_fin, &rx_ctrl.cons);
+		if (diff_tx > conn->sndbuf_desc->len - atomic_read(&conn->sndbuf_space))
+			return;
+	}
+
+	diff_prod = smc_curs_diff(conn->rmb_desc->len, &prod_old,
+				  &rx_ctrl.prod);
+	if (diff_prod > conn->rmb_desc->len - atomic_read(&conn->bytes_to_rcv))
+		return;
+
+	conn->local_rx_ctrl.common.type = rx_ctrl.common.type;
+	conn->local_rx_ctrl.len = rx_ctrl.len;
+	conn->local_rx_ctrl.seqno = rx_ctrl.seqno;
+	conn->local_rx_ctrl.token = rx_ctrl.token;
+	smc_curs_copy(&conn->local_rx_ctrl.prod, &rx_ctrl.prod, conn);
+	smc_curs_copy(&conn->local_rx_ctrl.cons, &rx_ctrl.cons, conn);
+	conn->local_rx_ctrl.prod_flags = rx_ctrl.prod_flags;
+	conn->local_rx_ctrl.conn_state_flags = rx_ctrl.conn_state_flags;
+
 	if (diff_cons) {
 		/* peer_rmbe_space is decreased during data transfer with RDMA
 		 * write
@@ -364,12 +398,6 @@ static void smc_cdc_msg_recv_action(struct smc_sock *smc,
 		 */
 		if (conn->lgr->is_smcd &&
 		    smc_ism_support_dmb_nocopy(conn->lgr->smcd)) {
-			/* Calculate consumed data and
-			 * increment free send buffer space.
-			 */
-			diff_tx = smc_curs_diff(conn->sndbuf_desc->len,
-						&conn->tx_curs_fin,
-						&conn->local_rx_ctrl.cons);
 			/* increase local sndbuf space and fin_curs */
 			smp_mb__before_atomic();
 			atomic_add(diff_tx, &conn->sndbuf_space);
