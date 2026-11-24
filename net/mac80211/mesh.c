@@ -379,12 +379,19 @@ int mesh_add_rsn_ie(struct ieee80211_sub_if_data *sdata, struct sk_buff *skb)
 	struct ieee80211_if_mesh *ifmsh = &sdata->u.mesh;
 	u8 len = 0;
 	const u8 *data;
+	size_t prefix;
 
 	if (!ifmsh->ie || !ifmsh->ie_len)
 		return 0;
 
-	/* find RSN IE */
-	data = cfg80211_find_ie(WLAN_EID_RSN, ifmsh->ie, ifmsh->ie_len);
+	/* Find the RSN IE in the non-vendor part of the blob only.  Everything
+	 * from the first vendor IE onwards is emitted verbatim by
+	 * mesh_add_vendor_ies(), and ieee80211_mesh_build_beacon() budgets
+	 * ifmsh->ie_len once for both of them, so an RSN IE sitting behind a
+	 * vendor IE would be copied twice and overrun the beacon's tail.
+	 */
+	prefix = ieee80211_ie_split_vendor(ifmsh->ie, ifmsh->ie_len, 0);
+	data = cfg80211_find_ie(WLAN_EID_RSN, ifmsh->ie, prefix);
 	if (!data)
 		return 0;
 
