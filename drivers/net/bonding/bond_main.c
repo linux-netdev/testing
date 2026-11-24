@@ -2374,10 +2374,21 @@ err_sysfs_del:
 	bond_sysfs_slave_del(new_slave);
 
 err_upper_unlink:
+	netdev_rx_handler_unregister(slave_dev);
+	if (BOND_MODE(bond) == BOND_MODE_8023AD)
+		bond_3ad_unbind_slave(new_slave);
 	bond_upper_dev_unlink(bond, new_slave);
+	goto err_update_slave_arr;
 
 err_unregister:
 	netdev_rx_handler_unregister(slave_dev);
+	if (BOND_MODE(bond) == BOND_MODE_8023AD)
+		bond_3ad_unbind_slave(new_slave);
+
+err_update_slave_arr:
+	if (BOND_MODE(bond) == BOND_MODE_8023AD &&
+	    bond_update_slave_arr(bond, new_slave))
+		bond_slave_arr_work_rearm(bond, 0);
 
 err_detach:
 	vlan_vids_del_by_dev(slave_dev, bond_dev);
