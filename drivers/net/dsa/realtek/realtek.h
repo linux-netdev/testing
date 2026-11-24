@@ -47,6 +47,11 @@ struct rtl8366_vlan_4k {
 	u8	fid;
 };
 
+/* Size of ets_handle[]: the most ports a switch can have and still
+ * offload ETS.
+ */
+#define REALTEK_MAX_PORTS	11
+
 struct realtek_fdb_entry {
 	u8 mac_addr[ETH_ALEN];
 	u16 vid;
@@ -107,6 +112,9 @@ struct realtek_priv {
 	int			vlan4k_enabled;
 
 	void			*chip_data; /* Per-chip extra variant data */
+
+	/* Handle of the ETS qdisc offloaded last on each port, or 0 */
+	u32			ets_handle[REALTEK_MAX_PORTS];
 };
 
 /* apptrust selector slots: the index into the trust[] array of the
@@ -201,6 +209,12 @@ struct realtek_ops {
 				    const bool *trust, unsigned int n);
 	int	(*qos_get_apptrust)(struct realtek_priv *priv, int port,
 				    bool *trust, unsigned int n);
+	/* Set the scheduler of @port. If @strict, the queues for traffic
+	 * classes 0..@num_queues - 1 are strict priority, and a higher traffic
+	 * class is served first. Otherwise they are WFQ with equal weights.
+	 */
+	int	(*qos_set_port_sched)(struct realtek_priv *priv, int port,
+				      unsigned int num_queues, bool strict);
 };
 
 struct realtek_variant {
