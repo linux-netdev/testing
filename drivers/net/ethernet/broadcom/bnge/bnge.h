@@ -66,6 +66,7 @@ enum {
 	BNGE_FW_CAP_CFA_NTUPLE_RX_EXT_IP_PROTO		= BIT_ULL(24),
 	BNGE_FW_CAP_CFA_RFS_RING_TBL_IDX_V3		= BIT_ULL(25),
 	BNGE_FW_CAP_VNIC_RE_FLUSH			= BIT_ULL(26),
+	BNGE_FW_CAP_MBUF_DATA				= BIT_ULL(27),
 };
 
 enum {
@@ -87,6 +88,10 @@ enum {
 	BNGE_RSS_CAP_AH_V6_RSS_CAP			= BIT(5),
 	BNGE_RSS_CAP_ESP_V4_RSS_CAP			= BIT(6),
 	BNGE_RSS_CAP_ESP_V6_RSS_CAP			= BIT(7),
+};
+
+enum {
+	BNGE_STATS_CAP_PCIE				= BIT(0),
 };
 
 #define BNGE_MAX_QUEUE		8
@@ -149,6 +154,8 @@ struct bnge_dev {
 #define BNGE_STATE_OPEN			1
 
 	u64			fw_cap;
+	u32			stats_cap;
+	u32			fw_dbg_cap;
 
 	/* Backing stores */
 	struct bnge_ctx_mem_info	*ctx;
@@ -249,6 +256,8 @@ struct bnge_dev {
 
 #define bnge_for_each_open_nq(i, bd) \
 	for ((i) = BNGE_FIRST_OPEN_NQ; (i) < (bd)->nq_nr_rings; (i)++)
+
+#define CHIMP_REG_VIEW_ADDR	0x80000000
 
 static inline bool bnge_is_roce_en(struct bnge_dev *bd)
 {
