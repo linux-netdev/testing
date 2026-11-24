@@ -65,4 +65,9 @@ int bnge_hwrm_shutdown_link(struct bnge_dev *bd);
 int bnge_hwrm_port_qstats(struct bnge_dev *bd, u8 flags);
 int bnge_hwrm_port_qstats_ext(struct bnge_dev *bd, u8 flags);
 int bnge_hwrm_func_qstat_ext(struct bnge_dev *bd, struct bnge_stats_mem *stats);
+int bnge_hwrm_rx_mbuf_data(struct bnge_dev *bd, u8 *reg_buf);
+int bnge_hwrm_tx_mbuf_data(struct bnge_dev *bd, u8 *reg_buf);
+void bnge_hwrm_dbg_qcaps(struct bnge_dev *bd);
+int bnge_dbg_hwrm_rd_reg(struct bnge_dev *bd, u32 reg_off,
+			 u16 num_words, u32 *reg_buf);
 #endif /* _BNGE_HWRM_LIB_H_ */
