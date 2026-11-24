@@ -134,6 +134,8 @@
 #define RTL8365MB_LEARN_LIMIT_MAX	2112
 #define RTL8365MB_MAX_NUM_EXTINTS	3
 
+static_assert(RTL8365MB_MAX_NUM_PORTS <= REALTEK_MAX_PORTS);
+
 /* Chip identification registers */
 #define RTL8365MB_CHIP_ID_REG		0x1300
 
@@ -4072,6 +4074,7 @@ static const struct dsa_switch_ops rtl8365mb_switch_ops = {
 	.port_get_apptrust = rtl83xx_port_get_apptrust,
 	.port_set_apptrust = rtl83xx_port_set_apptrust,
 	.port_get_dscp_prio = rtl83xx_port_get_dscp_prio,
+	.port_setup_tc = rtl83xx_port_setup_tc,
 	.port_stp_state_set = rtl8365mb_port_stp_state_set,
 	.port_fast_age = rtl83xx_port_fast_age,
 	.port_fdb_add = rtl83xx_port_fdb_add,
@@ -4121,6 +4124,7 @@ static const struct realtek_ops rtl8365mb_ops = {
 	.qos_set_dscp_prio = rtl8365mb_qos_set_dscp_prio,
 	.qos_set_apptrust = rtl8365mb_qos_set_apptrust,
 	.qos_get_apptrust = rtl8365mb_qos_get_apptrust,
+	.qos_set_port_sched = rtl8365mb_qos_set_port_sched,
 };
 
 static const char *const rtl8365mb_supplies[] = {

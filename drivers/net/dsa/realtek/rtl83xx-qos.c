@@ -16,6 +16,7 @@
 #include <net/dscp.h>
 #include <net/dsa.h>
 #include <net/ieee8021q.h>
+#include <net/pkt_cls.h>
 
 #include "realtek.h"
 #include "rtl83xx-qos.h"
@@ -208,3 +209,115 @@ int rtl83xx_port_set_apptrust(struct dsa_switch *ds, int port, const u8 *sel,
 					   ARRAY_SIZE(trust));
 }
 EXPORT_SYMBOL_NS_GPL(rtl83xx_port_set_apptrust, "REALTEK_DSA");
+
+static int
+rtl83xx_setup_tc_ets_replace(struct dsa_switch *ds, int port,
+			     struct tc_ets_qopt_offload_replace_params *p)
+{
+	struct realtek_priv *priv = ds->priv;
+	unsigned int nq = ds->num_tx_queues;
+	int i;
+
+	/* The qdisc must have one band per queue. */
+	if (p->bands != nq) {
+		dev_err(priv->dev, "port %d: ETS must configure all %u bands\n",
+			port, nq);
+		return -EOPNOTSUPP;
+	}
+
+	/* Only strict bands can be offloaded. */
+	for (i = 0; i < p->bands; i++) {
+		if (p->quanta[i]) {
+			dev_err(priv->dev, "port %d: ETS weighted bands are not supported\n",
+				port);
+			return -EOPNOTSUPP;
+		}
+	}
+
+	/* The switch does not use the priomap. */
+	return priv->ops->qos_set_port_sched(priv, port, nq, true);
+}
+
+/* Forget the offloaded ETS qdisc of @port and put the port back on WFQ */
+static int rtl83xx_setup_tc_ets_restore_wfq(struct dsa_switch *ds, int port)
+{
+	struct realtek_priv *priv = ds->priv;
+	int ret;
+
+	priv->ets_handle[port] = 0;
+
+	ret = priv->ops->qos_set_port_sched(priv, port, ds->num_tx_queues,
+					    false);
+	if (ret)
+		dev_err(priv->dev, "port %d: failed to restore WFQ: %pe\n",
+			port, ERR_PTR(ret));
+
+	return ret;
+}
+
+int rtl83xx_port_setup_tc(struct dsa_switch *ds, int port,
+			  enum tc_setup_type type, void *type_data)
+{
+	struct tc_ets_qopt_offload *ets = type_data;
+	struct realtek_priv *priv = ds->priv;
+	int ret;
+
+	if (type != TC_SETUP_QDISC_ETS || !priv->ops->qos_set_port_sched)
+		return -EOPNOTSUPP;
+
+	if (port >= ARRAY_SIZE(priv->ets_handle) || ets->parent != TC_H_ROOT)
+		return -EOPNOTSUPP;
+
+	switch (ets->command) {
+	case TC_ETS_REPLACE:
+		/* sch_ets keeps the qdisc when the offload fails. Put the
+		 * port back on WFQ so an earlier strict setup does not stay
+		 * active.
+		 */
+		ret = rtl83xx_setup_tc_ets_replace(ds, port,
+						   &ets->replace_params);
+		if (ret) {
+			rtl83xx_setup_tc_ets_restore_wfq(ds, port);
+			return ret;
+		}
+
+		priv->ets_handle[port] = ets->handle;
+
+		return 0;
+
+	case TC_ETS_DESTROY:
+		/* sch_ets offloads a new root qdisc before it destroys the
+		 * old one. Put the port back on WFQ only when DESTROY carries
+		 * the handle that was offloaded last. The new qdisc can fail
+		 * after the driver has offloaded it, for example in its rate
+		 * estimator. In that case qdisc_create() destroys the new
+		 * qdisc. Its DESTROY carries the handle offloaded last, so the
+		 * port goes back to WFQ. The old qdisc keeps running in
+		 * software.
+		 *
+		 * With hw-tc-offload off, sch_ets sends no DESTROY, so the
+		 * port stays strict.
+		 */
+		if (ets->handle != priv->ets_handle[port])
+			return 0;
+
+		return rtl83xx_setup_tc_ets_restore_wfq(ds, port);
+
+	case TC_ETS_STATS:
+		/* Report the qdisc as offloaded. tc_ets_qopt_offload carries
+		 * no extack, so this mark is the only sign in tc that the
+		 * offload was accepted. The stats stay the software ones. They
+		 * count only what the host sends on this port, not traffic
+		 * the switch forwards.
+		 */
+		return ets->handle == priv->ets_handle[port] ? 0 : -EOPNOTSUPP;
+
+	default:
+		/* Child qdiscs (TC_ETS_GRAFT) run in software. If tc has
+		 * marked the parent ets qdisc as offloaded, tc warns about the
+		 * graft.
+		 */
+		return -EOPNOTSUPP;
+	}
+}
+EXPORT_SYMBOL_NS_GPL(rtl83xx_port_setup_tc, "REALTEK_DSA");
