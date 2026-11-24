@@ -11,7 +11,9 @@
 
 #include "bnge.h"
 #include "bnge_ethtool.h"
+#include "bnge_hwrm.h"
 #include "bnge_hwrm_lib.h"
+#include "bnge_netdev.h"
 
 static int bnge_nway_reset(struct net_device *dev)
 {
@@ -740,6 +742,170 @@ static int bnge_set_pauseparam(struct net_device *dev,
 	return rc;
 }
 
+static void *__bnge_hwrm_pcie_qstats(struct bnge_dev *bd,
+				     struct hwrm_pcie_qstats_input *req)
+{
+	struct pcie_ctx_hw_stats_v2 *hw_pcie_stats;
+	dma_addr_t hw_pcie_stats_addr;
+	int rc;
+
+	hw_pcie_stats = bnge_hwrm_req_dma_slice(bd, req, sizeof(*hw_pcie_stats),
+						&hw_pcie_stats_addr);
+	if (!hw_pcie_stats)
+		return NULL;
+
+	req->pcie_stat_size = cpu_to_le16(sizeof(*hw_pcie_stats));
+	req->pcie_stat_host_addr = cpu_to_le64(hw_pcie_stats_addr);
+	rc = bnge_hwrm_req_send(bd, req);
+
+	return rc ? NULL : hw_pcie_stats;
+}
+
+static int bnge_get_regs_len(struct net_device *dev)
+{
+	struct bnge_net *bn = netdev_priv(dev);
+	struct bnge_dev *bd = bn->bd;
+
+	if (bd->fw_cap & BNGE_FW_CAP_MBUF_DATA)
+		return BNGE_MBUF_REG_START + BNGE_MBUF_REG_LEN;
+
+	/* Reserve room for the largest PCIe stats layout so that the size
+	 * reported here does not depend on a one-time discovery at init.
+	 */
+	if (bd->stats_cap & BNGE_STATS_CAP_PCIE)
+		return BNGE_PXP_REG_LEN + sizeof(struct pcie_ctx_hw_stats_v2);
+
+	return BNGE_PXP_REG_LEN;
+}
+
+#define BNGE_PCIE_REG_SIZE(reg)		\
+	sizeof_field(struct pcie_ctx_hw_stats_v2, pcie_##reg)
+
+static const struct bnge_reg_desc bnge_pcie_reg[] = {
+	{ BNGE_PCIE_REG_SIZE(pl_signal_integrity), 8 },
+	{ sizeof(__le16), 4 }, /* pcie_equalization_time: 4x __le16 */
+	{ BNGE_PCIE_REG_SIZE(ltssm_histogram[0]), 4 },
+	{ BNGE_PCIE_REG_SIZE(recovery_histogram), 1 },
+	{ BNGE_PCIE_REG_SIZE(tl_credit_nph_histogram[0]), 94 },
+	{ BNGE_PCIE_REG_SIZE(posted_packet_count), 5 },
+	{ BNGE_PCIE_REG_SIZE(rd_latency_histogram[0]), 14 },
+};
+
+static void bnge_write_val(void *dst, void *src, u8 size)
+{
+	switch (size) {
+	case 1:
+		*(u8 *)dst = *(u8 *)src;
+		break;
+	case 2:
+		put_unaligned(get_unaligned_le16(src), (u16 *)dst);
+		break;
+	case 4:
+		put_unaligned(get_unaligned_le32(src), (u32 *)dst);
+		break;
+	case 8:
+		put_unaligned(get_unaligned_le64(src), (u64 *)dst);
+		break;
+	default:
+		WARN_ON_ONCE(1);
+		break;
+	}
+}
+
+void bnge_copy_regs(u8 *src, u8 *dst, const struct bnge_reg_desc *desc,
+		    int num_desc, int max_len)
+{
+	u32 off = 0;
+	int i, j;
+
+	for (i = 0; i < num_desc; i++) {
+		const struct bnge_reg_desc *d = &desc[i];
+		u8 size = d->size;
+
+		for (j = 0; j < d->count; j++) {
+			if (off + size > max_len)
+				return;
+			bnge_write_val(dst + off, src + off, size);
+			off += size;
+		}
+	}
+}
+
+static void bnge_get_pcie_regs(struct bnge_dev *bd, struct ethtool_regs *regs,
+			       u8 *dst)
+{
+	struct hwrm_pcie_qstats_output *resp;
+	struct hwrm_pcie_qstats_input *req;
+	u8 *src;
+	int len;
+
+	if (bnge_hwrm_req_init(bd, req, HWRM_PCIE_QSTATS))
+		return;
+
+	resp = bnge_hwrm_req_hold(bd, req);
+	src = __bnge_hwrm_pcie_qstats(bd, req);
+	if (!src)
+		goto drop_req;
+
+	len = min_t(int, le16_to_cpu(resp->pcie_stat_size),
+		    sizeof(struct pcie_ctx_hw_stats_v2));
+	if (len <= 0)
+		goto drop_req;
+
+	if (len <= sizeof(struct pcie_ctx_hw_stats))
+		regs->version = 1;
+	else if (len < sizeof(struct pcie_ctx_hw_stats_v2))
+		regs->version = 2;
+	else
+		regs->version = 3;
+
+	bnge_copy_regs(src, dst, bnge_pcie_reg, ARRAY_SIZE(bnge_pcie_reg),
+		       len);
+drop_req:
+	bnge_hwrm_req_drop(bd, req);
+}
+
+static void bnge_get_regs(struct net_device *dev, struct ethtool_regs *regs,
+			  void *_p)
+{
+	struct bnge_net *bn = netdev_priv(dev);
+	struct bnge_dev *bd = bn->bd;
+	u8 *p = _p;
+
+	regs->version = 0;
+
+	if (BNGE_NO_FW_ACCESS(bd))
+		return;
+
+	if (!(bd->fw_dbg_cap & DBG_QCAPS_RESP_FLAGS_REG_ACCESS_RESTRICTED)) {
+		int rc;
+
+		rc = bnge_dbg_hwrm_rd_reg(bd, 0, BNGE_PXP_REG_LEN / 4, _p);
+		if (rc)
+			netdev_warn(dev, "Failed to read PXP regs: %d\n", rc);
+	}
+
+	if (bd->stats_cap & BNGE_STATS_CAP_PCIE)
+		bnge_get_pcie_regs(bd, regs, p + BNGE_PXP_REG_LEN);
+
+	if (bd->fw_cap & BNGE_FW_CAP_MBUF_DATA) {
+		int rc_rx, rc_tx;
+
+		/* Version 4 is required for the userspace ethtool decoder to
+		 * dump MBUF stats. At least one of the RX/TX queries is
+		 * expected to be supported; the direction that is unavailable
+		 * reads back as zero, which the decoder expects. Report
+		 * version 4 if either query succeeded.
+		 */
+		rc_rx = bnge_hwrm_rx_mbuf_data(bd,
+					       p + BNGE_RX_MBUF_REG_OFFSET);
+		rc_tx = bnge_hwrm_tx_mbuf_data(bd,
+					       p + BNGE_TX_MBUF_REG_OFFSET);
+		if (!rc_rx || !rc_tx)
+			regs->version = 4;
+	}
+}
+
 static const struct ethtool_ops bnge_ethtool_ops = {
 	.cap_link_lanes_supported	= 1,
 	.get_link_ksettings	= bnge_get_link_ksettings,
@@ -757,6 +923,8 @@ static const struct ethtool_ops bnge_ethtool_ops = {
 	.get_eth_ctrl_stats	= bnge_get_eth_ctrl_stats,
 	.get_pause_stats	= bnge_get_pause_stats,
 	.get_rmon_stats		= bnge_get_rmon_stats,
+	.get_regs_len		= bnge_get_regs_len,
+	.get_regs		= bnge_get_regs,
 };
 
 void bnge_set_ethtool_ops(struct net_device *dev)

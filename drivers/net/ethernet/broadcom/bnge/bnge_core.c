@@ -8,6 +8,7 @@
 
 #include "bnge.h"
 #include "bnge_devlink.h"
+#include "bnge_ethtool.h"
 #include "bnge_hwrm.h"
 #include "bnge_hwrm_lib.h"
 #include "bnge_link.h"
@@ -73,6 +74,8 @@ static int bnge_func_qcaps(struct bnge_dev *bd)
 		dev_err(bd->dev, "query qportcfg failure rc: %d\n", rc);
 		return rc;
 	}
+
+	bnge_hwrm_dbg_qcaps(bd);
 
 	return 0;
 }
