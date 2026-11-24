@@ -26,6 +26,8 @@ int rtl8365mb_qos_set_port_prio(struct realtek_priv *priv, int port, u8 iprio,
 int rtl8365mb_qos_set_pcp_prio(struct realtek_priv *priv, u8 pcp, u8 iprio);
 int rtl8365mb_qos_get_dscp_prio(struct realtek_priv *priv, u8 dscp);
 int rtl8365mb_qos_set_dscp_prio(struct realtek_priv *priv, u8 dscp, u8 iprio);
+int rtl8365mb_qos_set_port_sched(struct realtek_priv *priv, int port,
+				 unsigned int num_queues, bool strict);
 int rtl8365mb_qos_set_apptrust(struct realtek_priv *priv, int port,
 			       const bool *trust, unsigned int n);
 int rtl8365mb_qos_get_apptrust(struct realtek_priv *priv, int port, bool *trust,
