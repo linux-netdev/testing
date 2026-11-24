@@ -630,6 +630,13 @@ void vlan_dev_free_egress_priority(const struct net_device *dev)
 
 static void vlan_dev_uninit(struct net_device *dev)
 {
+	struct net_device *real_dev = vlan_dev_priv(dev)->real_dev;
+
+	if (dev->flags & IFF_ALLMULTI)
+		dev_set_allmulti(real_dev, -1);
+	if (dev->flags & IFF_PROMISC)
+		dev_set_promiscuity(real_dev, -1);
+
 	vlan_dev_free_egress_priority(dev);
 }
 
