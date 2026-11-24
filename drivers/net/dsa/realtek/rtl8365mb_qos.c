@@ -97,6 +97,38 @@ static_assert(RTL8365MB_QOS_1Q_REMAP_REG(IEEE_8021Q_MAX_PRIORITIES - 1) <
 static_assert(RTL8365MB_QOS_DSCP_PRI_REG(DSCP_MAX - 1) <
 	      RTL8365MB_QOS_PORT_PRI_REG(0));
 
+/* Egress queue ids per port */
+#define RTL8365MB_QOS_SCHED_QIDS			8
+
+/* Egress scheduler queue type: one bit per (port, queue id), two ports per
+ * register
+ */
+#define RTL8365MB_QOS_SCHED_QTYPE_PORTS_PER_REG		2
+#define RTL8365MB_QOS_SCHED_QTYPE_REG(_p) \
+	(0x0302 + (_p) / RTL8365MB_QOS_SCHED_QTYPE_PORTS_PER_REG)
+#define RTL8365MB_QOS_SCHED_QTYPE_BIT(_p, _qid) \
+	(((_p) % RTL8365MB_QOS_SCHED_QTYPE_PORTS_PER_REG) * \
+	 RTL8365MB_QOS_SCHED_QIDS + (_qid))
+
+#define RTL8365MB_QOS_SCHED_QTYPE_STRICT		0
+#define RTL8365MB_QOS_SCHED_QTYPE_WFQ			1
+
+static_assert(RTL8365MB_QOS_SCHED_QIDS *
+	      RTL8365MB_QOS_SCHED_QTYPE_PORTS_PER_REG <=
+	      RTL8365MB_QOS_REG_BITS);
+
+/* WFQ weight of a queue: one whole register per (port, queue id) */
+#define RTL8365MB_QOS_SCHED_WFQ_WEIGHT_REG(_p, _qid) \
+	(0x030c + (_p) * RTL8365MB_QOS_SCHED_QIDS + (_qid))
+
+/* The unit of the WFQ weight is unknown; the driver writes the same weight to
+ * every queue.
+ */
+#define RTL8365MB_QOS_SCHED_WFQ_WEIGHT_DEFAULT		1
+
+static_assert(RTL8365MB_QOS_SCHED_QTYPE_REG(RTL8365MB_QOS_MAX_PORTS - 1) <
+	      RTL8365MB_QOS_SCHED_WFQ_WEIGHT_REG(0, 0));
+
 /* Priority-decision weight tables. In the driver's model of the decision
  * hardware, a source ranks by its highest set weight bit (a one-hot rank), not
  * by numeric magnitude. A weight of zero disables the source.
@@ -355,6 +387,8 @@ static int rtl8365mb_qos_set_qmap_qid(struct realtek_priv *priv, int qmap,
  */
 #define RTL8365MB_QOS_QID_TOP				7
 
+static_assert(RTL8365MB_QOS_QID_TOP < RTL8365MB_QOS_SCHED_QIDS);
+
 static u8 rtl8365mb_qos_tc_to_qid(unsigned int num_queues, u8 tc)
 {
 	if (num_queues > 1 && tc == num_queues - 1)
@@ -396,6 +430,62 @@ int rtl8365mb_qos_qmap_init(struct realtek_priv *priv)
 	dsa_switch_for_each_available_port(dp, &priv->ds) {
 		ret = rtl8365mb_qos_set_port_qmap(priv, dp->index,
 						  RTL8365MB_QOS_QMAP_DEFAULT);
+		if (ret)
+			return ret;
+	}
+
+	return 0;
+}
+
+static int rtl8365mb_qos_write_port_sched(struct realtek_priv *priv, int port,
+					  unsigned int num_queues)
+{
+	u32 weight = RTL8365MB_QOS_SCHED_WFQ_WEIGHT_DEFAULT;
+	unsigned int tc;
+	u32 qtype;
+	int ret;
+	u32 reg;
+
+	if (!num_queues || num_queues > RTL8365MB_QOS_SCHED_QIDS)
+		return -EINVAL;
+
+	reg = RTL8365MB_QOS_SCHED_QTYPE_REG(port);
+	qtype = RTL8365MB_QOS_SCHED_QTYPE_WFQ;
+
+	/* Program the queue ids that the traffic-type-to-queue map uses */
+	for (tc = 0; tc < num_queues; tc++) {
+		u32 mask;
+		u32 wreg;
+		u8 qid;
+
+		qid = rtl8365mb_qos_tc_to_qid(num_queues, tc);
+		mask = BIT(RTL8365MB_QOS_SCHED_QTYPE_BIT(port, qid));
+		wreg = RTL8365MB_QOS_SCHED_WFQ_WEIGHT_REG(port, qid);
+
+		ret = regmap_write(priv->map, wreg, weight);
+		if (ret)
+			return ret;
+
+		ret = rtl8365mb_qos_regmap_update_field(priv, reg, mask, qtype);
+		if (ret)
+			return ret;
+	}
+
+	return 0;
+}
+
+/* The chip resets every queue to strict priority. Put the ports in use on
+ * WFQ with equal weights.
+ */
+int rtl8365mb_qos_sched_init(struct realtek_priv *priv)
+{
+	unsigned int nq = priv->ds.num_tx_queues;
+	struct dsa_port *dp;
+	int ret;
+
+	/* Unused ports carry no traffic; their scheduler is left alone */
+	dsa_switch_for_each_available_port(dp, &priv->ds) {
+		ret = rtl8365mb_qos_write_port_sched(priv, dp->index, nq);
 		if (ret)
 			return ret;
 	}
