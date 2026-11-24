@@ -437,8 +437,9 @@ int rtl8365mb_qos_qmap_init(struct realtek_priv *priv)
 	return 0;
 }
 
+/* Under strict priority a higher queue id is served first */
 static int rtl8365mb_qos_write_port_sched(struct realtek_priv *priv, int port,
-					  unsigned int num_queues)
+					  unsigned int num_queues, bool strict)
 {
 	u32 weight = RTL8365MB_QOS_SCHED_WFQ_WEIGHT_DEFAULT;
 	unsigned int tc;
@@ -450,7 +451,8 @@ static int rtl8365mb_qos_write_port_sched(struct realtek_priv *priv, int port,
 		return -EINVAL;
 
 	reg = RTL8365MB_QOS_SCHED_QTYPE_REG(port);
-	qtype = RTL8365MB_QOS_SCHED_QTYPE_WFQ;
+	qtype = strict ? RTL8365MB_QOS_SCHED_QTYPE_STRICT :
+			 RTL8365MB_QOS_SCHED_QTYPE_WFQ;
 
 	/* Program the queue ids that the traffic-type-to-queue map uses */
 	for (tc = 0; tc < num_queues; tc++) {
@@ -462,9 +464,11 @@ static int rtl8365mb_qos_write_port_sched(struct realtek_priv *priv, int port,
 		mask = BIT(RTL8365MB_QOS_SCHED_QTYPE_BIT(port, qid));
 		wreg = RTL8365MB_QOS_SCHED_WFQ_WEIGHT_REG(port, qid);
 
-		ret = regmap_write(priv->map, wreg, weight);
-		if (ret)
-			return ret;
+		if (!strict) {
+			ret = regmap_write(priv->map, wreg, weight);
+			if (ret)
+				return ret;
+		}
 
 		ret = rtl8365mb_qos_regmap_update_field(priv, reg, mask, qtype);
 		if (ret)
@@ -472,6 +476,18 @@ static int rtl8365mb_qos_write_port_sched(struct realtek_priv *priv, int port,
 	}
 
 	return 0;
+}
+
+int rtl8365mb_qos_set_port_sched(struct realtek_priv *priv, int port,
+				 unsigned int num_queues, bool strict)
+{
+	int ret;
+
+	ret = rtl8365mb_qos_check_port(priv, port);
+	if (ret)
+		return ret;
+
+	return rtl8365mb_qos_write_port_sched(priv, port, num_queues, strict);
 }
 
 /* The chip resets every queue to strict priority. Put the ports in use on
@@ -485,7 +501,8 @@ int rtl8365mb_qos_sched_init(struct realtek_priv *priv)
 
 	/* Unused ports carry no traffic; their scheduler is left alone */
 	dsa_switch_for_each_available_port(dp, &priv->ds) {
-		ret = rtl8365mb_qos_write_port_sched(priv, dp->index, nq);
+		ret = rtl8365mb_qos_write_port_sched(priv, dp->index, nq,
+						     false);
 		if (ret)
 			return ret;
 	}
