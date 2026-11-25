@@ -485,20 +485,21 @@ void tipc_mon_rcv(struct net *net, void *data, u16 dlen, u32 addr,
 	struct tipc_mon_domain dom_bef;
 	struct tipc_mon_domain *dom;
 	struct tipc_peer *peer;
-	u16 new_member_cnt = mon_le16_to_cpu(arrv_dom->member_cnt);
-	int new_dlen = dom_rec_len(arrv_dom, new_member_cnt);
-	u16 new_gen = mon_le16_to_cpu(arrv_dom->gen);
-	u16 acked_gen = mon_le16_to_cpu(arrv_dom->ack_gen);
-	u16 arrv_dlen = mon_le16_to_cpu(arrv_dom->len);
+	u16 new_member_cnt, new_gen, acked_gen, arrv_dlen;
 	bool probing = state->probing;
-	int i, applied_bef;
+	int i, applied_bef, new_dlen;
 
 	state->probing = false;
 
 	/* Sanity check received domain record */
-	if (new_member_cnt > MAX_MON_DOMAIN)
-		return;
 	if (dlen < dom_rec_len(arrv_dom, 0))
+		return;
+	new_member_cnt = mon_le16_to_cpu(arrv_dom->member_cnt);
+	new_dlen = dom_rec_len(arrv_dom, new_member_cnt);
+	new_gen = mon_le16_to_cpu(arrv_dom->gen);
+	acked_gen = mon_le16_to_cpu(arrv_dom->ack_gen);
+	arrv_dlen = mon_le16_to_cpu(arrv_dom->len);
+	if (new_member_cnt > MAX_MON_DOMAIN)
 		return;
 	if (dlen != dom_rec_len(arrv_dom, new_member_cnt))
 		return;
