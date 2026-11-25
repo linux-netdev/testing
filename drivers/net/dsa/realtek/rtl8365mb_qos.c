@@ -21,8 +21,12 @@
 #include "rtl8365mb.h"
 #include "rtl8365mb_qos.h"
 
-/* The chip's eight internal priorities carry 802.1Q traffic types, one
- * internal priority per traffic type.
+/* The shared rtl83xx-qos.c layer hands this backend internal priorities
+ * that are 802.1Q traffic types, one per traffic type. Family C stores them
+ * as they are. Family D numbers its internal priorities like PCP values, as
+ * its vendor API does, and takes the PCP of a newly inserted 802.1Q tag from
+ * the internal priority, so it converts them at the register boundary
+ * through the qos_* hooks of struct rtl8365mb_family_info.
  */
 static_assert(RTL8365MB_NUM_INTERNAL_PRIOS == IEEE8021Q_TT_MAX);
 
@@ -66,7 +70,9 @@ static_assert(RTL8365MB_QOS_QMAP_DEFAULT < RTL8365MB_QOS_NUM_QMAPS);
 #define RTL8365MB_QOS_1Q_REMAP_REG(_pcp) \
 	(0x0865 + (_pcp) / RTL8365MB_QOS_SELS_PER_REG)
 
-/* PCP given to untagged frames, one 3-bit field per port */
+/* PCP given to untagged frames, one 3-bit field per port (family C only;
+ * family D has no such register, see rtl8365mb_d_qos_set_untag_pcp())
+ */
 #define RTL8365MB_QOS_PORT_UNTAG_PCP_REG(_p) \
 	(0x0851 + (_p) / RTL8365MB_QOS_SELS_PER_REG)
 
@@ -239,6 +245,26 @@ int rtl8365mb_c_qos_set_untag_pcp(struct realtek_priv *priv, int port,
 						 untag_pcp);
 }
 
+/* Family D numbers its internal priorities like PCP values */
+int rtl8365mb_d_qos_iprio_to_hw(u8 iprio)
+{
+	return ieee8021q_tt_to_pcp(iprio);
+}
+
+int rtl8365mb_d_qos_hw_to_iprio(u8 hw)
+{
+	return ieee8021q_pcp_to_tt(hw);
+}
+
+/* There is no separate PCP for untagged frames: it is the one the port
+ * priority implies, so a different one cannot be set.
+ */
+int rtl8365mb_d_qos_set_untag_pcp(struct realtek_priv *priv, int port,
+				  u8 hw_prio, u8 untag_pcp)
+{
+	return untag_pcp == hw_prio ? 0 : -EOPNOTSUPP;
+}
+
 /* Convert an internal priority (an 802.1Q traffic type) to the value the
  * chip uses. Return the value or a negative errno.
  */
@@ -368,8 +394,8 @@ int rtl8365mb_qos_qmap_init(struct realtek_priv *priv)
 	struct dsa_port *dp;
 	int prio, ret;
 
-	/* The table is indexed by the chip's priority, not by the traffic
-	 * type.
+	/* The table is indexed by the chip's priority, which is the traffic
+	 * type on family C and the PCP on family D.
 	 */
 	for (prio = 0; prio < RTL8365MB_NUM_INTERNAL_PRIOS; prio++) {
 		int tt = rtl8365mb_qos_hw_to_iprio(priv, prio);
