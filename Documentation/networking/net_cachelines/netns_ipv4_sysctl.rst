@@ -150,6 +150,7 @@ struct_ping_group_range         ping_group_range
 atomic_t                        dev_addr_genid
 unsigned_int                    sysctl_udp_child_hash_entries
 unsigned_long*                  sysctl_local_reserved_ports
+unsigned_long*                  sysctl_tcp_l3mdev_exempt_ports                                   read_mostly         __inet_lookup_listener/inet6_lookup_listener
 int                             sysctl_ip_prot_sock
 struct_mr_table*                mrt
 struct_list_head                mr_tables
