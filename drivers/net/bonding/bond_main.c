@@ -2369,7 +2369,16 @@ skip_mac_set:
 
 /* Undo stages on error */
 err_dec_slave_cnt:
+	bond_slave_ns_maddrs_del(bond, new_slave);
 	WRITE_ONCE(bond->slave_cnt, bond->slave_cnt - 1);
+	if (!bond_uses_primary(bond)) {
+		if (bond_dev->flags & IFF_PROMISC)
+			dev_set_promiscuity(slave_dev, -1);
+		if (bond_dev->flags & IFF_ALLMULTI)
+			dev_set_allmulti(slave_dev, -1);
+		if (bond_dev->flags & IFF_UP)
+			bond_hw_addr_flush(bond_dev, slave_dev);
+	}
 
 err_sysfs_del:
 	bond_sysfs_slave_del(new_slave);
@@ -2395,6 +2404,7 @@ err_detach:
 	slave_disable_netpoll(new_slave);
 
 err_close:
+	bond_slave_ns_maddrs_del(bond, new_slave);
 	if (!netif_is_bond_master(slave_dev))
 		slave_dev->priv_flags &= ~IFF_BONDING;
 	dev_close(slave_dev);
