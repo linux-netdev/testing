@@ -437,6 +437,8 @@ static void mcs7830_get_regs(struct net_device *net, struct ethtool_regs *regs, 
 	struct usbnet *dev = netdev_priv(net);
 
 	regs->version = mcs7830_get_rev(dev);
+	if (!regs->len)
+		return;
 	mcs7830_get_reg(dev, 0, regs->len, data);
 }
 
