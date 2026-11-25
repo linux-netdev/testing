@@ -3780,6 +3780,39 @@ free_flow_post_acts(struct mlx5e_tc_flow *flow)
 	}
 }
 
+/* Neigh and route updates wait for init_done while holding
+ * encap_tbl_lock, so the waiters have to be woken before error cleanup
+ * takes that lock again.  A flow that fails here is skipped by them: the
+ * neigh paths check OFFLOADED and the route paths check FAILED.
+ */
+static void mlx5e_flow_init_failed(struct mlx5e_tc_flow *flow)
+{
+	flow_flag_set(flow, FAILED);
+	complete_all(&flow->init_done);
+}
+
+/* Remove the post action rules of a flow that failed to initialize.  A
+ * woken neigh update may release the encap header they point to, so they
+ * have to go before init_done is completed.
+ */
+static void
+del_flow_post_act_handles(struct mlx5e_tc_flow *flow)
+{
+	struct mlx5e_post_act *post_act = get_post_action(flow->priv);
+	struct mlx5_flow_attr *attr;
+
+	list_for_each_entry(attr, &flow->attrs, list) {
+		if (list_is_last(&attr->list, &flow->attrs))
+			break;
+
+		if (!attr->post_act_handle)
+			continue;
+
+		mlx5e_tc_post_act_del(post_act, attr->post_act_handle);
+		attr->post_act_handle = NULL;
+	}
+}
+
 int
 mlx5e_tc_offload_flow_post_acts(struct mlx5e_tc_flow *flow)
 {
@@ -3884,6 +3917,8 @@ out:
 	return 0;
 
 out_free:
+	del_flow_post_act_handles(flow);
+	mlx5e_flow_init_failed(flow);
 	free_flow_post_acts(flow);
 	return err;
 }
@@ -4620,8 +4655,11 @@ __mlx5e_add_fdb_flow(struct mlx5e_priv *priv,
 		goto err_free;
 
 	err = parse_tc_fdb_actions(priv, &rule->action, flow, extack);
-	if (err)
+	if (err) {
+		del_flow_post_act_handles(flow);
+		mlx5e_flow_init_failed(flow);
 		goto err_free;
+	}
 
 	err = mlx5e_tc_add_fdb_flow(priv, flow, extack);
 	complete_all(&flow->init_done);
