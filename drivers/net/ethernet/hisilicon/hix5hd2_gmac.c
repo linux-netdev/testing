@@ -816,9 +816,14 @@ static void hix5hd2_free_dma_desc_rings(struct hix5hd2_priv *priv)
 		if (skb == NULL)
 			continue;
 
-		desc = priv->tx_bq.desc + i;
-		addr = le32_to_cpu(desc->buff_addr);
-		dma_unmap_single(priv->dev, addr, skb->len, DMA_TO_DEVICE);
+		if (skb_shinfo(skb)->nr_frags) {
+			hix5hd2_clean_sg_desc(priv, skb, i);
+		} else {
+			desc = priv->tx_bq.desc + i;
+			addr = le32_to_cpu(desc->buff_addr);
+			dma_unmap_single(priv->dev, addr, skb->len,
+					 DMA_TO_DEVICE);
+		}
 		dev_kfree_skb_any(skb);
 		priv->tx_skb[i] = NULL;
 	}
