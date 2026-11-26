@@ -8,6 +8,7 @@
 #include <linux/types.h>
 #include <linux/skbuff.h>
 
+struct mlx5_nodnic_sq_stats;
 struct mlx5_nodnic_sq;
 struct mlx5_nodnic_cq;
 struct mlx5_cqe64;
@@ -51,6 +52,8 @@ struct mlx5_nodnic_tx_wqe {
 
 netdev_tx_t mlx5_nodnic_xmit(struct sk_buff *skb, struct net_device *dev);
 u16 mlx5_nodnic_sq_get_pi(struct mlx5_nodnic_sq *sq, u16 pc);
+void mlx5_nodnic_sq_stats_inc(struct mlx5_nodnic_sq_stats *stats,
+			      const struct mlx5_nodnic_tx_wqe_info *wi);
 void mlx5_nodnic_handle_send_cqe(struct mlx5_nodnic_cq *cq,
 				 struct mlx5_cqe64 *cqe, int napi_budget);
 void mlx5_nodnic_complete_send_wqe(struct mlx5_nodnic_sq *sq,
