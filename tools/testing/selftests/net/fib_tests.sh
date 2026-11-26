@@ -14,6 +14,8 @@ TESTS="unregister down carrier nexthop suppress ipv6_notify ipv4_notify \
        ipv4_mpath_list ipv6_mpath_list ipv4_mpath_balance ipv6_mpath_balance \
        ipv4_mpath_balance_preferred ipv4_mpath_oif ipv4_mpath_oif_nh \
        ipv4_mpath_oif_vrf ipv6_mpath_oif ipv6_mpath_oif_nh ipv6_mpath_oif_vrf \
+       ipv4_oif_fallback ipv4_oif_fallback_nh ipv6_oif_fallback \
+       ipv6_oif_fallback_nh \
        fib6_ra_to_static fib6_temp_addr_renewal"
 
 VERBOSE=0
@@ -3228,6 +3230,92 @@ ipv6_mpath_oif_vrf_test()
 	cleanup
 }
 
+check_oif_fallback()
+{
+	local dst=$1 dev=$2 prefix=$3 metric=$4
+	local out
+
+	out=$($IP -o route get fibmatch "$dst" oif "$dev") || return 1
+	[[ $out == "$prefix "* && " $out " == *" metric $metric "* ]]
+}
+
+oif_fallback_test_common()
+{
+	local family=$1 mode=$2
+	local addr gw1 gw2 dst longer shorter
+	local -a nh1 nh2
+
+	echo
+	echo "IPv$family output interface fallback ($mode nexthops)"
+
+	if [ "$family" = 4 ]; then
+		addr=192.0.2.1/24
+		gw1=198.51.100.2
+		gw2=192.0.2.2
+		dst=203.0.113.1
+		longer=203.0.113.0/25
+		shorter=203.0.113.0/24
+	else
+		addr=2001:db8:2::1/64
+		gw1=2001:db8:1::2
+		gw2=2001:db8:2::2
+		dst=2001:db8:10::1
+		longer=2001:db8:10::/64
+		shorter=2001:db8:10::/48
+	fi
+
+	setup
+	set -e
+	$IP link add dummy1 up type dummy
+	$IP address add "$addr" dev dummy1
+
+	nh1=(via "$gw1" dev dummy0)
+	nh2=(via "$gw2" dev dummy1)
+	if [ "$mode" = object ]; then
+		$IP nexthop add id 1 "${nh1[@]}"
+		$IP nexthop add id 2 "${nh2[@]}"
+		nh1=(nhid 1)
+		nh2=(nhid 2)
+	fi
+
+	$IP route add "$longer" "${nh1[@]}" metric 100
+	$IP route add "$shorter" "${nh2[@]}" metric 100
+	set +e
+
+	check_oif_fallback "$dst" dummy0 "$longer" 100
+	log_test $? 0 "Lookup on the preferred route's device"
+	check_oif_fallback "$dst" dummy1 "$shorter" 100
+	log_test $? 0 "Fallback to the shorter prefix"
+
+	set -e
+	$IP route add "$longer" "${nh2[@]}" metric 200
+	set +e
+	check_oif_fallback "$dst" dummy1 "$longer" 200
+	log_test $? 0 "Fallback to the higher metric for the same prefix"
+
+	cleanup
+}
+
+ipv4_oif_fallback_test()
+{
+	oif_fallback_test_common 4 legacy
+}
+
+ipv4_oif_fallback_nh_test()
+{
+	oif_fallback_test_common 4 object
+}
+
+ipv6_oif_fallback_test()
+{
+	oif_fallback_test_common 6 legacy
+}
+
+ipv6_oif_fallback_nh_test()
+{
+	oif_fallback_test_common 6 object
+}
+
 ################################################################################
 # usage
 
@@ -3320,6 +3408,10 @@ do
 	ipv6_mpath_oif)			ipv6_mpath_oif_test;;
 	ipv6_mpath_oif_nh)		ipv6_mpath_oif_nh_test;;
 	ipv6_mpath_oif_vrf)		ipv6_mpath_oif_vrf_test;;
+	ipv4_oif_fallback)		ipv4_oif_fallback_test;;
+	ipv4_oif_fallback_nh)		ipv4_oif_fallback_nh_test;;
+	ipv6_oif_fallback)		ipv6_oif_fallback_test;;
+	ipv6_oif_fallback_nh)		ipv6_oif_fallback_nh_test;;
 	fib6_ra_to_static)		fib6_ra_to_static;;
 	fib6_temp_addr_renewal)		fib6_temp_addr_renewal;;
 
