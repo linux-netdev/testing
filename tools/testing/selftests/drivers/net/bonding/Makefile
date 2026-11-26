@@ -16,9 +16,8 @@ TEST_PROGS := \
 	bond_stacked_header_parse.sh \
 	bond_vlan_real_dev.sh \
 	dev_addr_lists.sh \
-	mode-1-recovery-updelay.sh \
-	mode-2-recovery-updelay.sh \
 	netcons_over_bonding.sh \
+	recovery-updelay.sh \
 # end of TEST_PROGS
 
 TEST_FILES := \
