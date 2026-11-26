@@ -1779,6 +1779,10 @@ static int ethtool_get_regs(struct net_device *dev, char __user *useraddr)
 	if (copy_from_user(&regs, useraddr, sizeof(regs)))
 		return -EFAULT;
 
+	/* A zero-length dump has nothing to fill in. */
+	if (!regs.len)
+		return 0;
+
 	reglen = ops->get_regs_len(dev);
 	if (reglen <= 0)
 		return reglen;
