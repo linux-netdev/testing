@@ -34,12 +34,11 @@ cleanup()
 trap cleanup 0 1 2
 
 lag_setup_network
-test_bond_recovery mode 2 miimon 100 updelay 0
-test_bond_recovery mode 2 miimon 100 updelay 200
-test_bond_recovery mode 2 miimon 100 updelay 500
-test_bond_recovery mode 2 miimon 100 updelay 1000
-test_bond_recovery mode 2 miimon 100 updelay 2000
-test_bond_recovery mode 2 miimon 100 updelay 5000
-test_bond_recovery mode 2 miimon 100 updelay 10000
+
+for mode in 1 2 3; do
+	for delay in 0 200 500 1000 2000 5000 10000; do
+		test_bond_recovery mode "${mode}" miimon 100 updelay "${delay}"
+	done
+done
 
 exit "$EXIT_STATUS"
