@@ -733,9 +733,11 @@ static int sja1105_per_out_enable(struct sja1105_private *priv,
 
 	mutex_lock(&ptp_data->lock);
 
-	rc = sja1105_change_ptp_clk_pin_func(priv, PTP_PF_PEROUT);
-	if (rc)
-		goto out;
+	if (on) {
+		rc = sja1105_change_ptp_clk_pin_func(priv, PTP_PF_PEROUT);
+		if (rc)
+			goto out;
+	}
 
 	if (on) {
 		struct timespec64 pin_duration_ts = {
