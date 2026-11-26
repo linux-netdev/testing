@@ -147,7 +147,7 @@ int yt921x_mbus_int_init(struct yt921x_priv *priv, struct device_node *mnp)
 	struct mii_bus *mbus;
 	int res;
 
-	mbus = devm_mdiobus_alloc(dev);
+	mbus = mdiobus_alloc();
 	if (!mbus)
 		return -ENOMEM;
 
@@ -159,13 +159,27 @@ int yt921x_mbus_int_init(struct yt921x_priv *priv, struct device_node *mnp)
 	mbus->parent = dev;
 	mbus->phy_mask = (u32)~GENMASK(YT921X_PORT_NUM - 1, 0);
 
-	res = devm_of_mdiobus_register(dev, mbus, mnp);
-	if (res)
+	res = of_mdiobus_register(mbus, mnp);
+	if (res) {
+		mdiobus_free(mbus);
 		return res;
+	}
 
 	priv->mbus_int = mbus;
 
 	return 0;
+}
+
+void yt921x_mbus_int_remove(struct yt921x_priv *priv)
+{
+	struct mii_bus *mbus = priv->mbus_int;
+
+	if (!mbus)
+		return;
+	priv->mbus_int = NULL;
+
+	mdiobus_unregister(mbus);
+	mdiobus_free(mbus);
 }
 
 static int yt921x_extif_wait(struct yt921x_priv *priv)
@@ -277,7 +291,7 @@ int yt921x_mbus_ext_init(struct yt921x_priv *priv, struct device_node *mnp)
 	struct mii_bus *mbus;
 	int res;
 
-	mbus = devm_mdiobus_alloc(dev);
+	mbus = mdiobus_alloc();
 	if (!mbus)
 		return -ENOMEM;
 
@@ -289,11 +303,25 @@ int yt921x_mbus_ext_init(struct yt921x_priv *priv, struct device_node *mnp)
 	mbus->write = yt921x_mbus_ext_write;
 	mbus->parent = dev;
 
-	res = devm_of_mdiobus_register(dev, mbus, mnp);
-	if (res)
+	res = of_mdiobus_register(mbus, mnp);
+	if (res) {
+		mdiobus_free(mbus);
 		return res;
+	}
 
 	priv->mbus_ext = mbus;
 
 	return 0;
+}
+
+void yt921x_mbus_ext_remove(struct yt921x_priv *priv)
+{
+	struct mii_bus *mbus = priv->mbus_ext;
+
+	if (!mbus)
+		return;
+	priv->mbus_ext = NULL;
+
+	mdiobus_unregister(mbus);
+	mdiobus_free(mbus);
 }
