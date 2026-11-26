@@ -15513,6 +15513,7 @@ LISP DATA PLANE DRIVER
 M:	Vincent Jardin <vjardin@free.fr>
 L:	netdev@vger.kernel.org
 S:	Maintained
+F:	Documentation/networking/lisp.rst
 F:	drivers/net/lisp.c
 
 LIST KUNIT TEST

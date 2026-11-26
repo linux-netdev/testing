@@ -69,6 +69,7 @@ Contents:
    kcm
    l2tp
    lapb-module
+   lisp
    mac80211-injection
    mctp
    mpls-sysctl

@@ -280,7 +280,8 @@ config LISP
 	  (LISP, RFC 9300): a tunnel device that carries the IPv4 and IPv6
 	  packets of an instance ID over UDP, to the routing locator (RLOC)
 	  that the route or the nexthop of their destination gives as a
-	  lightweight tunnel encapsulation.
+	  lightweight tunnel encapsulation. See
+	  Documentation/networking/lisp.rst.
 
 	  The mappings of the destinations to the RLOCs come from user space,
 	  from a LISP control plane or from the configuration.
