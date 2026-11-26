@@ -2530,6 +2530,9 @@ int idpf_send_get_stats_msg(struct idpf_netdev_priv *np,
 	netstats->tx_errors = le64_to_cpu(stats_recv->tx_errors);
 	netstats->rx_dropped = le64_to_cpu(stats_recv->rx_discards);
 	netstats->tx_dropped = le64_to_cpu(stats_recv->tx_discards);
+	netstats->rx_length_errors =
+		le64_to_cpu(stats_recv->rx_invalid_frame_length);
+	netstats->rx_over_errors = le64_to_cpu(stats_recv->rx_overflow_drop);
 
 	port_stats->vport_stats = *stats_recv;
 
