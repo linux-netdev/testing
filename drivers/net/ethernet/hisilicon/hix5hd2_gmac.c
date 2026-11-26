@@ -816,7 +816,7 @@ static void hix5hd2_free_dma_desc_rings(struct hix5hd2_priv *priv)
 		if (skb == NULL)
 			continue;
 
-		desc = priv->tx_rq.desc + i;
+		desc = priv->tx_bq.desc + i;
 		addr = le32_to_cpu(desc->buff_addr);
 		dma_unmap_single(priv->dev, addr, skb->len, DMA_TO_DEVICE);
 		dev_kfree_skb_any(skb);
