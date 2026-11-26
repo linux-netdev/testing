@@ -64,6 +64,7 @@ TEST_PROGS := \
 	l2tp.sh \
 	link_netns.py \
 	lisp.sh \
+	lisp_scale.sh \
 	lwt_dst_cache_ref_loop.sh \
 	macvlan_mcast_shared_mac.sh \
 	msg_zerocopy.sh \
