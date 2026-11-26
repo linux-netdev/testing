@@ -140,6 +140,11 @@ void mlx5_nodnic_handle_recv_cqe(struct mlx5_nodnic_cq *cq,
 
 	page_pool_dma_sync_for_cpu(rq->page_pool, page, 0, byte_count);
 
+	u64_stats_update_begin(&priv->rq_stats.syncp);
+	u64_stats_inc(&priv->rq_stats.packets);
+	u64_stats_add(&priv->rq_stats.bytes, byte_count);
+	u64_stats_update_end(&priv->rq_stats.syncp);
+
 	skb = napi_build_skb(page_address(page), PAGE_SIZE);
 	if (unlikely(!skb))
 		goto err_recycle;
