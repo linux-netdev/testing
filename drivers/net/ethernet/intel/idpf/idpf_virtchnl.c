@@ -3889,7 +3889,7 @@ static void idpf_mac_filter_async_handler(void *ctx,
 	if (!vport)
 		goto invalid_payload;
 
-	vport_config = adapter->vport_config[le32_to_cpu(ma_list->vport_id)];
+	vport_config = adapter->vport_config[vport->idx];
 	ma_list_head = &vport_config->user_config.mac_filter_list;
 
 	/* We can't do much to reconcile bad filters at this point, however we
