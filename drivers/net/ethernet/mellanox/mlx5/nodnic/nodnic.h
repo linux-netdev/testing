@@ -78,6 +78,31 @@ struct mlx5_nodnic_core_dev {
 	enum mlx5_nodnic_device_state	state;
 };
 
+static inline void mlx5_nodnic_printk(struct mlx5_nodnic_core_dev *dev,
+				      int level, const char *format, ...)
+{
+	struct device *device = dev->device;
+	struct va_format vaf;
+	va_list args;
+
+	if (WARN_ONCE(level < LOGLEVEL_EMERG || level > LOGLEVEL_DEBUG,
+		      "Level %d is out of range, set to default level\n", level))
+		level = LOGLEVEL_DEFAULT;
+
+	va_start(args, format);
+	vaf.fmt = format;
+	vaf.va = &args;
+
+	dev_printk_emit(level, device, "%s %s: %pV", dev_driver_string(device),
+			dev_name(device), &vaf);
+	va_end(args);
+}
+
+#define mlx5_nodnic_log(__dev, level, format, ...)			\
+	mlx5_nodnic_printk(__dev, level, "%s:%d:(pid %d): " format,	\
+			   __func__, __LINE__, current->pid,		\
+			   ##__VA_ARGS__)
+
 void mlx5_nodnic_start_health_poll(struct mlx5_nodnic_core_dev *dev);
 void mlx5_nodnic_stop_health_poll(struct mlx5_nodnic_core_dev *dev);
 
