@@ -85,10 +85,15 @@ static void mlx5_nodnic_handle_err_cqe(struct mlx5_nodnic_cq *cq,
 
 	if (opcode == OPCODE_CQ_SEND_ERR) {
 		struct mlx5_nodnic_sq *sq = &priv->sq;
-		u16 sq_pi = mlx5_nodnic_sq_get_pi(sq, wqe_counter);
+		struct mlx5_nodnic_tx_wqe_info *wi;
+		u16 sq_pi;
 
-		mlx5_nodnic_complete_send_wqe(sq, &sq->wqe_info[sq_pi],
-					      napi_budget);
+		sq_pi = mlx5_nodnic_sq_get_pi(sq, wqe_counter);
+		wi = &sq->wqe_info[sq_pi];
+
+		mlx5_nodnic_sq_stats_inc(&priv->sq_stats, wi);
+
+		mlx5_nodnic_complete_send_wqe(sq, wi, napi_budget);
 	} else {
 		struct mlx5_nodnic_rq *rq = &priv->rq;
 		u16 ci = wqe_counter & (rq->ring.num_entries - 1);
