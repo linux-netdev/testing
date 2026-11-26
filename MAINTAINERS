@@ -15509,6 +15509,12 @@ F:	Documentation/misc-devices/lis3lv02d.rst
 F:	drivers/misc/lis3lv02d/
 F:	drivers/platform/x86/hp/hp_accel.c
 
+LISP DATA PLANE DRIVER
+M:	Vincent Jardin <vjardin@free.fr>
+L:	netdev@vger.kernel.org
+S:	Maintained
+F:	drivers/net/lisp.c
+
 LIST KUNIT TEST
 M:	David Gow <david@davidgow.net>
 L:	linux-kselftest@vger.kernel.org

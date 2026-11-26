@@ -269,6 +269,25 @@ config BAREUDP
 	  To compile this driver as a module, choose M here: the module
 	  will be called bareudp.
 
+config LISP
+	tristate "Locator/ID Separation Protocol (LISP) data plane"
+	depends on INET
+	select NET_UDP_TUNNEL
+	select GRO_CELLS
+	select LWTUNNEL
+	help
+	  This adds the data plane of the Locator/ID Separation Protocol
+	  (LISP, RFC 9300): a tunnel device that carries the IPv4 and IPv6
+	  packets of an instance ID over UDP, to the routing locator (RLOC)
+	  that the route or the nexthop of their destination gives as a
+	  lightweight tunnel encapsulation.
+
+	  The mappings of the destinations to the RLOCs come from user space,
+	  from a LISP control plane or from the configuration.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called lisp.
+
 config GTP
 	tristate "GPRS Tunneling Protocol datapath (GTP-U)"
 	depends on INET
