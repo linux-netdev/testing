@@ -860,7 +860,6 @@ static int hix5hd2_net_open(struct net_device *dev)
 	hix5hd2_hw_init(priv);
 	hix5hd2_rx_refill(priv);
 
-	netdev_reset_queue(dev);
 	netif_start_queue(dev);
 	napi_enable(&priv->napi);
 
@@ -878,7 +877,9 @@ static int hix5hd2_net_close(struct net_device *dev)
 	hix5hd2_irq_disable(priv);
 	napi_disable(&priv->napi);
 	netif_stop_queue(dev);
-	hix5hd2_free_dma_desc_rings(priv);
+	/* the buffers stay owned across the close; both rings are released
+	 * with the queues when the device goes away
+	 */
 
 	if (dev->phydev) {
 		phy_stop(dev->phydev);
@@ -989,6 +990,9 @@ out:
 static void hix5hd2_destroy_hw_desc_queue(struct hix5hd2_priv *priv)
 {
 	int i;
+
+	/* the buffers survive a close: release them with the rings */
+	hix5hd2_free_dma_desc_rings(priv);
 
 	for (i = 0; i < QUEUE_NUMS; i++) {
 		if (priv->pool[i].desc) {
@@ -1268,10 +1272,10 @@ static int hix5hd2_dev_probe(struct platform_device *pdev)
 	return ret;
 
 out_destroy_queue:
-	if (HAS_CAP_TSO(priv->hw_cap))
-		hix5hd2_destroy_sg_desc_queue(priv);
 	netif_napi_del(&priv->napi);
 	hix5hd2_destroy_hw_desc_queue(priv);
+	if (HAS_CAP_TSO(priv->hw_cap))
+		hix5hd2_destroy_sg_desc_queue(priv);
 out_phy_node:
 	of_node_put(priv->phy_node);
 err_mdiobus:
@@ -1298,9 +1302,9 @@ static void hix5hd2_dev_remove(struct platform_device *pdev)
 	mdiobus_unregister(priv->bus);
 	mdiobus_free(priv->bus);
 
+	hix5hd2_destroy_hw_desc_queue(priv);
 	if (HAS_CAP_TSO(priv->hw_cap))
 		hix5hd2_destroy_sg_desc_queue(priv);
-	hix5hd2_destroy_hw_desc_queue(priv);
 	of_node_put(priv->phy_node);
 	free_netdev(ndev);
 }
