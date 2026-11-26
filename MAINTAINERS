@@ -15515,6 +15515,7 @@ L:	netdev@vger.kernel.org
 S:	Maintained
 F:	Documentation/networking/lisp.rst
 F:	drivers/net/lisp.c
+F:	tools/testing/selftests/net/lisp*.sh
 
 LIST KUNIT TEST
 M:	David Gow <david@davidgow.net>
