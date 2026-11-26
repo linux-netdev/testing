@@ -2808,6 +2808,7 @@ static void bond_miimon_link_change(struct bonding *bond,
 		bond_alb_handle_link_change(bond, slave, link);
 		break;
 	case BOND_MODE_XOR:
+	case BOND_MODE_BROADCAST:
 		bond_update_slave_arr(bond, NULL);
 		break;
 	}
