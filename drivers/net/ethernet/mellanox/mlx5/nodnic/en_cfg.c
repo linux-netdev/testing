@@ -918,6 +918,12 @@ static int mlx5_nodnic_open_locked(struct net_device *netdev)
 	struct mlx5_nodnic_core_dev *dev = priv->core_dev;
 	int err;
 
+	if (READ_ONCE(dev->state) == NODNIC_DEVICE_STATE_INTERNAL_ERROR) {
+		netdev_err(netdev,
+			   "Cannot open: device is in a fatal error state\n");
+		return -EIO;
+	}
+
 	err = mlx5_nodnic_init_uar_map(dev);
 	if (err)
 		return err;
