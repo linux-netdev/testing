@@ -1813,7 +1813,7 @@ static int iptfs_get_cur_pmtu(struct xfrm_state *x, struct xfrm_iptfs_data *xtfs
 	return pmtu;
 }
 
-static int iptfs_is_too_big(struct sock *sk, struct sk_buff *skb, u32 pmtu)
+static int iptfs_is_too_big(struct sk_buff *skb, u32 pmtu)
 {
 	if (skb->len <= pmtu)
 		return 0;
@@ -1824,7 +1824,7 @@ static int iptfs_is_too_big(struct sock *sk, struct sk_buff *skb, u32 pmtu)
 	if (skb->dev)
 		XFRM_INC_STATS(dev_net(skb->dev), LINUX_MIB_XFRMOUTERROR);
 
-	if (sk)
+	if (skb_to_full_sk(skb))
 		xfrm_local_error(skb, pmtu);
 	else if (ip_hdr(skb)->version == 4)
 		icmp_send(skb, ICMP_DEST_UNREACH, ICMP_FRAG_NEEDED, htonl(pmtu));
@@ -1908,7 +1908,7 @@ nospace:
 		/* If the user indicated no iptfs fragmenting check before
 		 * enqueue.
 		 */
-		if (xtfs->cfg.dont_frag && iptfs_is_too_big(sk, skb, pmtu)) {
+		if (xtfs->cfg.dont_frag && iptfs_is_too_big(skb, pmtu)) {
 			trace_iptfs_too_big(skb, xtfs, pmtu, was_gso);
 			kfree_skb_reason(skb, SKB_DROP_REASON_PKT_TOO_BIG);
 			continue;
