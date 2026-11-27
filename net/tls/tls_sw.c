@@ -2445,7 +2445,7 @@ static void tx_work_handler(struct work_struct *work)
 
 	if (mutex_trylock(&tls_ctx->tx_lock)) {
 		lock_sock(sk);
-		tls_tx_records(sk, -1);
+		tls_tx_records(sk, MSG_DONTWAIT);
 		release_sock(sk);
 		mutex_unlock(&tls_ctx->tx_lock);
 	} else if (!test_and_set_bit(BIT_TX_SCHEDULED, &ctx->tx_bitmask)) {
