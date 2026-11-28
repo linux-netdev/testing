@@ -2368,6 +2368,38 @@ attribute-sets:
         name: mode
         type: u8
         enum: ovpn-mode
+  -
+    name: linkinfo-lisp-attrs
+    name-prefix: ifla-lisp-
+    attributes:
+      -
+        name: id
+        type: u32
+        doc: |
+          Instance ID of the packets that the device sends and receives,
+          24 bits.
+      -
+        name: collect-metadata
+        type: flag
+        doc: |
+          The device serves the instance IDs that have no device: it takes
+          the instance ID of a packet from its tunnel metadata, and
+          provides it when it receives.
+      -
+        name: local
+        type: u32
+        byte-order: big-endian
+        display-hint: ipv4
+        doc: |
+          Source address of the packets sent to an IPv4 RLOC, when the
+          tunnel metadata do not give it.
+      -
+        name: local6
+        type: binary
+        display-hint: ipv6
+        doc: |
+          Source address of the packets sent to an IPv6 RLOC, when the
+          tunnel metadata do not give it.
 
 sub-messages:
   -
@@ -2427,6 +2459,9 @@ sub-messages:
       -
         value: ovpn
         attribute-set: linkinfo-ovpn-attrs
+      -
+        value: lisp
+        attribute-set: linkinfo-lisp-attrs
   -
     name: linkinfo-member-data-msg
     formats:
